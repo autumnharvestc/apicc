@@ -96,16 +96,16 @@ function accessMember(userId:string){return props.workspaces.accessMembers[`${wo
 /** ACL 角色域（§3.3）：NONE 标签文案显式（裁定 B）；域内无 OWNER。 */
 const ACL_ROLE_OPTIONS = computed(() => [
   { value: "NONE", label: t("acl.roleNone") },
-  { value: "VIEWER", label: "VIEWER" },
-  { value: "EDITOR", label: "EDITOR" },
-  { value: "ADMIN", label: "ADMIN" },
+  { value: "VIEWER", label: roleLabel("VIEWER") },
+  { value: "EDITOR", label: roleLabel("EDITOR") },
+  { value: "ADMIN", label: roleLabel("ADMIN") },
 ]);
 
 /** a-tag 色分（NONE 显式红色以区别继承态，裁定 B）。 */
 const ROLE_COLORS: Record<AdminAclRole, string> = { NONE: "red", VIEWER: "default", EDITOR: "green", ADMIN: "geekblue" };
 
-function roleLabel(role: AdminAclRole): string {
-  return role === "NONE" ? t("acl.roleNone") : role;
+function roleLabel(role: string): string {
+  return role === "NONE" ? t("acl.roleNone") : te(`adminRoles.${role}`) ? t(`adminRoles.${role}`) : role;
 }
 
 const columns = computed(() => [
@@ -153,7 +153,7 @@ async function onAdd(): Promise<void> {
 </script>
 
 <template>
-  <div class="acl-view" data-testid="acl-view">
+  <div class="admin-page acl-view" data-testid="acl-view">
     <h2 class="acl-title">{{ t("acl.title") }}</h2>
 
     <a-alert
@@ -202,7 +202,7 @@ async function onAdd(): Promise<void> {
           <div class="row-actions">
             <button :data-testid="`acl-capabilities-${record.userId}`" @click="capabilityTarget=record.userId;capabilityDraft={}">{{t('collaboration.capability')}}</button>
             <button :data-testid="`acl-reload-${record.userId}`" @click="workspaces.refreshAccessMember({workspaceId,projectId:selectedProjectId!},record.userId)">{{t('collaboration.reload')}}</button>
-            <span v-if="accessMember(record.userId)">{{t('collaboration.currentRevision')}}: {{accessMember(record.userId)?.revision}} · {{t('collaboration.currentRole')}}: {{accessMember(record.userId)?.projectOverride??t('collaboration.inherit')}}</span>
+            <span v-if="accessMember(record.userId)">{{t('collaboration.currentRevision')}}: {{accessMember(record.userId)?.revision}} · {{t('collaboration.currentRole')}}: {{roleLabel(accessMember(record.userId)?.projectOverride??t('collaboration.inherit'))}}</span>
             <template v-if="accessMember(record.userId)?.overrideState==='pending-confirmation'">
               <select v-model="confirmationRoles[record.userId]" :data-testid="`acl-new-role-${record.userId}`" :aria-label="t('collaboration.confirmOverride')"><option disabled value="">—</option><option v-for="role in ACL_ROLE_OPTIONS" :key="role.value" :value="role.value">{{role.label}}</option></select>
               <button :disabled="!confirmationRoles[record.userId]" :data-testid="`acl-confirm-override-${record.userId}`" @click="workspaces.confirmAccess(workspaceId,selectedProjectId!,record.userId,'confirm-override',confirmationRoles[record.userId])">{{t('collaboration.confirmOverride')}}</button>
@@ -258,7 +258,7 @@ async function onAdd(): Promise<void> {
         {{ t("acl.addSubmit") }}
       </a-button>
     </div>
-    <p v-if="addSubject" data-testid="acl-add-scope">{{t('collaboration.currentRevision')}}: {{addSubject.revision}} · {{addSubject.member?addSubject.workspaceRole:t('collaboration.noMembership')}} · {{addSubject.projectOverride??t('collaboration.inherit')}} · {{overrideLabel(addSubject.overrideState)}}</p>
+    <p v-if="addSubject" data-testid="acl-add-scope">{{t('collaboration.currentRevision')}}: {{addSubject.revision}} · {{addSubject.member?roleLabel(addSubject.workspaceRole??t('collaboration.noMembership')):t('collaboration.noMembership')}} · {{roleLabel(addSubject.projectOverride??t('collaboration.inherit'))}} · {{overrideLabel(addSubject.overrideState)}}</p>
     <button v-if="resolveId()" data-testid="acl-add-reload" @click="readAddSubject">{{t('collaboration.reload')}}</button>
     <div v-if="addError" class="form-error" data-testid="acl-add-error">{{ addError }}</div>
     <!-- 候选搜索失败就地上屏（双通道：与顶部 aclError 分通道，MembersView members-candidates-error 同构——终审 Important 1） -->
@@ -305,7 +305,7 @@ async function onAdd(): Promise<void> {
 .acl-view :deep(.ant-table-wrapper){max-width:100%;min-width:0}
 .acl-view :deep(th){white-space:nowrap}
 .role-select {
-  width: 150px;
+  width: 220px;
 }
 .add-row {
   display: flex;
@@ -316,11 +316,17 @@ async function onAdd(): Promise<void> {
   width: 240px;
 }
 .add-role {
-  width: 150px;
+  width: 220px;
 }
 .form-error {
   margin-top: 8px;
   color: #cf1322;
   font-size: 12px;
 }
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.acl-title{font-size:21px}.project-row,.add-row{flex-wrap:wrap}.project-select{max-width:100%}.row-actions{min-width:560px;max-width:740px;flex-wrap:wrap}.add-userid,.add-role{max-width:100%}
 </style>

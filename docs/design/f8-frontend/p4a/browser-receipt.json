@@ -1,0 +1,559 @@
+{
+  "base": "842645e0",
+  "mode": "actual admin App/router/stores/components with synthetic read-only fetch; not backend authorization or native acceptance",
+  "captures": [
+    {
+      "name": "org-zh-1280",
+      "alerts": [],
+      "document": [
+        1280,
+        1280
+      ],
+      "fixture": " · 错误 2: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "组织管理",
+        "分组",
+        "默认分组"
+      ],
+      "tables": [],
+      "url": "/workspaces/1/org",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "org-zh-640-transient-measurement-only",
+      "alerts": [],
+      "document": [
+        625,
+        625
+      ],
+      "fixture": " · 错误 2: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "组织管理",
+        "分组",
+        "支付集成与预发布环境 / Integration"
+      ],
+      "tables": [],
+      "url": "/workspaces/1/org",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "org-zh-640",
+      "alerts": [],
+      "document": [
+        640,
+        640
+      ],
+      "fixture": " · 错误 2: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "组织管理",
+        "分组",
+        "支付集成与预发布环境 / Integration"
+      ],
+      "tables": [],
+      "url": "/workspaces/1/org",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "agent-pending-zh-1280",
+      "alerts": [],
+      "document": [
+        1265,
+        1265
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "代理节点",
+        "工作区使用授权",
+        "登记与身份撤销"
+      ],
+      "tables": [
+        {
+          "scroll": 727,
+          "width": 727
+        },
+        {
+          "scroll": 790,
+          "width": 679
+        }
+      ],
+      "url": "/agents",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "project-script-zh-1280",
+      "alerts": [],
+      "document": [
+        1265,
+        1265
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "组织管理",
+        "分组",
+        "默认分组",
+        "项目代理与脚本批准 · 2",
+        "项目执行策略",
+        "已关联代理的实际运行状态",
+        "远程脚本批准"
+      ],
+      "tables": [
+        {
+          "scroll": 903,
+          "width": 903
+        },
+        {
+          "scroll": 1222,
+          "width": 918
+        },
+        {
+          "scroll": 918,
+          "width": 918
+        },
+        {
+          "scroll": 885,
+          "width": 885
+        }
+      ],
+      "url": "/workspaces/1/org",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "schedule-policy-zh-1280",
+      "alerts": [],
+      "document": [
+        1265,
+        1265
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "调度策略"
+      ],
+      "tables": [
+        {
+          "scroll": 992,
+          "width": 952
+        }
+      ],
+      "url": "/workspaces/1/projects/2/schedule-policy",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "schedule-grants-zh-1280",
+      "alerts": [],
+      "document": [
+        1280,
+        1280
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "项目调度授权"
+      ],
+      "tables": [
+        {
+          "scroll": 982,
+          "width": 982
+        }
+      ],
+      "url": "/workspaces/1/projects/2/schedule-grants",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "notifications-en-1280",
+      "alerts": [],
+      "document": [
+        1280,
+        1280
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Notification channels"
+      ],
+      "tables": [
+        {
+          "scroll": 1291,
+          "width": 982
+        }
+      ],
+      "url": "/workspaces/1/notification-channels",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "sync-policy-overflow-before",
+      "alerts": [],
+      "document": [
+        625,
+        1543
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Layered sync policy"
+      ],
+      "tables": [
+        {
+          "scroll": 1566,
+          "width": 344
+        }
+      ],
+      "url": "/workspaces/1/projects/2/sync-policy",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "sync-access-en-640",
+      "alerts": [],
+      "document": [
+        625,
+        625
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Synchronization",
+        "订单与恢复演练 / Orders and recovery — 长项目名称验证",
+        "Project management catalogue",
+        "Finite sync capability defaults",
+        "Materials and host trust",
+        "Source safety summary (read only)",
+        "Check audit summary (read only)",
+        "Management audit (read only)"
+      ],
+      "tables": [
+        {
+          "scroll": 650,
+          "width": 359
+        },
+        {
+          "scroll": 900,
+          "width": 359
+        },
+        {
+          "scroll": 650,
+          "width": 359
+        },
+        {
+          "scroll": 650,
+          "width": 359
+        },
+        {
+          "scroll": 864,
+          "width": 359
+        },
+        {
+          "scroll": 702,
+          "width": 359
+        }
+      ],
+      "url": "/workspaces/1/projects/2/sync-access",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "sync-policy-en-640",
+      "alerts": [],
+      "document": [
+        625,
+        625
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Layered sync policy"
+      ],
+      "tables": [
+        {
+          "scroll": 1566,
+          "width": 344
+        }
+      ],
+      "url": "/workspaces/1/projects/2/sync-policy",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "notification-form-en-640",
+      "alerts": [],
+      "document": [
+        625,
+        625
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Notification channels",
+        "Create channel"
+      ],
+      "tables": [
+        {
+          "scroll": 1291,
+          "width": 359
+        }
+      ],
+      "url": "/workspaces/1/notification-channels",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "collaboration-en-640",
+      "alerts": [],
+      "document": [
+        625,
+        625
+      ],
+      "fixture": " · 错误 1: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Collaboration management",
+        "Publications and sharing",
+        "Audit",
+        "Collaboration capability",
+        "Setting",
+        "Resource recommendations and configuration"
+      ],
+      "tables": [
+        {
+          "scroll": 900,
+          "width": 359
+        },
+        {
+          "scroll": 1634,
+          "width": 359
+        },
+        {
+          "scroll": 906,
+          "width": 359
+        }
+      ],
+      "url": "/workspaces/1/projects/2/collaboration",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "acl-role-en-640",
+      "alerts": [],
+      "document": [
+        640,
+        640
+      ],
+      "fixture": " · 错误 2: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Project ACL"
+      ],
+      "tables": [
+        {
+          "scroll": 1300,
+          "width": 375
+        }
+      ],
+      "url": "/workspaces/1/acl",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "users-en-640",
+      "alerts": [],
+      "document": [
+        640,
+        640
+      ],
+      "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Users"
+      ],
+      "tables": [
+        {
+          "scroll": 900,
+          "width": 375
+        }
+      ],
+      "url": "/users",
+      "viewport": [
+        640,
+        800
+      ]
+    },
+    {
+      "name": "workspace-modal-en-640x400",
+      "alerts": [],
+      "document": [
+        640,
+        640
+      ],
+      "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Workspaces"
+      ],
+      "tables": [
+        {
+          "scroll": 700,
+          "width": 375
+        }
+      ],
+      "url": "/workspaces",
+      "viewport": [
+        640,
+        400
+      ]
+    },
+    {
+      "name": "login-en-640x400",
+      "alerts": [],
+      "document": [
+        640,
+        640
+      ],
+      "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [],
+      "tables": [],
+      "url": "/login",
+      "viewport": [
+        640,
+        400
+      ]
+    },
+    {
+      "name": "sync-policy-input-en-540",
+      "alerts": [],
+      "document": [
+        525,
+        525
+      ],
+      "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Layered sync policy"
+      ],
+      "tables": [
+        {
+          "scroll": 1566,
+          "width": 300
+        }
+      ],
+      "url": "/workspaces/1/projects/2/sync-policy",
+      "viewport": [
+        540,
+        800
+      ]
+    },
+    {
+      "name": "workspace-agents-en-1280",
+      "alerts": [],
+      "document": [
+        1265,
+        1265
+      ],
+      "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "Workspace agents and policy",
+        "Allocate an agent to workspace projects",
+        "Workspace execution policy"
+      ],
+      "tables": [
+        {
+          "scroll": 952,
+          "width": 952
+        }
+      ],
+      "url": "/workspaces/1/agents",
+      "viewport": [
+        1280,
+        900
+      ]
+    },
+    {
+      "name": "collaboration-policy-zh-1280",
+      "alerts": [],
+      "document": [
+        1265,
+        1265
+      ],
+      "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+      "headings": [
+        "协作管理",
+        "发布与分享",
+        "审计",
+        "协作权限点",
+        "配置项",
+        "资源建议与实际配置"
+      ],
+      "tables": [
+        {
+          "scroll": 967,
+          "width": 967
+        },
+        {
+          "scroll": 967,
+          "width": 967
+        },
+        {
+          "scroll": 967,
+          "width": 967
+        },
+        {
+          "scroll": 967,
+          "width": 967
+        },
+        {
+          "scroll": 1556,
+          "width": 967
+        },
+        {
+          "scroll": 967,
+          "width": 967
+        }
+      ],
+      "url": "/workspaces/1/projects/2/collaboration",
+      "viewport": [
+        1280,
+        900
+      ]
+    }
+  ],
+  "observations": [
+    "Named organization button Enter selected only target group; aria-pressed=true",
+    "Members and ACL English options show full Administrator (ADMIN); protocol writes checked by view tests",
+    "Sync field focus at 540: root client/scroll width525, scrollX0, tableScrollLeft1108.57, active sync-input-gitDeadlineMs",
+    "Audit raw details remain closed (open attribute null)",
+    "Workspace create dialog cancel/create fit640x400; cancelled without save",
+    "ResizeObserver notifications observed: 2 before fixture reload; final document 3; no blank or blocked action seen; root cause not established",
+    "Fixture corrections: missing four stress source labels then extra revoked key rejected by real schema; corrected before successful project-agent capture; member metadata aligned with workspace/project scope",
+    "Server tail records 8 ResizeObserver notifications across initial render and fixture reloads; per-document count is not a session total. Temporary tab closed, viewport reset, Vite stopped."
+  ],
+  "final": {
+    "clientWidth": 1265,
+    "fixture": " · 错误 3: ResizeObserver loop completed with undelivered notifications.",
+    "height": 900,
+    "rootWidth": 1265,
+    "width": 1280
+  }
+}

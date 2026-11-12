@@ -196,3 +196,8 @@ function onLocaleChange(event: Event): void {
   overflow:hidden;
 }
 </style>
+
+<style scoped>
+@media(max-width:900px){.content{padding:16px}.header{padding:0 16px}}
+@media(max-width:600px){.sider{width:164px!important;min-width:164px!important;max-width:164px!important;flex-basis:164px!important}.brand{font-size:15px;padding:12px}.content{padding:10px}.header{padding:8px 10px;min-height:56px;height:auto;flex-wrap:wrap;gap:6px}.locale-control{gap:4px}.locale-control>span{display:none}.user{max-width:100px}}
+</style>

@@ -181,3 +181,9 @@ async function onRegister() {
   font-size: 12px;
 }
 </style>
+
+<style scoped>
+.login-page{box-sizing:border-box;padding:24px;background:radial-gradient(ellipse at top,#eaf0ff,transparent 65%),var(--panel)}
+.login-card{width:min(400px,100%);border:1px solid var(--border);border-radius:14px;box-shadow:0 16px 48px #1925380d}.auth-form{gap:16px}
+@media(max-height:500px){.login-page{align-items:flex-start}}
+</style>

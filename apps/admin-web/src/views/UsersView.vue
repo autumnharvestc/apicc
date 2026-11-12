@@ -15,7 +15,8 @@ import type { AdminAccount } from "../api/contract.js";
 import type { UsersStore } from "../stores/users.js";
 
 const props = defineProps<{ users: UsersStore }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+const roleLabel = (role: string) => te(`adminRoles.${role}`) ? t(`adminRoles.${role}`) : role;
 
 onMounted(() => {
   void props.users.refresh(); // 挂载即拉清单（workspaces 列表同口径）
@@ -30,7 +31,7 @@ const columns = computed(() => [
   { title: t("users.colActions"), key: "actions" },
 ]);
 
-/** a-tag 色分（域内枚举值原样呈现，不翻译）。 */
+/** a-tag 色分（显示本地化说明和原枚举代码，提交值不变）。 */
 const ROLE_COLORS: Record<string, string> = { SUPERADMIN: "red", USER: "geekblue" };
 
 // —— 创建账号（a-modal，本地校验同注册口径）——
@@ -99,7 +100,7 @@ async function onReset(): Promise<void> {
 </script>
 
 <template>
-  <div class="users-view" data-testid="users-view">
+  <div class="admin-page users-view" data-testid="users-view">
     <div class="users-toolbar">
       <h2 class="users-title">{{ t("users.title") }}</h2>
       <a-button type="primary" data-testid="users-create" @click="openCreate">{{ t("users.create") }}</a-button>
@@ -121,12 +122,13 @@ async function onReset(): Promise<void> {
       :data-source="users.items"
       row-key="id"
       :pagination="false"
+      :scroll="{x:900}"
       :loading="users.loading"
       data-testid="users-table"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
-          <a-tag :color="ROLE_COLORS[record.role as string]">{{ record.role }}</a-tag>
+          <a-tag :color="ROLE_COLORS[record.role as string]">{{ roleLabel(record.role) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag v-if="record.disabled" color="red">{{ t("users.statusDisabled") }}</a-tag>
@@ -167,7 +169,7 @@ async function onReset(): Promise<void> {
     </a-table>
 
     <!-- 创建账号 -->
-    <a-modal v-if="createOpen" :open="createOpen" :title="t('users.createTitle')" data-testid="users-create-modal" @cancel="createOpen = false">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="createOpen" :open="createOpen" :title="t('users.createTitle')" data-testid="users-create-modal" @cancel="createOpen = false">
       <a-input
         v-model:value="createUsername"
         data-testid="users-form-username"
@@ -207,7 +209,7 @@ async function onReset(): Promise<void> {
     </a-modal>
 
     <!-- 重置密码（受控） -->
-    <a-modal v-if="resetTarget !== null" :open="true" :title="t('users.resetTitle', { user: resetTarget.displayName })" data-testid="users-reset-modal" @cancel="cancelReset">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="resetTarget !== null" :open="true" :title="t('users.resetTitle', { user: resetTarget.displayName })" data-testid="users-reset-modal" @cancel="cancelReset">
       <p class="reset-hint" data-testid="users-reset-hint">{{ t("users.resetHint", { user: resetTarget.username }) }}</p>
       <a-input
         v-model:value="resetPassword"
@@ -275,4 +277,10 @@ async function onReset(): Promise<void> {
   margin: 0 0 8px;
   font-size: 13px;
 }
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.users-toolbar{flex-wrap:wrap;gap:12px}.users-title{font-size:21px}.row-actions{flex-wrap:wrap}.users-view :deep(th){white-space:nowrap}.users-view :deep(td){overflow-wrap:anywhere}
 </style>

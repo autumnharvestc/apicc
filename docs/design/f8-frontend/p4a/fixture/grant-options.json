@@ -1,0 +1,45 @@
+{
+  "items" : [ {
+    "userId" : "1",
+    "username" : "admin",
+    "displayName" : "admin",
+    "effectiveRole" : "OWNER",
+    "eligible" : false,
+    "reasonCode" : "editor-required"
+  }, {
+    "userId" : "2",
+    "username" : "m-32e5fd33-e283-4",
+    "displayName" : "m-32e5fd33-e283-4",
+    "effectiveRole" : "ADMIN",
+    "eligible" : false,
+    "reasonCode" : "editor-required"
+  }, {
+    "userId" : "3",
+    "username" : "m-910ae971-c749-4",
+    "displayName" : "m-910ae971-c749-4",
+    "effectiveRole" : "EDITOR",
+    "eligible" : true,
+    "reasonCode" : null
+  }, {
+    "userId" : "4",
+    "username" : "m-235c7430-b296-4",
+    "displayName" : "m-235c7430-b296-4",
+    "effectiveRole" : "VIEWER",
+    "eligible" : false,
+    "reasonCode" : "editor-required"
+  }, {
+    "userId" : "5",
+    "username" : "m-04158e1c-621b-4",
+    "displayName" : "m-04158e1c-621b-4",
+    "effectiveRole" : "EDITOR",
+    "eligible" : false,
+    "reasonCode" : "account-disabled"
+  }, {
+    "userId" : "6",
+    "username" : "m-08150dbd-f7b3-4",
+    "displayName" : "m-08150dbd-f7b3-4",
+    "effectiveRole" : null,
+    "eligible" : false,
+    "reasonCode" : "project-access-denied"
+  } ]
+}

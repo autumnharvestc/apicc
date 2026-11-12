@@ -248,7 +248,7 @@ async function onProjectDelete(): Promise<void> {
 </script>
 
 <template>
-  <div class="org-view" data-testid="org-view">
+  <div class="admin-page org-view" data-testid="org-view">
     <div class="org-toolbar">
       <h2 class="org-title">{{ t("org.title") }}</h2>
       <div v-if="canManage" class="org-toolbar-actions">
@@ -280,7 +280,7 @@ async function onProjectDelete(): Promise<void> {
           :data-testid="`org-group-item-${g.id}`"
           @click="selectedGroupId = g.id"
         >
-          <span class="group-name" :title="g.name">{{ g.name }}</span>
+          <button class="group-name" type="button" :title="g.name" :aria-pressed="g.id === selectedGroupId" @click="selectedGroupId = g.id">{{ g.name }}</button>
           <a-tag v-if="g.isDefault" color="blue" class="group-default-tag" :data-testid="`org-group-default-${g.id}`">
             {{ t("org.defaultTag") }}
           </a-tag>
@@ -337,7 +337,7 @@ async function onProjectDelete(): Promise<void> {
 
     <ProjectAgentsView v-if="agents&&executionProject" :key="workspaceId+':'+executionProject" :agents="agents" :workspace-id="workspaceId" :project-id="executionProject" :agent-id="executionAgent" />
     <!-- 建分组 -->
-    <a-modal v-if="groupCreateOpen" :open="groupCreateOpen" :title="t('org.groupCreateTitle')" data-testid="org-group-create-modal" @cancel="groupCreateOpen = false">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="groupCreateOpen" :open="groupCreateOpen" :title="t('org.groupCreateTitle')" data-testid="org-group-create-modal" @cancel="groupCreateOpen = false">
       <a-input
         v-model:value="groupCreateName"
         data-testid="org-group-create-name"
@@ -363,7 +363,7 @@ async function onProjectDelete(): Promise<void> {
     </a-modal>
 
     <!-- 分组改名（受控） -->
-    <a-modal v-if="renameGroupTarget !== null" :open="true" :title="t('org.groupRenameTitle')" data-testid="org-group-rename-modal" @cancel="cancelGroupRename">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="renameGroupTarget !== null" :open="true" :title="t('org.groupRenameTitle')" data-testid="org-group-rename-modal" @cancel="cancelGroupRename">
       <a-input
         v-model:value="groupRenameName"
         data-testid="org-group-rename-name"
@@ -389,7 +389,7 @@ async function onProjectDelete(): Promise<void> {
     </a-modal>
 
     <!-- 删分组（受控确认） -->
-    <a-modal v-if="deleteGroupTarget !== null" :open="true" :title="t('org.groupDeleteTitle')" data-testid="org-group-delete-modal" @cancel="cancelGroupDelete">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="deleteGroupTarget !== null" :open="true" :title="t('org.groupDeleteTitle')" data-testid="org-group-delete-modal" @cancel="cancelGroupDelete">
       <p class="delete-hint" data-testid="org-group-delete-hint">{{ t("org.groupDeleteHint", { name: deleteGroupTarget.name }) }}</p>
       <a-alert
         v-if="org.actionError"
@@ -409,7 +409,7 @@ async function onProjectDelete(): Promise<void> {
     </a-modal>
 
     <!-- 建项目（groupId 预选当前选中分组） -->
-    <a-modal v-if="projectCreateOpen" :open="projectCreateOpen" :title="t('org.projectCreateTitle')" data-testid="org-project-create-modal" @cancel="projectCreateOpen = false">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="projectCreateOpen" :open="projectCreateOpen" :title="t('org.projectCreateTitle')" data-testid="org-project-create-modal" @cancel="projectCreateOpen = false">
       <a-select
         v-model:value="projectCreateGroupId"
         class="group-select"
@@ -443,7 +443,7 @@ async function onProjectDelete(): Promise<void> {
     </a-modal>
 
     <!-- 项目改名（受控） -->
-    <a-modal v-if="renameProjectTarget !== null" :open="true" :title="t('org.projectRenameTitle')" data-testid="org-project-rename-modal" @cancel="cancelProjectRename">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="renameProjectTarget !== null" :open="true" :title="t('org.projectRenameTitle')" data-testid="org-project-rename-modal" @cancel="cancelProjectRename">
       <a-input
         v-model:value="projectRenameName"
         data-testid="org-project-rename-name"
@@ -469,7 +469,7 @@ async function onProjectDelete(): Promise<void> {
     </a-modal>
 
     <!-- 移动项目（受控；预选现分组） -->
-    <a-modal v-if="moveProjectTarget !== null" :open="true" :title="t('org.projectMoveTitle')" data-testid="org-project-move-modal" @cancel="cancelProjectMove">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="moveProjectTarget !== null" :open="true" :title="t('org.projectMoveTitle')" data-testid="org-project-move-modal" @cancel="cancelProjectMove">
       <p class="delete-hint">{{ t("org.projectMoveHint", { name: moveProjectTarget.name }) }}</p>
       <a-select
         v-model:value="projectMoveGroupId"
@@ -496,7 +496,7 @@ async function onProjectDelete(): Promise<void> {
     </a-modal>
 
     <!-- 删项目（受控确认） -->
-    <a-modal v-if="deleteProjectTarget !== null" :open="true" :title="t('org.projectDeleteTitle')" data-testid="org-project-delete-modal" @cancel="cancelProjectDelete">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="deleteProjectTarget !== null" :open="true" :title="t('org.projectDeleteTitle')" data-testid="org-project-delete-modal" @cancel="cancelProjectDelete">
       <p class="delete-hint" data-testid="org-project-delete-hint">{{ t("org.projectDeleteHint", { name: deleteProjectTarget.name }) }}</p>
       <a-alert
         v-if="org.actionError"
@@ -659,4 +659,19 @@ async function onProjectDelete(): Promise<void> {
   margin: 0 0 8px;
   font-size: 13px;
 }
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.org-toolbar,.org-toolbar-actions { flex-wrap: wrap; gap: 10px; }
+.org-title { font-size: 21px; }.org-panes { display: grid; grid-template-columns: minmax(220px,300px) minmax(0,1fr); }
+.org-groups { box-sizing: border-box; width: auto; background: var(--subtle); border-color: var(--border); }
+.group-row { flex-wrap: wrap; gap: 6px; }.group-row:hover { background: var(--panel); }.group-row.active { background: var(--active-weak); }
+button.group-name { text-align: left; background: transparent; border-color: transparent; padding: 4px; min-width: 100px; }
+.group-actions { margin-left: auto; }.group-row.active .group-name { color: var(--accent); font-weight: 600; }
+.cards { grid-template-columns: repeat(auto-fill,minmax(min(290px,100%),1fr)); }.project-card { border-color: var(--border); padding: 16px; gap: 14px; }
+.card-name { font-weight: 600; }.card-actions { gap: 8px; }.pane-title { overflow-wrap: anywhere; }
+.org-view > .project-agents { margin-top: 24px; }
+@media(max-width:1000px){.org-panes{grid-template-columns:1fr}.org-groups{max-height:260px;overflow:auto}}
 </style>

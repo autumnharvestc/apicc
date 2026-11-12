@@ -29,6 +29,7 @@ import type {CapabilityMode,AccessMember} from '../api/collaboration.js';
 
 const props = defineProps<{ workspaces: WorkspacesStore }>();
 const { t, te } = useI18n();
+const roleLabel = (role: string) => te(`adminRoles.${role}`) ? t(`adminRoles.${role}`) : role;
 const overrideLabel = (value: string) => te(`collaboration.overrideStates.${value}`) ? t(`collaboration.overrideStates.${value}`) : value;
 const route = useRoute();
 const router = useRouter();
@@ -73,7 +74,7 @@ const columns = computed(() => [
   { title: t("members.colActions"), key: "actions" },
 ]);
 
-/** a-tag 色分（域内枚举值原样呈现，不翻译）。 */
+/** a-tag 色分（显示本地化说明和原枚举代码，提交值不变）。 */
 const ROLE_COLORS: Record<AdminRole, string> = { OWNER: "gold", ADMIN: "geekblue", EDITOR: "green", VIEWER: "default" };
 const ROLE_OPTIONS: AdminRole[] = ["OWNER", "ADMIN", "EDITOR", "VIEWER"];
 /** 添加成员角色下拉排除 OWNER（任务 5 审查顺修·重要）：非成员直接授 OWNER 走不到转让确认；
@@ -147,7 +148,7 @@ async function onAdd(): Promise<void> {
 </script>
 
 <template>
-  <div class="members-view" data-testid="members-view">
+  <div class="admin-page members-view" data-testid="members-view">
     <h2 class="members-title">{{ t("members.title") }}</h2>
 
     <!-- 成员面错误通道（顶部 alert；owner_immutable 等，裁定 C） -->
@@ -178,13 +179,13 @@ async function onAdd(): Promise<void> {
         v-model:value="addRole"
         class="add-role"
         data-testid="members-add-role"
-        :options="ADD_ROLE_OPTIONS.map((r) => ({ value: r, label: r }))"
+        :options="ADD_ROLE_OPTIONS.map((r) => ({ value: r, label: roleLabel(r) }))"
       />
       <a-button type="primary" :disabled="!!resolveId()&&!addSubject||addReading" :loading="workspaces.memberSubmitting" data-testid="members-add-submit" @click="onAdd">
         {{ t("members.addSubmit") }}
       </a-button>
     </div>
-    <p v-if="addSubject" data-testid="members-add-scope">{{t('collaboration.currentRevision')}}: {{addSubject.revision}} · {{addSubject.member?addSubject.workspaceRole:t('collaboration.noMembership')}} · {{addSubject.projectOverride??t('collaboration.inherit')}} · {{overrideLabel(addSubject.overrideState)}}</p>
+    <p v-if="addSubject" data-testid="members-add-scope">{{t('collaboration.currentRevision')}}: {{addSubject.revision}} · {{addSubject.member?roleLabel(addSubject.workspaceRole??t('collaboration.noMembership')):t('collaboration.noMembership')}} · {{addSubject.projectOverride??t('collaboration.inherit')}} · {{overrideLabel(addSubject.overrideState)}}</p>
     <button v-if="resolveId()" data-testid="members-add-reload" @click="readAddSubject">{{t('collaboration.reload')}}</button>
     <div v-if="addError" class="form-error" data-testid="members-add-error">{{ addError }}</div>
     <!-- 候选搜索失败就地上屏（与顶部 membersError 分通道，互不覆盖） -->
@@ -201,13 +202,13 @@ async function onAdd(): Promise<void> {
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
-          <a-tag :color="ROLE_COLORS[record.role as AdminRole]">{{ record.role }}</a-tag>
+          <a-tag :color="ROLE_COLORS[record.role as AdminRole]">{{ roleLabel(record.role) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'actions'">
           <div class="row-actions">
             <button :data-testid="`members-capabilities-${record.userId}`" @click="capabilityTarget=record.userId;capabilityDraft={}">{{t('collaboration.capability')}}</button>
             <button :data-testid="`members-reload-${record.userId}`" @click="workspaces.refreshAccessMember({workspaceId},record.userId)">{{t('collaboration.reload')}}</button>
-            <span v-if="workspaces.accessMembers[`${workspaceId}//${record.userId}`]">{{t('collaboration.currentRevision')}}: {{workspaces.accessMembers[`${workspaceId}//${record.userId}`]?.revision}} · {{t('collaboration.currentRole')}}: {{workspaces.accessMembers[`${workspaceId}//${record.userId}`]?.workspaceRole??t('collaboration.noMembership')}}</span>
+            <span v-if="workspaces.accessMembers[`${workspaceId}//${record.userId}`]">{{t('collaboration.currentRevision')}}: {{workspaces.accessMembers[`${workspaceId}//${record.userId}`]?.revision}} · {{t('collaboration.currentRole')}}: {{roleLabel(workspaces.accessMembers[`${workspaceId}//${record.userId}`]?.workspaceRole??t('collaboration.noMembership'))}}</span>
             <a-select
               :value="workspaces.memberDrafts[`${workspaceId}//${record.userId}`]??record.role"
               :disabled="isOwnerRow(record as AdminMember)"
@@ -215,7 +216,7 @@ async function onAdd(): Promise<void> {
               size="small"
               class="role-select"
               :data-testid="`members-role-${record.userId}`"
-              :options="ROLE_OPTIONS.map((r) => ({ value: r, label: r }))"
+              :options="ROLE_OPTIONS.map((r) => ({ value: r, label: roleLabel(r) }))"
               @change="(value) => onRoleChange(record as AdminMember, value as AdminRole)"
             />
             <a-popconfirm
@@ -245,7 +246,7 @@ async function onAdd(): Promise<void> {
 
     <section v-if="capabilityTarget&&workspaces.accessMembers[`${workspaceId}//${capabilityTarget}`]" data-testid="member-capability-editor"><h3>{{t('collaboration.capability')}} · {{capabilityTarget}}</h3><p>{{t('collaboration.currentRevision')}}: {{workspaces.accessMembers[`${workspaceId}//${capabilityTarget}`]?.revision}}</p><CollaborationAccessTable :rows="workspaces.accessMembers[`${workspaceId}//${capabilityTarget}`]!.capabilities" :draft="capabilityDraft" @save="saveCapabilities"/><button @click="workspaces.refreshAccessMember({workspaceId},capabilityTarget)">{{t('collaboration.reload')}}</button></section>
     <!-- OWNER 转让受控确认（裁定 B）：输入工作区名，明示自身降为 ADMIN 且不可逆 -->
-    <a-modal v-if="transferTarget !== null" :open="true" :title="t('members.transferTitle')" @cancel="cancelTransfer">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="transferTarget !== null" :open="true" :title="t('members.transferTitle')" @cancel="cancelTransfer">
       <p class="transfer-hint" data-testid="members-transfer-hint">
         {{ t("members.transferHint", { user: transferTarget.displayName, name: workspaces.current?.name ?? "" }) }}
       </p>
@@ -286,7 +287,7 @@ async function onAdd(): Promise<void> {
   width: 240px;
 }
 .add-role {
-  width: 120px;
+  width: 220px;
 }
 .form-error {
   margin-bottom: 8px;
@@ -299,9 +300,15 @@ async function onAdd(): Promise<void> {
   gap: 8px;
 }
 .role-select {
-  width: 110px;
+  width: 220px;
 }
 .transfer-hint {
   font-size: 13px;
 }
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.members-title{font-size:21px}.add-row{flex-wrap:wrap;align-items:center}.row-actions{min-width:540px;max-width:700px;flex-wrap:wrap}.add-userid,.add-role{max-width:100%}
 </style>

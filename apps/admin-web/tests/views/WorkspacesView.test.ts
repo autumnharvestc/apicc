@@ -98,7 +98,7 @@ describe("WorkspacesView 清单", () => {
   it("挂载拉取清单：行渲染 name/myRole/createdAt", async () => {
     const { wrapper, calls } = await mountWorkspaces((req) => (req.method === "GET" && req.url === `${BASE}/workspaces` ? json(200, LIST) : authOnly(req)));
     expect(calls.some((c) => c.method === "GET" && c.url === `${BASE}/workspaces`)).toBe(true);
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(2);
     expect(rows[0]!.text()).toContain("团队空间");
     expect(rows[0]!.text()).toContain("OWNER");
@@ -140,7 +140,7 @@ describe("WorkspacesView 创建（a-modal）", () => {
     await flushPromises();
     expect(calls.some((c) => c.method === "POST" && c.url === `${BASE}/workspaces`)).toBe(true);
     expect(calls.filter((c) => c.method === "GET" && c.url === `${BASE}/workspaces`)).toHaveLength(2);
-    expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(3);
     expect(bodyFind("ws-create-name")).toBeNull();
   });
 
@@ -211,7 +211,7 @@ describe("WorkspacesView 删除（仅 OWNER 行；二次输入名确认）", () 
     await flushPromises();
     expect(calls.some((c) => c.method === "DELETE" && c.url === `${BASE}/workspaces/ws-1`)).toBe(true);
     expect(calls.filter((c) => c.method === "GET" && c.url === `${BASE}/workspaces`)).toHaveLength(2);
-    expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(1);
     expect(bodyFind("ws-delete-name")).toBeNull();
   });
 
@@ -231,4 +231,14 @@ describe("WorkspacesView 删除（仅 OWNER 行；二次输入名确认）", () 
     expect(expectBody("ws-delete-api-error").text()).toContain("仅 OWNER 可删除");
     expect(bodyFind("ws-delete-name")).not.toBeNull(); // 失败不关窗
   });
+});
+
+it.each(['zh-CN','en'])('P4a workspace role labels retain codes and identity in %s',async(locale)=>{
+ const {wrapper,calls}=await mountWorkspaces(req=>req.url===`${BASE}/workspaces`?json(200,LIST):req.url===`${BASE}/workspaces/ws-1`?json(200,{...LIST[0],memberCount:1}):authOnly(req));
+ await wrapper.get('[data-testid=layout-locale]').setValue(locale);await flushPromises();
+ const row=wrapper.findAll('tbody tr[data-row-key]')[0]!;
+ expect(row.text()).toContain(locale==='zh-CN'?'所有者 (OWNER)':'Owner (OWNER)');
+ await row.get('[data-testid=ws-open]').trigger('click');await flushPromises();
+ expect(calls.some(c=>c.url===`${BASE}/workspaces/ws-1`&&c.method==='GET')).toBe(true);
+ expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
 });

@@ -33,3 +33,5 @@ function linked(code:string){return props.policy.settings.find(row=>row.code===(
 <style scoped>
 .table-scroll{max-width:100%;overflow:auto}table{border-collapse:collapse;width:100%;min-width:1180px}th,td{padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;white-space:nowrap}th{min-width:150px}small{display:block;font-weight:400;color:#595959;margin-top:5px}.effect{min-width:220px;max-width:320px;white-space:normal}td ul{margin:0;padding-left:18px;max-width:300px;white-space:normal;overflow-wrap:anywhere}.list-editor{list-style:none;padding:0}input{width:145px}button{margin:4px}p{overflow-wrap:anywhere}
 </style>
+
+<style scoped src="../styles/admin-controls.css"></style>

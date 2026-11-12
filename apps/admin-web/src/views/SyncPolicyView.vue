@@ -67,13 +67,19 @@ async function save(){
 watch(()=>[props.workspaceId,props.projectId],()=>{generation++;view.value=null;editable.value=false;busy.value=false;loading.value=false;conflict.value=false;error.value='';draft.value={};reset.value=[];pending.value=pendingByScope.get(key())?.input??null;pendingConfirmed.value=pendingByScope.get(key())?.confirmation!=null;confirmedReload.value=false;void load();},{immediate:true,flush:'sync'});
 onBeforeUnmount(()=>{generation++;});
 </script>
-<template><section class="sync-policy" data-testid="sync-policy-view"><h2>{{t('sync.policyTitle')}}</h2><p>{{t('sync.clientEditor')}}</p><p v-if="loading">{{t('sync.loading')}}</p><p v-if="error" role="alert">{{errorText}}<span v-if="error!=='unknown'"> ({{error}})</span></p>
+<template><section class="admin-page sync-policy" data-testid="sync-policy-view"><h2>{{t('sync.policyTitle')}}</h2><p>{{t('sync.clientEditor')}}</p><p v-if="loading">{{t('sync.loading')}}</p><p v-if="error" role="alert">{{errorText}}<span v-if="error!=='unknown'"> ({{error}})</span></p>
   <p v-if="pending&&(pendingConfirmed||!busy)" role="status">{{t(pendingConfirmed?'sync.confirmedWaiting':'sync.errors.unknown')}}</p><p v-if="confirmedReload" role="status">{{t('sync.confirmedReload')}}</p><button v-if="pending&&!busy&&editable" type="button" data-testid="sync-policy-retry" @click="send(pending)">{{t('sync.retryOriginal')}}</button>
   <button v-if="conflict||reloadRequired||(pending&&!busy)" type="button" data-testid="sync-policy-reload" :disabled="loading||busy" @click="load(true)">{{t('sync.reload')}}</button>
   <template v-if="view"><p>{{t('sync.version')}} {{view.saved.revision}} · {{t('sync.workspaceRevision')}} {{view.workspaceRevision}} · {{t(`sync.sources.${view.saved.scope}`)}}</p><p>{{t('sync.nextCheck')}}</p><p v-if="view.status==='invalid'" role="alert">{{t('sync.errors.SYNC_POLICY_INVALID')}} ({{view.reasonCode}})</p>
     <p>{{t('sync.deploymentReadOnly')}} · {{t('sync.wire')}}: {{view.deploymentLimits.maxWireBytes/1048576}} MiB · {{t('sync.reserve')}}: {{view.deploymentLimits.envelopeReserveBytes/1048576}} MiB</p>
     <SyncPolicyFields :view="view" :draft="draft" :reset="reset" :editable="editable" :locked="locked" @edit="edit" @inherit="inherit" />
-    <p>{{t('sync.retentionHint')}}</p><p>{{t('sync.draftHint')}}</p><p v-if="!editable">{{t('sync.readOnly')}}</p><button v-if="editable" type="button" data-testid="sync-policy-save" :disabled="locked" @click="save">{{t('sync.save')}}</button>
+    <p>{{t('sync.retentionHint')}}</p><p>{{t('sync.draftHint')}}</p><p v-if="!editable">{{t('sync.readOnly')}}</p><button v-if="editable" type="button" class="primary-action" data-testid="sync-policy-save" :disabled="locked" @click="save">{{t('sync.save')}}</button>
   </template>
 </section></template>
 <style scoped>.sync-policy{min-width:0}p{overflow-wrap:anywhere}button{margin:5px;padding:6px 12px}</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.sync-policy>p{max-width:100%}
+</style>

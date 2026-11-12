@@ -1,4 +1,5 @@
 {
+  "adminRoles": {"OWNER": "所有者 (OWNER)", "ADMIN": "管理员 (ADMIN)", "EDITOR": "编辑者 (EDITOR)", "VIEWER": "查看者 (VIEWER)", "SUPERADMIN": "平台管理员 (SUPERADMIN)", "USER": "普通用户 (USER)"},
   "syncStatus": {
     "materials": "材料与主机信任",
     "trustHint": "材料注册或可解密不代表已通过主机握手或信任验证；此页未采集独立握手、主机密钥及 TLS 信任结论。实际检查拒绝原因见检查摘要。秘密值不回显，修改请使用客户端项目的材料管理。",

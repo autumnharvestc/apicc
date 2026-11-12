@@ -12,13 +12,13 @@ function value(key:string,input:unknown){if(input===undefined)return t('scheduli
 function edit(key:string,event:Event){props.scheduling.policyDraft[key]=(event.target as HTMLInputElement).value;props.scheduling.resetKeys=props.scheduling.resetKeys.filter(item=>item!==key);}
 </script>
 <template>
-  <section class="schedule-policy" data-testid="schedule-policy-view">
+  <section class="admin-page schedule-policy" data-testid="schedule-policy-view">
     <h2>{{t(platform?'scheduling.controlTitle':'scheduling.policyTitle')}}</h2>
     <p v-if="scheduling.error" role="alert">{{t('scheduling.errors.'+(['forbidden','project_forbidden','version_conflict','validation_failed','unauthorized'].includes(scheduling.error)?scheduling.error:'other'))}} ({{scheduling.error}})<span v-for="field in scheduling.errorFields" :key="field"> · {{t(`scheduling.fields.${field}`)}}: {{t('scheduling.validationHelp')}}</span></p>
     <button v-if="scheduling.conflict&&!platform" type="button" data-testid="policy-reload" @click="scheduling.loadPolicy(workspaceId,projectId,true)">{{t('scheduling.reload')}}</button><button v-if="scheduling.conflict&&platform" type="button" data-testid="control-reload" @click="scheduling.loadControl(true)">{{t('scheduling.reload')}}</button>
     <template v-if="platform&&scheduling.control">
       <p>{{t(`scheduling.modes.${scheduling.control.mode}`)}} · {{t('scheduling.generation')}} {{scheduling.control.generation}} · {{t('scheduling.version')}} {{scheduling.control.version}}</p><p>{{t('scheduling.controlHelp')}}</p>
-      <label>{{t('scheduling.controlMode')}}<select v-model="scheduling.controlModeDraft" data-testid="control-mode"><option value="embedded">{{t('scheduling.modes.embedded')}}</option><option value="disabled">{{t('scheduling.modes.disabled')}}</option></select></label><button type="button" data-testid="control-save" :disabled="scheduling.busy||scheduling.conflict" @click="scheduling.saveControl()">{{t('scheduling.save')}}</button>
+      <label>{{t('scheduling.controlMode')}}<select v-model="scheduling.controlModeDraft" data-testid="control-mode"><option value="embedded">{{t('scheduling.modes.embedded')}}</option><option value="disabled">{{t('scheduling.modes.disabled')}}</option></select></label><button type="button" class="primary-action" data-testid="control-save" :disabled="scheduling.busy||scheduling.conflict" @click="scheduling.saveControl()">{{t('scheduling.save')}}</button>
     </template>
     <template v-if="!platform&&scheduling.policy">
       <p>{{t('scheduling.version')}}: {{scheduling.policy.version}} · {{t('scheduling.workspace')}} {{scheduling.policy.versions.workspace}} · {{t('scheduling.project')}} {{scheduling.policy.versions.project}}</p>
@@ -35,11 +35,17 @@ function edit(key:string,event:Event){props.scheduling.policyDraft[key]=(event.t
           <td class="timing">{{t(`scheduling.appliesByField.${key}`)}}</td>
         </tr></tbody>
       </table></div>
-      <p>{{t('scheduling.emptyHelp')}}</p><button type="button" data-testid="policy-save" :disabled="scheduling.busy||scheduling.conflict" @click="scheduling.savePolicy(workspaceId,projectId)">{{t('scheduling.save')}}</button>
+      <p>{{t('scheduling.emptyHelp')}}</p><button type="button" class="primary-action" data-testid="policy-save" :disabled="scheduling.busy||scheduling.conflict" @click="scheduling.savePolicy(workspaceId,projectId)">{{t('scheduling.save')}}</button>
     </template>
   </section>
 </template>
 <style scoped>
 .schedule-policy{min-width:0}.table-scroll{max-width:100%;overflow-x:auto}table{border-collapse:collapse;min-width:900px;width:100%}th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;white-space:nowrap}p{overflow-wrap:anywhere}
 small{display:block;font-weight:400;color:#666}.group-heading{background:#f5f7fa}.timing{min-width:240px;max-width:360px;white-space:normal}input{width:120px;padding:5px}button{margin:4px}
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.group-heading th{color:var(--accent);background:var(--active-weak)}.table-scroll{max-height:65vh}.timing{line-height:1.6}
 </style>

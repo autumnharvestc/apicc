@@ -47,7 +47,7 @@ function refresh(){
 }
 </script>
 <template>
-  <section class="agents-view" data-testid="agents-view">
+  <section class="admin-page agents-view" data-testid="agents-view">
     <h2>{{ t(workspaceId ? "agents.workspaceTitle" : "agents.title") }}</h2>
     <p>{{ t("agents.scopeHint") }}</p>
     <p v-if="agents.error" role="alert">{{ agents.error }}</p>
@@ -78,7 +78,7 @@ function refresh(){
     <template v-else>
       <form v-if="platform" class="toolbar" @submit.prevent="agents.createNode(createName)"><label>{{ t("agents.name") }} <input required maxlength="128" v-model="createName" /></label><button :disabled="agents.busy">{{ t("agents.create") }}</button></form>
       <div class="node-layout">
-        <nav :aria-label="t('agents.title')"><button v-for="n in agents.nodes" :key="n.id" @click="platform&&agents.selectNode(n.id)">{{ n.name }} · {{ n.id }}<span v-if="n.revoked"> · {{ t("agents.availability.revoked") }}</span></button></nav>
+        <nav :aria-label="t('agents.title')"><button v-for="n in agents.nodes" :key="n.id" :aria-pressed="agents.node?.id===n.id" :title="n.name" @click="platform&&agents.selectNode(n.id)">{{ n.name }} · {{ n.id }}<span v-if="n.revoked"> · {{ t("agents.availability.revoked") }}</span></button></nav>
         <div v-if="agents.node" class="node-detail">
           <StressCapacityView v-if="agents.node.stressCapacity" :capacity="agents.node.stressCapacity" />
           <p>{{ t(`agents.availability.${agents.node.availability}`) }} · {{ t("agents.lastSeen") }}: {{ readableTime(agents.node.lastSeenAt) }}</p>
@@ -104,7 +104,7 @@ function refresh(){
             <label>{{ t("agents.agentQueue") }} ({{ t('agents.units.count') }}) <input type="number" min="1" step="1" required v-model.number="queue" :disabled="locked" /></label>
             <p>{{ t("agents.trustedRisk") }}</p>
             <ul v-if="agents.node.restrictions.length"><li v-for="r in agents.node.restrictions" :key="r.field">{{ t(`agents.fields.${r.field.split('.').pop()}`) }}: {{ displayValue(r.field.split('.').pop()!,r.effectiveValue) }} · {{ t("agents.restrictedBy") }} {{ t(`agents.fields.${r.reason.split('.').pop()}`) }}</li></ul>
-            <button data-testid="agent-save" :disabled="locked">{{ t("agents.save") }}</button>
+            <button class="primary-action" data-testid="agent-save" :disabled="locked">{{ t("agents.save") }}</button>
           </form>
           <template v-if="platform">
             <h3>{{ t("agents.workspaceGrants") }}</h3>
@@ -125,4 +125,10 @@ function refresh(){
 </template>
 <style scoped>
 .agents-view {max-width:1500px} h2{margin-top:0} p,li{line-height:1.65} .toolbar,label{display:flex;align-items:center;gap:8px;margin:10px 0;flex-wrap:wrap} button,input,select{font:inherit;padding:6px 10px}button{cursor:pointer}button:disabled{cursor:default}.node-layout{display:grid;grid-template-columns:minmax(160px,220px) minmax(0,1fr);gap:20px;margin-top:16px}nav{display:flex;flex-direction:column;gap:8px;max-height:70vh;overflow:auto}nav button{text-align:left;overflow-wrap:anywhere}.node-detail{min-width:0}.table-scroll{max-height:52vh;overflow:auto;margin:12px 0;background:white;border:1px solid #ddd}table{border-collapse:collapse;min-width:790px;width:100%}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #eee;white-space:nowrap}thead{position:sticky;top:0;background:#fafafa}td input{width:140px}dd{overflow-wrap:anywhere}.checks{max-height:260px;overflow:auto}.token{display:block;overflow-wrap:anywhere;padding:12px;background:#fff7e6}[role=alert]{color:#a8071a}details{margin:12px 0}@media(max-width:850px){.node-layout{grid-template-columns:1fr}nav{max-height:150px}}
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.node-layout{align-items:start}nav{background:var(--subtle);padding:10px;border:1px solid var(--border);border-radius:8px}nav button[aria-pressed="true"]{background:var(--active-weak);color:var(--accent);border-color:var(--accent);font-weight:600}.node-detail>form{padding:16px;border:1px solid var(--border);border-radius:8px;margin:20px 0}.runtime{padding:12px 16px;border:1px solid var(--border);border-radius:8px;background:var(--subtle)}.table-scroll{max-height:55vh}.checks{padding:4px 12px;background:var(--subtle);border-radius:8px}select{max-width:100%}
 </style>

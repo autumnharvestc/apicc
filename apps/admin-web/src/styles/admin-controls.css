@@ -1,0 +1,41 @@
+/* Imported scoped by the listed management views/fields. Ant Design controls keep their own theme. */
+.admin-page { min-width: 0; max-width: 100%; box-sizing: border-box; padding: 24px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 2px 8px #19253804; }
+.admin-page > h2 { margin: 0 0 16px; font-size: 21px; line-height: 1.4; letter-spacing: -.3px; }
+:where(h3,h4) { color: var(--text); line-height: 1.5; }
+:where(p,li,dt,dd) { line-height: 1.65; }
+:where(p,dd,output) { overflow-wrap: anywhere; }
+:where(button:not(.ant-btn),input:not([class*="ant-"]),select:not([class*="ant-"]),textarea:not([class*="ant-"])) { box-sizing: border-box; font: inherit; color: var(--text); border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+:where(button:not(.ant-btn)) { min-height: 32px; padding: 6px 12px; line-height: 1.4; cursor: pointer; }
+:where(button:not(.ant-btn):not(:disabled):hover) { border-color: var(--accent); color: var(--accent); background: var(--active-weak); }
+:where(input:not([type="checkbox"]):not([type="radio"]):not([class*="ant-"]),select:not([class*="ant-"]),textarea:not([class*="ant-"])) { min-height: 32px; max-width: 100%; padding: 6px 10px; }
+:where(input[type="checkbox"],input[type="radio"]) { accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+:where(button,input,select,textarea):disabled { cursor: not-allowed; color: var(--text-muted); background: var(--panel); }
+button.primary-action { color: #fff; border-color: var(--accent); background: var(--accent); font-weight: 600; }
+button.primary-action:not(:disabled):hover { color: #fff; border-color: #244ed0; background: #244ed0; }
+button.primary-action:disabled { color: var(--text-muted); border-color: var(--border); background: var(--panel); }
+button.danger-action { color: #b42332; border-color: #efb9c1; }
+button.danger-action:not(:disabled):hover { color: #a51928; background: #fff1f3; border-color: #b42332; }
+button.danger-action:disabled { color: var(--text-muted); border-color: var(--border); }
+:where(label) { max-width: 100%; }
+:where(fieldset) { min-width: 0; border: 1px solid var(--border); border-radius: 8px; margin: 16px 0; padding: 12px 16px; }
+:where(legend) { padding: 0 6px; font-weight: 600; color: var(--text-muted); }
+.table-scroll { max-width: 100%; overflow: auto; border: 1px solid var(--border); border-radius: 8px; margin: 16px 0; background: var(--bg); }
+.table-scroll table { border-collapse: separate; border-spacing: 0; }
+.table-scroll th,.table-scroll td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; }
+.table-scroll thead { background: var(--subtle); color: var(--text-muted); }
+.table-scroll thead th { white-space: nowrap; font-size: 12px; font-weight: 600; }
+.table-scroll tbody th { font-weight: 600; }
+.table-scroll tbody tr:last-child > :is(th,td) { border-bottom: 0; }
+.table-scroll tbody tr:hover > :is(th,td) { background: var(--subtle); }
+.table-scroll td :is(input,select) { margin-bottom: 4px; }
+.table-scroll :where(small) { color: var(--text-muted); }
+:where(details) { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin: 10px 0; min-width: 0; background: var(--subtle); }
+:where(summary) { cursor: pointer; color: var(--text-muted); overflow-wrap: anywhere; }
+:where(details[open]) > summary { margin-bottom: 10px; }
+:where([role="alert"]) { color: #a51928; padding: 10px 14px; background: #fff1f3; border: 1px solid #f1c7cf; border-radius: 8px; }
+:where([role="status"]) { padding: 10px 14px; border-left: 3px solid var(--accent); background: var(--active-weak); border-radius: 4px; }
+:where(nav) { padding: 10px 0; }
+:where(nav a) { text-decoration: none; color: var(--accent); padding: 6px 8px; border-radius: 5px; }
+:where(nav a:hover) { background: var(--active-weak); }
+@media (max-width: 900px) { .admin-page { padding: 16px; } }
+@media (max-width: 600px) { .admin-page { padding: 12px; } }

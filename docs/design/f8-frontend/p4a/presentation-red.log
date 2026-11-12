@@ -1,0 +1,523 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/admin-web
+
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/OrgView.test.ts (17 tests | 2 failed | 15 skipped) 735ms
+   × P4a named group button changes only selection in zh-CN 541ms
+   × P4a named group button changes only selection in en 192ms
+ ❯ tests/views/WorkspacesView.test.ts (10 tests | 2 failed | 8 skipped) 748ms
+   × P4a workspace role labels retain codes and identity in zh-CN 607ms
+   × P4a workspace role labels retain codes and identity in en 139ms
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/UsersView.test.ts (13 tests | 2 failed | 11 skipped) 870ms
+   × P4a platform role labels change language without account writes in zh-CN 709ms
+   × P4a platform role labels change language without account writes in en 159ms
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/ProjectAclView.test.ts (27 tests | 2 failed | 25 skipped) 1087ms
+   × P4a ACL labels keep explicit denial separate from inheritance in zh-CN 852ms
+   × P4a ACL labels keep explicit denial separate from inheritance in en 232ms
+ ❯ tests/views/MembersView.test.ts (28 tests | 2 failed | 26 skipped) 1115ms
+   × P4a member role labels preserve original role writes in zh-CN 847ms
+   × P4a member role labels preserve original role writes in en 266ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 10 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/views/MembersView.test.ts > P4a member role labels preserve original role writes in zh-CN
+AssertionError: expected '显示名称用户名角色操作    AlicealiceOWNER协作权限点重新…' to contain '所有者 (OWNER)'
+
+Expected: "所有者 (OWNER)"
+Received: "显示名称用户名角色操作    AlicealiceOWNER协作权限点重新加载并核对差异当前修订: 1 · 当前角色: ADMINOWNER移 除BobbobEDITOR协作权限点重新加载并核对差异当前修订: 1 · 当前角色: ADMINEDITOR移 除CarolcarolVIEWER协作权限点重新加载并核对差异当前修订: 1 · 当前角色: ADMINVIEWER移 除"
+
+ ❯ tests/views/MembersView.test.ts:468:60
+    466|  const {wrapper,calls}=await mountMembers(memberHandler());
+    467|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    468|  expect(wrapper.get('[data-testid=members-table]').text()).toContain(l…
+       |                                                            ^
+    469|  const options=antdSelect(wrapper,'members-role-u-2').props('options')…
+    470|  expect(options.find(o=>o.value==='ADMIN')?.label).toBe(locale==='zh-C…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/10]⎯
+
+ FAIL  tests/views/MembersView.test.ts > P4a member role labels preserve original role writes in en
+AssertionError: expected 'Display nameUsernameRoleActions    Al…' to contain 'Owner (OWNER)'
+
+Expected: "Owner (OWNER)"
+Received: "Display nameUsernameRoleActions    AlicealiceOWNERCollaboration capabilityReload and compare changesCurrent revision: 1 · Current role: ADMINOWNERRemoveBobbobEDITORCollaboration capabilityReload and compare changesCurrent revision: 1 · Current role: ADMINEDITORRemoveCarolcarolVIEWERCollaboration capabilityReload and compare changesCurrent revision: 1 · Current role: ADMINVIEWERRemove"
+
+ ❯ tests/views/MembersView.test.ts:468:60
+    466|  const {wrapper,calls}=await mountMembers(memberHandler());
+    467|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    468|  expect(wrapper.get('[data-testid=members-table]').text()).toContain(l…
+       |                                                            ^
+    469|  const options=antdSelect(wrapper,'members-role-u-2').props('options')…
+    470|  expect(options.find(o=>o.value==='ADMIN')?.label).toBe(locale==='zh-C…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/10]⎯
+
+ FAIL  tests/views/OrgView.test.ts > P4a named group button changes only selection in zh-CN
+Error: Unable to get [data-testid=org-group-item-g-dev] button.group-name within: <section data-v-8620aa60="" class="css-dev-only-do-not-override-1bu1pg1 ant-layout ant-layout-has-sider layout" data-testid="layout-view">
+  <aside data-v-8620aa60="" class="ant-layout-sider ant-layout-sider-light sider" style="flex: 0 0 200px; max-width: 200px; min-width: 200px; width: 200px;">
+    <div class="ant-layout-sider-children">
+      <div data-v-8620aa60="" class="brand" data-testid="layout-brand">管理控制台</div>
+      <ul data-v-8620aa60="" class="ant-menu ant-menu-root ant-menu-inline ant-menu-light css-dev-only-do-not-override-1bu1pg1" role="menu" data-testid="layout-menu" data-menu-list="true">
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-workspaces" data-menu-id="workspaces" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">工作区</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-members" data-menu-id="members" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">成员管理</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-acl" data-menu-id="acl" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">项目 ACL</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-org" data-menu-id="org" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">组织管理</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-workspace-agents" data-menu-id="workspace-agents" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">工作区代理与策略</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-schedule-policy" data-menu-id="schedule-policy" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">调度策略</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-sync-policy" data-menu-id="sync-policy" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">同步分层策略</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-sync-access" data-menu-id="sync-access" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">同步管理</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-notification-channels" data-menu-id="notification-channels" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">通知渠道</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-collaboration-workspace" data-menu-id="collaboration-workspace" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">协作权限与策略</span>
+        </li>
+        <!---->
+        <!---->
+        <!---->
+        <!--teleport start-->
+        <!--teleport end-->
+      </ul>
+    </div>
+    <!---->
+  </aside>
+  <section data-v-8620aa60="" class="css-dev-only-do-not-override-1bu1pg1 ant-layout">
+    <header data-v-8620aa60="" class="ant-layout-header header" data-testid="layout-header"><label data-v-8620aa60="" class="locale-control"><span data-v-8620aa60="">语言</span><select data-v-8620aa60="" aria-label="语言" data-testid="layout-locale" value="zh-CN">
+          <option data-v-8620aa60="" value="zh-CN">中文</option>
+          <option data-v-8620aa60="" value="en">English</option>
+        </select></label><span data-v-8620aa60="" class="user" data-testid="layout-user" title="Alice">Alice</span><button data-v-8620aa60="" data-testid="layout-logout" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>退出登录</span>
+      </button></header>
+    <main data-v-8620aa60="" class="ant-layout-content content">
+      <div data-v-cd4510b6="" data-v-8620aa60="" class="org-view" data-testid="org-view">
+        <div data-v-cd4510b6="" class="org-toolbar">
+          <h2 data-v-cd4510b6="" class="org-title">组织管理</h2>
+          <div data-v-cd4510b6="" class="org-toolbar-actions"><button data-v-cd4510b6="" data-testid="org-project-create" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default" type="button">
+              <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                <!---->
+              </transition-stub><span>新建项目</span>
+            </button><button data-v-cd4510b6="" data-testid="org-group-create" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-primary" type="button">
+              <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                <!---->
+              </transition-stub><span>新建分组</span>
+            </button></div>
+        </div><!-- api 错误通道（清单拉取；弹窗动作错误另有就近呈现） -->
+        <!--v-if-->
+        <div data-v-cd4510b6="" class="org-panes">
+          <!-- 左：分组清单 -->
+          <div data-v-cd4510b6="" class="org-groups" data-testid="org-groups-panel">
+            <h3 data-v-cd4510b6="" class="pane-title">分组</h3>
+            <div data-v-cd4510b6="" class="group-row active" data-testid="org-group-item-g-default"><span data-v-cd4510b6="" class="group-name" title="默认分组">默认分组</span><span data-v-cd4510b6="" class="ant-tag css-dev-only-do-not-override-1bu1pg1 ant-tag-blue group-default-tag" data-testid="org-group-default-g-default">默认<!----></span><span data-v-cd4510b6="" class="group-actions"><button data-v-cd4510b6="" data-testid="org-group-rename-g-default" disabled="" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button"><transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true"><!----></transition-stub><span>改 名</span></button><button data-v-cd4510b6="" data-testid="org-group-delete-g-default" disabled="" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm ant-btn-dangerous" type="button">
+                <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                  <!---->
+                </transition-stub><span>删 除</span>
+              </button></span></div>
+            <div data-v-cd4510b6="" class="group-row" data-testid="org-group-item-g-dev"><span data-v-cd4510b6="" class="group-name" title="研发">研发</span>
+              <!--v-if--><span data-v-cd4510b6="" class="group-actions"><button data-v-cd4510b6="" data-testid="org-group-rename-g-dev" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button"><transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true"><!----></transition-stub><span>改 名</span></button><button data-v-cd4510b6="" data-testid="org-group-delete-g-dev" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm ant-btn-dangerous" type="button">
+                <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                  <!---->
+                </transition-stub><span>删 除</span>
+              </button></span>
+            </div>
+            <!--v-if-->
+          </div><!-- 右：项目卡片网格（按选中分组过滤） -->
+          <div data-v-cd4510b6="" class="org-projects" data-testid="org-projects-panel">
+            <h3 data-v-cd4510b6="" class="pane-title">默认分组</h3>
+            <div data-v-cd4510b6="" class="cards">
+              <div data-v-cd4510b6="" class="project-card" data-testid="org-project-card-p1">
+                <div data-v-cd4510b6="" class="card-heading"><span data-v-cd4510b6="" class="avatar" style="background: rgb(90, 216, 166);">订</span><span data-v-cd4510b6="" class="card-name" title="订单">订单</span></div>
+                <div data-v-cd4510b6="" class="card-actions"><button data-v-cd4510b6="" data-testid="org-project-sync-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>同步管理</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-policy" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>协作权限与策略</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-sharing" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>发布与分享</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-mock" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>共享 Mock</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-audit" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>审 计</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-execution-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>项目代理与脚本批准</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-schedule-policy-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>项目调度策略</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-schedule-grants-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>项目调度授权</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-rename-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>改 名</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-move-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>移 动</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-delete-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm ant-btn-dangerous" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>删 除</span>
+                  </button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!--v-if-->
+        <!-- 建分组 -->
+        <!--v-if-->
+        <!-- 分组改名（受控） -->
+        <!--v-if-->
+        <!-- 删分组（受控确认） -->
+        <!--v-if-->
+        <!-- 建项目（groupId 预选当前选中分组） -->
+        <!--v-if-->
+        <!-- 项目改名（受控） -->
+        <!--v-if-->
+        <!-- 移动项目（受控；预选现分组） -->
+        <!--v-if-->
+        <!-- 删项目（受控确认） -->
+        <!--v-if-->
+      </div>
+    </main>
+  </section>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/views/OrgView.test.ts:431:23
+    429| it.each(['zh-CN','en'])('P4a named group button changes only selection…
+    430|  const {wrapper,calls}=await mountOrg(orgHandler());await wrapper.get(…
+    431|  const button=wrapper.get('[data-testid=org-group-item-g-dev] button.g…
+       |                       ^
+    432|  expect(button.attributes('type')).toBe('button');expect(button.text()…
+    433|  expect(button.attributes('aria-pressed')).toBe('false');await button.…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/10]⎯
+
+ FAIL  tests/views/OrgView.test.ts > P4a named group button changes only selection in en
+Error: Unable to get [data-testid=org-group-item-g-dev] button.group-name within: <section data-v-8620aa60="" class="css-dev-only-do-not-override-1bu1pg1 ant-layout ant-layout-has-sider layout" data-testid="layout-view">
+  <aside data-v-8620aa60="" class="ant-layout-sider ant-layout-sider-light sider" style="flex: 0 0 200px; max-width: 200px; min-width: 200px; width: 200px;">
+    <div class="ant-layout-sider-children">
+      <div data-v-8620aa60="" class="brand" data-testid="layout-brand">Admin Console</div>
+      <ul data-v-8620aa60="" class="ant-menu ant-menu-root ant-menu-inline ant-menu-light css-dev-only-do-not-override-1bu1pg1" role="menu" data-testid="layout-menu" data-menu-list="true">
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-workspaces" data-menu-id="workspaces" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Workspaces</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-members" data-menu-id="members" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Members</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-acl" data-menu-id="acl" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Project ACL</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-org" data-menu-id="org" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Organization</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-workspace-agents" data-menu-id="workspace-agents" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Workspace agents and policy</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-schedule-policy" data-menu-id="schedule-policy" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Scheduling policy</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-sync-policy" data-menu-id="sync-policy" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Layered sync policy</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-sync-access" data-menu-id="sync-access" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Synchronization</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-notification-channels" data-menu-id="notification-channels" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Notification channels</span>
+        </li>
+        <!---->
+        <li class="ant-menu-item ant-menu-item-only-child" style="padding-left: 24px;" data-testid="menu-collaboration-workspace" data-menu-id="collaboration-workspace" aria-disabled="false" role="menuitem" tabindex="-1">
+          <!----><span class="ant-menu-title-content">Collaboration permissions and policy</span>
+        </li>
+        <!---->
+        <!---->
+        <!---->
+        <!--teleport start-->
+        <!--teleport end-->
+      </ul>
+    </div>
+    <!---->
+  </aside>
+  <section data-v-8620aa60="" class="css-dev-only-do-not-override-1bu1pg1 ant-layout">
+    <header data-v-8620aa60="" class="ant-layout-header header" data-testid="layout-header"><label data-v-8620aa60="" class="locale-control"><span data-v-8620aa60="">Language</span><select data-v-8620aa60="" aria-label="Language" data-testid="layout-locale" value="en">
+          <option data-v-8620aa60="" value="zh-CN">中文</option>
+          <option data-v-8620aa60="" value="en">English</option>
+        </select></label><span data-v-8620aa60="" class="user" data-testid="layout-user" title="Alice">Alice</span><button data-v-8620aa60="" data-testid="layout-logout" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default" type="button">
+        <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+          <!---->
+        </transition-stub><span>Sign out</span>
+      </button></header>
+    <main data-v-8620aa60="" class="ant-layout-content content">
+      <div data-v-cd4510b6="" data-v-8620aa60="" class="org-view" data-testid="org-view">
+        <div data-v-cd4510b6="" class="org-toolbar">
+          <h2 data-v-cd4510b6="" class="org-title">Organization</h2>
+          <div data-v-cd4510b6="" class="org-toolbar-actions"><button data-v-cd4510b6="" data-testid="org-project-create" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default" type="button">
+              <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                <!---->
+              </transition-stub><span>New project</span>
+            </button><button data-v-cd4510b6="" data-testid="org-group-create" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-primary" type="button">
+              <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                <!---->
+              </transition-stub><span>New group</span>
+            </button></div>
+        </div><!-- api 错误通道（清单拉取；弹窗动作错误另有就近呈现） -->
+        <!--v-if-->
+        <div data-v-cd4510b6="" class="org-panes">
+          <!-- 左：分组清单 -->
+          <div data-v-cd4510b6="" class="org-groups" data-testid="org-groups-panel">
+            <h3 data-v-cd4510b6="" class="pane-title">Groups</h3>
+            <div data-v-cd4510b6="" class="group-row active" data-testid="org-group-item-g-default"><span data-v-cd4510b6="" class="group-name" title="默认分组">默认分组</span><span data-v-cd4510b6="" class="ant-tag css-dev-only-do-not-override-1bu1pg1 ant-tag-blue group-default-tag" data-testid="org-group-default-g-default">Default<!----></span><span data-v-cd4510b6="" class="group-actions"><button data-v-cd4510b6="" data-testid="org-group-rename-g-default" disabled="" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button"><transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true"><!----></transition-stub><span>Rename</span></button><button data-v-cd4510b6="" data-testid="org-group-delete-g-default" disabled="" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm ant-btn-dangerous" type="button">
+                <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                  <!---->
+                </transition-stub><span>Delete</span>
+              </button></span></div>
+            <div data-v-cd4510b6="" class="group-row" data-testid="org-group-item-g-dev"><span data-v-cd4510b6="" class="group-name" title="研发">研发</span>
+              <!--v-if--><span data-v-cd4510b6="" class="group-actions"><button data-v-cd4510b6="" data-testid="org-group-rename-g-dev" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button"><transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true"><!----></transition-stub><span>Rename</span></button><button data-v-cd4510b6="" data-testid="org-group-delete-g-dev" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm ant-btn-dangerous" type="button">
+                <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                  <!---->
+                </transition-stub><span>Delete</span>
+              </button></span>
+            </div>
+            <!--v-if-->
+          </div><!-- 右：项目卡片网格（按选中分组过滤） -->
+          <div data-v-cd4510b6="" class="org-projects" data-testid="org-projects-panel">
+            <h3 data-v-cd4510b6="" class="pane-title">默认分组</h3>
+            <div data-v-cd4510b6="" class="cards">
+              <div data-v-cd4510b6="" class="project-card" data-testid="org-project-card-p1">
+                <div data-v-cd4510b6="" class="card-heading"><span data-v-cd4510b6="" class="avatar" style="background: rgb(90, 216, 166);">订</span><span data-v-cd4510b6="" class="card-name" title="订单">订单</span></div>
+                <div data-v-cd4510b6="" class="card-actions"><button data-v-cd4510b6="" data-testid="org-project-sync-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Synchronization</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-policy" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Collaboration permissions and policy</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-sharing" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Publications and sharing</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-mock" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Shared Mock</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-collaboration-p1-audit" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Audit</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-execution-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Project agents and script approvals</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-schedule-policy-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Project scheduling policy</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-schedule-grants-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Project scheduling grants</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-rename-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Rename</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-move-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Move</span>
+                  </button><button data-v-cd4510b6="" data-testid="org-project-delete-p1" class="css-dev-only-do-not-override-1bu1pg1 ant-btn ant-btn-default ant-btn-sm ant-btn-dangerous" type="button">
+                    <transition-stub name="ant-btn-loading-icon-motion" appear="false" persisted="false" css="true">
+                      <!---->
+                    </transition-stub><span>Delete</span>
+                  </button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!--v-if-->
+        <!-- 建分组 -->
+        <!--v-if-->
+        <!-- 分组改名（受控） -->
+        <!--v-if-->
+        <!-- 删分组（受控确认） -->
+        <!--v-if-->
+        <!-- 建项目（groupId 预选当前选中分组） -->
+        <!--v-if-->
+        <!-- 项目改名（受控） -->
+        <!--v-if-->
+        <!-- 移动项目（受控；预选现分组） -->
+        <!--v-if-->
+        <!-- 删项目（受控确认） -->
+        <!--v-if-->
+      </div>
+    </main>
+  </section>
+</section>
+ ❯ VueWrapper.get ../../node_modules/.pnpm/@vue+test-utils@2.5.0_@vue+_c7f75cd1076e79fabce0c68f2f1eb081/node_modules/@vue/test-utils/dist/vue-test-utils.cjs.js:7324:15
+ ❯ tests/views/OrgView.test.ts:431:23
+    429| it.each(['zh-CN','en'])('P4a named group button changes only selection…
+    430|  const {wrapper,calls}=await mountOrg(orgHandler());await wrapper.get(…
+    431|  const button=wrapper.get('[data-testid=org-group-item-g-dev] button.g…
+       |                       ^
+    432|  expect(button.attributes('type')).toBe('button');expect(button.text()…
+    433|  expect(button.attributes('aria-pressed')).toBe('false');await button.…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/10]⎯
+
+ FAIL  tests/views/ProjectAclView.test.ts > P4a ACL labels keep explicit denial separate from inheritance in zh-CN
+AssertionError: expected 'VIEWER' to be '查看者 (VIEWER)' // Object.is equality
+
+Expected: "查看者 (VIEWER)"
+Received: "VIEWER"
+
+ ❯ tests/views/ProjectAclView.test.ts:447:53
+    445|  antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-2…
+    446|  const options=antdSelect(wrapper,'acl-role-u-2').props('options') as …
+    447|  expect(options.find(o=>o.value==='VIEWER')?.label).toBe(locale==='zh-…
+       |                                                     ^
+    448|  expect(options.map(o=>o.value)).toEqual(['NONE','VIEWER','EDITOR','AD…
+    449|  expect(options[0]!.label).toContain('NONE');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/10]⎯
+
+ FAIL  tests/views/ProjectAclView.test.ts > P4a ACL labels keep explicit denial separate from inheritance in en
+AssertionError: expected 'VIEWER' to be 'Viewer (VIEWER)' // Object.is equality
+
+Expected: "Viewer (VIEWER)"
+Received: "VIEWER"
+
+ ❯ tests/views/ProjectAclView.test.ts:447:53
+    445|  antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-2…
+    446|  const options=antdSelect(wrapper,'acl-role-u-2').props('options') as …
+    447|  expect(options.find(o=>o.value==='VIEWER')?.label).toBe(locale==='zh-…
+       |                                                     ^
+    448|  expect(options.map(o=>o.value)).toEqual(['NONE','VIEWER','EDITOR','AD…
+    449|  expect(options[0]!.label).toContain('NONE');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/10]⎯
+
+ FAIL  tests/views/UsersView.test.ts > P4a platform role labels change language without account writes in zh-CN
+AssertionError: expected '用户名显示名称平台角色状态创建时间操作aliceAliceUSER正常20…' to contain '平台管理员 (SUPERADMIN)'
+
+Expected: "平台管理员 (SUPERADMIN)"
+Received: "用户名显示名称平台角色状态创建时间操作aliceAliceUSER正常2026-09-01T00:00:00Z重置密码停 用admin管理员SUPERADMIN正常2026-08-01T00:00:00Z重置密码停 用"
+
+ ❯ tests/views/UsersView.test.ts:311:58
+    309|  const {wrapper,calls}=await mountUsers(usersHandler());
+    310|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    311|  expect(wrapper.get('[data-testid=users-table]').text()).toContain(loc…
+       |                                                          ^
+    312|  expect(wrapper.get('[data-testid=users-table]').text()).toContain(loc…
+    313|  expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/10]⎯
+
+ FAIL  tests/views/UsersView.test.ts > P4a platform role labels change language without account writes in en
+AssertionError: expected 'UsernameDisplay namePlatform roleStat…' to contain 'Platform administrator (SUPERADMIN)'
+
+Expected: "Platform administrator (SUPERADMIN)"
+Received: "UsernameDisplay namePlatform roleStatusCreated atActionsaliceAliceUSERActive2026-09-01T00:00:00ZReset passwordDisableadmin管理员SUPERADMINActive2026-08-01T00:00:00ZReset passwordDisable"
+
+ ❯ tests/views/UsersView.test.ts:311:58
+    309|  const {wrapper,calls}=await mountUsers(usersHandler());
+    310|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    311|  expect(wrapper.get('[data-testid=users-table]').text()).toContain(loc…
+       |                                                          ^
+    312|  expect(wrapper.get('[data-testid=users-table]').text()).toContain(loc…
+    313|  expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/10]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > P4a workspace role labels retain codes and identity in zh-CN
+AssertionError: expected '团队空间OWNER2026-09-03T00:00:00Z删 除' to contain '所有者 (OWNER)'
+
+Expected: "所有者 (OWNER)"
+Received: "团队空间OWNER2026-09-03T00:00:00Z删 除"
+
+ ❯ tests/views/WorkspacesView.test.ts:240:21
+    238|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    239|  const row=wrapper.findAll('tbody tr')[0]!;
+    240|  expect(row.text()).toContain(locale==='zh-CN'?'所有者 (OWNER)':'Owner (O…
+       |                     ^
+    241|  await row.get('[data-testid=ws-open]').trigger('click');await flushPr…
+    242|  expect(calls.some(c=>c.url===`${BASE}/workspaces/ws-1`&&c.method==='G…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/10]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > P4a workspace role labels retain codes and identity in en
+AssertionError: expected '团队空间OWNER2026-09-03T00:00:00ZDelete' to contain 'Owner (OWNER)'
+
+Expected: "Owner (OWNER)"
+Received: "团队空间OWNER2026-09-03T00:00:00ZDelete"
+
+ ❯ tests/views/WorkspacesView.test.ts:240:21
+    238|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    239|  const row=wrapper.findAll('tbody tr')[0]!;
+    240|  expect(row.text()).toContain(locale==='zh-CN'?'所有者 (OWNER)':'Owner (O…
+       |                     ^
+    241|  await row.get('[data-testid=ws-open]').trigger('click');await flushPr…
+    242|  expect(calls.some(c=>c.url===`${BASE}/workspaces/ws-1`&&c.method==='G…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/10]⎯
+
+
+ Test Files  5 failed (5)
+      Tests  10 failed | 85 skipped (95)
+   Start at  10:41:10
+   Duration  13.04s (transform 9.76s, setup 0ms, import 45.01s, tests 4.56s, environment 13.34s)
+

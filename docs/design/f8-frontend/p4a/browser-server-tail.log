@@ -1,0 +1,12 @@
+Captured from final Vite process output at shutdown; source locations and HMR paths omitted, not a full event log.
+10:52:37 ResizeObserver loop completed with undelivered notifications.
+10:54:00 ResizeObserver loop completed with undelivered notifications.
+10:58:57 fixture main.ts reload; ResizeObserver loop completed with undelivered notifications.
+11:00:30 fixture main.ts reload
+11:00:31 ResizeObserver loop completed with undelivered notifications.
+11:03:38 SyncPolicyFields scoped CSS HMR
+11:04:27 ResizeObserver loop completed with undelivered notifications.
+11:04:49 fixture main.ts reload; ResizeObserver loop completed with undelivered notifications.
+11:05:04 ResizeObserver loop completed with undelivered notifications.
+11:05:18 ResizeObserver loop completed with undelivered notifications.
+11:08 cleanup: agent tab closed, viewport reset, Vite process interrupted normally (exit 1 from interruption).

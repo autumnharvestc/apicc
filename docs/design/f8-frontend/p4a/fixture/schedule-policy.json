@@ -1,0 +1,54 @@
+{
+  "versions" : {
+    "project" : "0",
+    "workspace" : "1"
+  },
+  "source" : {
+    "maxSchedules" : "default",
+    "minIntervalMs" : "workspace",
+    "lateToleranceMs" : "default",
+    "misfire" : "default",
+    "catchupWindowMs" : "default",
+    "overlap" : "default",
+    "queueTimeoutMs" : "default",
+    "maxQueueTimeoutMs" : "default",
+    "maxPendingDeliveries" : "default",
+    "historyRetentionDays" : "default",
+    "notificationRetentionDays" : "default"
+  },
+  "appliesTo" : "new-admissions",
+  "explicitByScope" : {
+    "project" : { },
+    "workspace" : {
+      "minIntervalMs" : 120000
+    }
+  },
+  "version" : "0",
+  "effective" : {
+    "maxSchedules" : 100,
+    "minIntervalMs" : 120000,
+    "lateToleranceMs" : 10000,
+    "misfire" : "skip",
+    "catchupWindowMs" : 300000,
+    "overlap" : "skip",
+    "queueTimeoutMs" : 300000,
+    "maxQueueTimeoutMs" : 3600000,
+    "maxPendingDeliveries" : 100,
+    "historyRetentionDays" : 30,
+    "notificationRetentionDays" : 30
+  },
+  "explicit" : { },
+  "default" : {
+    "maxSchedules" : 100,
+    "minIntervalMs" : 60000,
+    "lateToleranceMs" : 10000,
+    "misfire" : "skip",
+    "catchupWindowMs" : 300000,
+    "overlap" : "skip",
+    "queueTimeoutMs" : 300000,
+    "maxQueueTimeoutMs" : 3600000,
+    "maxPendingDeliveries" : 100,
+    "historyRetentionDays" : 30,
+    "notificationRetentionDays" : 30
+  }
+}

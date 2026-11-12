@@ -13,7 +13,8 @@ import type { AdminWorkspaceSummary } from "../api/contract.js";
 import type { WorkspacesStore } from "../stores/workspaces.js";
 
 const props = defineProps<{ workspaces: WorkspacesStore }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
+const roleLabel = (role: string) => te(`adminRoles.${role}`) ? t(`adminRoles.${role}`) : role;
 
 onMounted(() => {
   void props.workspaces.refresh(); // 挂载即拉清单（裁定 B：列表）
@@ -81,7 +82,7 @@ async function onDelete(): Promise<void> {
 </script>
 
 <template>
-  <div class="ws-view" data-testid="workspaces-view">
+  <div class="admin-page ws-view" data-testid="workspaces-view">
     <div class="ws-toolbar">
       <h2 class="ws-title">{{ t("ws.listTitle") }}</h2>
       <a-button type="primary" data-testid="ws-create-open" @click="openCreate">{{ t("ws.create") }}</a-button>
@@ -103,15 +104,17 @@ async function onDelete(): Promise<void> {
       :data-source="workspaces.list"
       row-key="id"
       :pagination="false"
+      :scroll="{x:700}"
       :loading="workspaces.loading"
       data-testid="ws-table"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
-          <a-button type="link" class="ws-name" data-testid="ws-open" @click="selectWorkspace(record.id)">
+          <a-button type="link" class="ws-name" :title="record.name" data-testid="ws-open" @click="selectWorkspace(record.id)">
             {{ record.name }}
           </a-button>
         </template>
+        <template v-else-if="column.key === 'myRole'">{{ roleLabel(record.myRole) }}</template>
         <template v-else-if="column.key === 'actions'">
           <a-button
             v-if="record.myRole === 'OWNER'"
@@ -127,7 +130,7 @@ async function onDelete(): Promise<void> {
     </a-table>
 
     <!-- 创建工作区 -->
-    <a-modal v-if="createOpen" :open="createOpen" :title="t('ws.createTitle')" data-testid="ws-create-modal" @cancel="createOpen = false">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="createOpen" :open="createOpen" :title="t('ws.createTitle')" data-testid="ws-create-modal" @cancel="createOpen = false">
       <a-input
         v-model:value="createName"
         data-testid="ws-create-name"
@@ -153,7 +156,7 @@ async function onDelete(): Promise<void> {
     </a-modal>
 
     <!-- 删除工作区（不可逆）：二次输入工作区名确认，名字不匹配禁确定 -->
-    <a-modal v-if="deleteTarget !== null" :open="true" :title="t('ws.deleteTitle')" data-testid="ws-delete-modal" @cancel="cancelDelete">
+    <a-modal centered :style="{maxWidth: 'calc(100vw - 24px)'}" :body-style="{maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto'}" v-if="deleteTarget !== null" :open="true" :title="t('ws.deleteTitle')" data-testid="ws-delete-modal" @cancel="cancelDelete">
       <p class="delete-hint">{{ t("ws.deleteHint", { name: deleteTarget.name }) }}</p>
       <a-input v-model:value="deleteName" data-testid="ws-delete-name" :placeholder="t('ws.deleteNamePlaceholder')" />
       <a-alert
@@ -211,4 +214,10 @@ async function onDelete(): Promise<void> {
 .delete-hint {
   font-size: 13px;
 }
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.ws-toolbar{flex-wrap:wrap;gap:12px}.ws-title{font-size:21px}.ws-name{max-width:330px;height:auto;white-space:normal;text-align:start;overflow-wrap:anywhere}.ws-view :deep(.ant-table-wrapper){min-width:0}.ws-view :deep(th){white-space:nowrap}
 </style>

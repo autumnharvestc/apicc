@@ -48,7 +48,7 @@ async function saveGrant(revoke=false){
 function agentName(id:string){return props.agents.candidates.find(n=>n.id===id)?.name??props.agents.project?.agents.find(n=>n.id===id)?.name??id;}
 </script>
 <template>
-  <section class="project-agents" data-testid="project-agents-view">
+  <section class="admin-page project-agents" data-testid="project-agents-view">
     <h2>{{t('agents.projectTitle')}} · {{projectId}}</h2>
     <p>{{t('agents.scopeHint')}}</p>
     <p v-if="agents.error" role="alert">{{agents.error}}</p><p v-if="localError" role="alert">{{localError}}</p>
@@ -71,7 +71,7 @@ function agentName(id:string){return props.agents.candidates.find(n=>n.id===id)?
         <label v-if="canManage"><input type="checkbox" v-model="queueNever" :disabled="locked" />{{t('agents.queueNever')}}</label>
         <p>{{t('agents.retentionHint')}}</p>
         <ul v-if="agents.settings.restrictions.length"><li v-for="r in agents.settings.restrictions" :key="r.field">{{t(`agents.fields.${r.field.split('.').pop()}`)}}: {{displayValue(r.field.split('.').pop()!,r.effectiveValue)}} · {{t('agents.restrictedBy')}} {{t(`agents.fields.${r.reason.split('.').pop()}`)}}</li></ul>
-        <button v-if="canManage" data-testid="project-agents-save" :disabled="locked">{{t('agents.saveProject')}}</button>
+        <button v-if="canManage" class="primary-action" data-testid="project-agents-save" :disabled="locked">{{t('agents.saveProject')}}</button>
       </form>
       <h3>{{t('agents.associatedRuntime')}}</h3>
       <p>{{t('agents.applicationHint')}}</p>
@@ -93,8 +93,8 @@ function agentName(id:string){return props.agents.candidates.find(n=>n.id===id)?
               <button type="button" :disabled="locked" @click="scripts.push({scriptId:'',contentHash:''})">{{t('agents.addScriptVersion')}}</button>
             </template>
             <label v-else class="risk"><input type="checkbox" v-model="risk" data-testid="script-risk" :disabled="locked" />{{t('agents.trustConfirmation')}}</label>
-            <button data-testid="script-save" :disabled="locked||(scope==='project'&&!risk)">{{t('agents.saveApproval')}}</button>
-            <button type="button" data-testid="script-revoke" :disabled="locked" @click="saveGrant(true)">{{t('agents.revokeApproval')}}</button>
+            <button class="primary-action" data-testid="script-save" :disabled="locked||(scope==='project'&&!risk)">{{t('agents.saveApproval')}}</button>
+            <button type="button" class="danger-action" data-testid="script-revoke" :disabled="locked" @click="saveGrant(true)">{{t('agents.revokeApproval')}}</button>
           </form>
         </template>
       </section>
@@ -103,4 +103,10 @@ function agentName(id:string){return props.agents.candidates.find(n=>n.id===id)?
 </template>
 <style scoped>
 .project-agents{min-width:0;max-width:1500px}h2{margin-top:0}p,li{line-height:1.65}label,.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}button,input,select{font:inherit;padding:6px 10px}button{cursor:pointer;margin-right:8px}button:disabled{cursor:default}input{max-width:100%}.table-scroll{max-height:48vh;overflow:auto;margin:12px 0;background:white;border:1px solid #ddd}table{min-width:850px;width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 12px;border-bottom:1px solid #eee;vertical-align:top;white-space:nowrap}thead{position:sticky;top:0;background:#fafafa}td input{width:150px}.scripts{margin-top:24px;border-top:1px solid #ddd}.scripts td:nth-child(2) input{width:400px}.hash,dd{overflow-wrap:anywhere;white-space:normal;max-width:600px}.risk{background:#fff7e6;padding:12px}[role=alert]{color:#a8071a}
+</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.scripts{padding:20px 16px;background:var(--subtle);border:1px solid var(--border);border-radius:8px}.risk{border:1px solid #eed6ad;border-radius:6px}.table-scroll{max-height:55vh}select{max-width:100%}
 </style>

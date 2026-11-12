@@ -1,0 +1,76 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/admin-web
+
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/ProjectAclView.test.ts (29 tests | 2 failed | 27 skipped) 862ms
+   × P4a candidate ACL summary uses role labels in zh-CN 638ms
+   × P4a candidate ACL summary uses role labels in en 222ms
+ ❯ tests/views/MembersView.test.ts (30 tests | 2 failed | 28 skipped) 985ms
+   × P4a candidate member summary uses role labels in zh-CN 728ms
+   × P4a candidate member summary uses role labels in en 255ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/views/MembersView.test.ts > P4a candidate member summary uses role labels in zh-CN
+AssertionError: expected '当前修订: 8 · EDITOR · NONE · confirmed' to contain '编辑者 (EDITOR)'
+
+Expected: "编辑者 (EDITOR)"
+Received: "当前修订: 8 · EDITOR · NONE · confirmed"
+
+ ❯ tests/views/MembersView.test.ts:480:64
+    478|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);wor…
+    479|  await wrapper.get('[data-testid=members-add-user] input').setValue('d…
+    480|  expect(wrapper.get('[data-testid=members-add-scope]').text()).toConta…
+       |                                                                ^
+    481|  expect(wrapper.get('[data-testid=members-add-scope]').text()).toConta…
+    482|  expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  tests/views/MembersView.test.ts > P4a candidate member summary uses role labels in en
+AssertionError: expected 'Current revision: 8 · EDITOR · NONE ·…' to contain 'Editor (EDITOR)'
+
+Expected: "Editor (EDITOR)"
+Received: "Current revision: 8 · EDITOR · NONE · confirmed"
+
+ ❯ tests/views/MembersView.test.ts:480:64
+    478|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);wor…
+    479|  await wrapper.get('[data-testid=members-add-user] input').setValue('d…
+    480|  expect(wrapper.get('[data-testid=members-add-scope]').text()).toConta…
+       |                                                                ^
+    481|  expect(wrapper.get('[data-testid=members-add-scope]').text()).toConta…
+    482|  expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  tests/views/ProjectAclView.test.ts > P4a candidate ACL summary uses role labels in zh-CN
+AssertionError: expected '当前修订: 8 · EDITOR · NONE · confirmed' to contain '编辑者 (EDITOR)'
+
+Expected: "编辑者 (EDITOR)"
+Received: "当前修订: 8 · EDITOR · NONE · confirmed"
+
+ ❯ tests/views/ProjectAclView.test.ts:458:60
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  tests/views/ProjectAclView.test.ts > P4a candidate ACL summary uses role labels in en
+AssertionError: expected 'Current revision: 8 · EDITOR · NONE ·…' to contain 'Editor (EDITOR)'
+
+Expected: "Editor (EDITOR)"
+Received: "Current revision: 8 · EDITOR · NONE · confirmed"
+
+ ❯ tests/views/ProjectAclView.test.ts:458:60
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 55 skipped (59)
+   Start at  10:53:39
+   Duration  6.53s (transform 4.06s, setup 0ms, import 9.03s, tests 1.85s, environment 1.70s)
+

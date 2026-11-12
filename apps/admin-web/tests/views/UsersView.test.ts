@@ -145,7 +145,7 @@ describe("UsersView 清单与行内动作（任务 5）", () => {
     const { wrapper, calls } = await mountUsers(usersHandler());
     expect(calls.some((c) => c.method === "GET" && c.url === `${BASE}/admin/users`)).toBe(true);
     expect(wrapper.find("[data-testid=users-view]").exists()).toBe(true);
-    const rows = wrapper.findAll("tbody tr");
+    const rows = wrapper.findAll("tbody tr[data-row-key]");
     expect(rows).toHaveLength(2);
     expect(rows[0]!.text()).toContain("alice");
     expect(rows[0]!.text()).toContain("Alice");
@@ -185,7 +185,7 @@ describe("UsersView 清单与行内动作（任务 5）", () => {
     await flushPromises();
     await flushPromises();
     expect(posted).toEqual({ username: "bob", password: "password123", displayName: "Bob" });
-    expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(3);
     expect(bodyFind("users-form-username")).toBeNull(); // 成功关窗
   });
 
@@ -195,14 +195,14 @@ describe("UsersView 清单与行内动作（任务 5）", () => {
     await flushPromises();
     await flushPromises();
     expect(calls.some((c) => c.method === "POST" && c.url === `${BASE}/admin/users/u1/disable`)).toBe(true);
-    expect(wrapper.findAll("tbody tr")[0]!.text()).toContain("已停用");
+    expect(wrapper.findAll("tbody tr[data-row-key]")[0]!.text()).toContain("已停用");
     expect(wrapper.find('[data-testid="user-enable-u1"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="user-disable-u1"]').exists()).toBe(false);
     await wrapper.find('[data-testid="user-enable-u1"]').trigger("click");
     await flushPromises();
     await flushPromises();
     expect(calls.some((c) => c.method === "POST" && c.url === `${BASE}/admin/users/u1/enable`)).toBe(true);
-    expect(wrapper.findAll("tbody tr")[0]!.text()).toContain("正常");
+    expect(wrapper.findAll("tbody tr[data-row-key]")[0]!.text()).toContain("正常");
   });
 
   it("重置密码：空新密码本地校验零请求；填新密码 → POST password-reset { newPassword } + 关闭", async () => {
@@ -256,7 +256,7 @@ describe("UsersView 错误面（上屏不抛出）", () => {
     await flushPromises();
     expect(users.error).toBe("不能停用自己");
     expect(wrapper.find('[data-testid="users-error"]').text()).toContain("不能停用自己");
-    expect(wrapper.findAll("tbody tr")).toHaveLength(2); // 清单不动
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(2); // 清单不动
   });
 
   it("清单拉取失败 → 页顶 error 上屏", async () => {
@@ -294,7 +294,7 @@ describe("用户管理入口显隐与守卫（session.role）", () => {
     expect(session.role).toBe("SUPERADMIN"); // 验活已收口
     expect(router.currentRoute.value.path).toBe("/users"); // 未被弹回工作区列表
     expect(wrapper.find('[data-testid="users-view"]').exists()).toBe(true);
-    expect(wrapper.findAll("tbody tr")).toHaveLength(2); // 清单已渲染
+    expect(wrapper.findAll("tbody tr[data-row-key]")).toHaveLength(2); // 清单已渲染
   });
 
   it("生产装配时序：普通用户深链 /users 验活落地后仍被守卫弹回工作区列表", async () => {
@@ -303,4 +303,12 @@ describe("用户管理入口显隐与守卫（session.role）", () => {
     expect(router.currentRoute.value.name).toBe("workspaces"); // role 落地判 USER → 弹回
     expect(router.currentRoute.value.path).toBe("/workspaces");
   });
+});
+
+it.each(['zh-CN','en'])('P4a platform role labels change language without account writes in %s',async(locale)=>{
+ const {wrapper,calls}=await mountUsers(usersHandler());
+ await wrapper.get('[data-testid=layout-locale]').setValue(locale);await flushPromises();
+ expect(wrapper.get('[data-testid=users-table]').text()).toContain(locale==='zh-CN'?'平台管理员 (SUPERADMIN)':'Platform administrator (SUPERADMIN)');
+ expect(wrapper.get('[data-testid=users-table]').text()).toContain(locale==='zh-CN'?'普通用户 (USER)':'User (USER)');
+ expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
 });

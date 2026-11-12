@@ -1,0 +1,9 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/admin-web
+
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+   Start at  11:07:08
+   Duration  3.60s (transform 1.24s, setup 0ms, import 1.73s, tests 798ms, environment 881ms)
+

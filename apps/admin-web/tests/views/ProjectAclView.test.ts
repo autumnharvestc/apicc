@@ -230,7 +230,7 @@ describe("ProjectAclView 项目选择（裁定 A/C）", () => {
     await wrapper.get('[data-testid=acl-reload-u-2]').trigger('click');await flushPromises();
     expect.soft(calls.slice(count).map(c=>({method:c.method,url:c.url}))).toEqual([{method:'GET',url:`${BASE}/workspaces/ws-1/projects/p-1/access-members/u-2`}]);
     expect.soft(wrapper.text()).toContain('当前修订: 9');
-    expect.soft(wrapper.text()).toContain('当前角色: NONE');expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
+    expect.soft(wrapper.text()).toContain('当前角色: 拒绝访问（NONE）');expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
   });
   function pendingHandler():FetchHandler {
     const legacy=aclHandler();
@@ -437,4 +437,25 @@ describe("ProjectAclView 添加行（任务 6：userPicker 搜索下拉，id 不
     expect(wrapper.find('[data-testid="acl-candidates-error"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="acl-candidates-error"]').text()).toContain("候选服务暂不可用");
   });
+});
+
+it.each(['zh-CN','en'])('P4a ACL labels keep explicit denial separate from inheritance in %s',async(locale)=>{
+ const {wrapper,calls}=await mountAcl();
+ await wrapper.get('[data-testid=layout-locale]').setValue(locale);
+ antdSelect(wrapper,'acl-project-select').vm.$emit('update:value','p-2');await flushPromises();await flushPromises();
+ const options=antdSelect(wrapper,'acl-role-u-2').props('options') as Array<{value:string;label:string}>;
+ expect(options.find(o=>o.value==='VIEWER')?.label).toBe(locale==='zh-CN'?'查看者 (VIEWER)':'Viewer (VIEWER)');
+ expect(options.map(o=>o.value)).toEqual(['NONE','VIEWER','EDITOR','ADMIN']);
+ expect(options[0]!.label).toContain('NONE');
+ antdSelect(wrapper,'acl-role-u-2').vm.$emit('change','NONE');await flushPromises();
+ expect(calls.find(c=>c.method==='PUT')?.body).toMatchObject({role:'NONE',expectedRevision:1});
+ expect(calls.filter(c=>c.method==='DELETE')).toHaveLength(0);
+});
+
+it.each(['zh-CN','en'] as const)('P4a candidate ACL summary uses role labels in %s',async(locale)=>{
+ const base=aclHandler();const {wrapper,calls}=await mountAcl(req=>req.method==='GET'&&req.url.includes('/projects/p-1/access-members/')?json(200,member('u-2',{workspaceRole:'EDITOR',projectOverride:'NONE',overrideState:'active'})):base(req));
+ await wrapper.get('[data-testid=layout-locale]').setValue(locale);await wrapper.get('[data-testid=acl-add-userid] input').setValue('bob');await flushPromises();
+ expect(wrapper.get('[data-testid=acl-add-scope]').text()).toContain(locale==='zh-CN'?'编辑者 (EDITOR)':'Editor (EDITOR)');
+ expect(wrapper.get('[data-testid=acl-add-scope]').text()).toContain(locale==='zh-CN'?'拒绝访问（NONE）':'Deny access (NONE)');
+ expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
 });

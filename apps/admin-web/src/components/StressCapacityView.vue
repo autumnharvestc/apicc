@@ -13,3 +13,5 @@ const value=(dimension:string,n:number)=>dimension==='metricMemoryBytes'?Number(
   </section>
 </template>
 <style scoped>.stress-capacity{min-width:0}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{text-align:left;padding:6px;border-bottom:1px solid var(--border,#ddd)}</style>
+
+<style scoped src="../styles/admin-controls.css"></style>

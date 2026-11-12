@@ -425,3 +425,14 @@ describe("OrgView 权限显隐与菜单入口", () => {
     expect(wrapper.find("[data-testid=org-view]").exists()).toBe(true);
   });
 });
+
+it.each(['zh-CN','en'])('P4a named group button changes only selection in %s',async(locale)=>{
+ const {wrapper,calls}=await mountOrg(orgHandler());await wrapper.get('[data-testid=layout-locale]').setValue(locale);await flushPromises();
+ const button=wrapper.get('[data-testid=org-group-item-g-dev] button.group-name');
+ expect(button.attributes('type')).toBe('button');expect(button.text()).toBe('研发');
+ expect(button.attributes('aria-pressed')).toBe('false');await button.trigger('click');await flushPromises();
+ expect(button.attributes('aria-pressed')).toBe('true');expect(wrapper.find('[data-testid=org-project-card-p2]').exists()).toBe(true);
+ expect(wrapper.find('[data-testid=org-project-card-p1]').exists()).toBe(false);
+ expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
+ expect(wrapper.get('[data-testid=org-group-rename-g-default]').attributes('disabled')).toBeDefined();
+});

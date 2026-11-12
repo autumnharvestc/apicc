@@ -82,7 +82,7 @@ async function reloadAccessPolicy(){try{accessPolicy.value=await props.api.acces
 watch(()=>props.scope,async()=>{try{policy.value=await props.api.policy(props.scope);}catch(e){failure(e);}},{immediate:true,deep:true});
 </script>
 <template>
-  <section class="collaboration-view" data-testid="collaboration-view">
+  <section class="admin-page collaboration-view" data-testid="collaboration-view">
     <h2>{{t('collaboration.title')}}</h2>
     <nav v-if="scope.projectId" :aria-label="t('collaboration.title')"><a v-for="section in ['policy','sharing','mock','audit']" :key="section" :href="'#'+section">{{t('collaboration.sections.'+section)}}</a></nav>
     <p v-if="error||errorCode" role="alert">{{errorText}} <span v-if="errorCode">({{errorCode}})</span>
@@ -152,7 +152,7 @@ watch(()=>props.scope,async()=>{try{policy.value=await props.api.policy(props.sc
 </label>
 <label>
 <input type="checkbox" v-model="download" data-testid="grant-download"/>{{t('collaboration.download')}}</label>
-<button data-testid="grant-create" @click="createGrant">{{t('collaboration.createGrant')}}</button>
+<button class="primary-action" data-testid="grant-create" @click="createGrant">{{t('collaboration.createGrant')}}</button>
 <button data-testid="grants-refresh" @click="refreshGrants">{{t('collaboration.reload')}}</button>
 <button data-testid="grant-reconcile" :disabled="!pendingIntents[selectionKey()]" @click="reconcileGrant">{{t('collaboration.reconcile')}}</button>
 <p v-if="pendingIntents[selectionKey()]">{{t('collaboration.uncertainGrant')}}</p>
@@ -359,7 +359,7 @@ watch(()=>props.scope,async()=>{try{policy.value=await props.api.policy(props.sc
 <h3>{{t('collaboration.parameter')}}</h3>
 <p>{{t('collaboration.currentRevision')}}: {{policy.revision}} · {{t('collaboration.projectionRevision')}}: {{policy.projectionRevision}}</p>
 <CollaborationPolicyTable :policy="policy" :draft="draft" />
-<button data-testid="collaboration-policy-save" @click="savePolicy">{{t('collaboration.save')}}</button>
+<button class="primary-action" data-testid="collaboration-policy-save" @click="savePolicy">{{t('collaboration.save')}}</button>
 <button data-testid="collaboration-policy-reload" @click="reloadPolicy">{{t('collaboration.reload')}}</button>
       <h3>{{t('collaboration.resources')}}</h3>
 <p>{{t('collaboration.resourceHint')}}</p>
@@ -412,3 +412,9 @@ watch(()=>props.scope,async()=>{try{policy.value=await props.api.policy(props.sc
   </section>
 </template>
 <style scoped>.collaboration-view{min-width:0;max-width:100%}section{margin-bottom:24px}p,dd,code{overflow-wrap:anywhere}button{margin:6px 8px 6px 0}.table-scroll{max-width:100%;overflow:auto}table{min-width:900px;width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top;white-space:nowrap}td p{min-width:220px;max-width:340px;white-space:normal}td ul{max-width:420px;white-space:normal}dl{display:grid;grid-template-columns:minmax(130px,220px) minmax(0,1fr);gap:8px}dd{margin:0}summary{cursor:pointer}fieldset{display:flex;flex-wrap:wrap;gap:12px;padding:12px}label{display:inline-flex;gap:6px;align-items:center;max-width:100%}.publication-list{padding:0;list-style:none}.publication-list>li{padding:12px;border-bottom:1px solid #eee;min-width:0}.raw-security-records pre{max-height:400px;overflow:auto}output{overflow-wrap:anywhere}</style>
+
+<style scoped src="../styles/admin-controls.css"></style>
+
+<style scoped>
+.collaboration-view>section{padding:20px 0;border-top:1px solid var(--border);scroll-margin-top:16px}.publication-list>li{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border:1px solid var(--border);border-radius:8px;margin:10px 0;background:var(--subtle)}.publication-list details{flex-basis:100%}.collaboration-view fieldset{background:var(--subtle)}.collaboration-view label{flex-wrap:wrap}.collaboration-view input:not([type=checkbox]){max-width:100%}
+</style>

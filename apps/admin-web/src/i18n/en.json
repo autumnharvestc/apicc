@@ -1,4 +1,5 @@
 {
+  "adminRoles": {"OWNER": "Owner (OWNER)", "ADMIN": "Administrator (ADMIN)", "EDITOR": "Editor (EDITOR)", "VIEWER": "Viewer (VIEWER)", "SUPERADMIN": "Platform administrator (SUPERADMIN)", "USER": "User (USER)"},
   "syncStatus": {
     "materials": "Materials and host trust",
     "trustHint": "Registration or decryptability does not establish a verified host handshake or trust. Independent handshake, host key and TLS trust observations are not collected here. See actual rejection reasons in check summaries. Secret values are never displayed; manage materials in the client project.",

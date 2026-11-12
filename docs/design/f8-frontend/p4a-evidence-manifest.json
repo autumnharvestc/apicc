@@ -1,0 +1,386 @@
+{
+  "phase": "F8 P4a",
+  "base": "842645e0",
+  "hashBasis": "working-copy bytes, before Git line-ending normalization",
+  "excluded": [
+    "this manifest",
+    "independent review receipt"
+  ],
+  "files": [
+    {
+      "path": "apps/admin-web/src/components/CollaborationAccessTable.vue",
+      "bytes": 2312,
+      "sha256": "b80a6bc15672d8be9561b91d981b32eb96b12baf8889993007f2fccf6d5e930e"
+    },
+    {
+      "path": "apps/admin-web/src/components/CollaborationPolicyTable.vue",
+      "bytes": 5770,
+      "sha256": "88b541157030160d33ddfd050db5b17737e50836426688e090a5f1eeafd1afd6"
+    },
+    {
+      "path": "apps/admin-web/src/components/StressCapacityView.vue",
+      "bytes": 1605,
+      "sha256": "5940731d72863cffb631c972c259107183bedc3d24c13d99066913a94b6a7834"
+    },
+    {
+      "path": "apps/admin-web/src/components/SyncPolicyFields.vue",
+      "bytes": 3281,
+      "sha256": "98356a8768ad85140f87a2a141c032cef316cf68fbbc1ccb865b1ee3ff453f44"
+    },
+    {
+      "path": "apps/admin-web/src/i18n/en.json",
+      "bytes": 70499,
+      "sha256": "ee45879a2ae68190a3f22e3e6f005b1ca445032b7e604a66b89dc219b7ec53cc"
+    },
+    {
+      "path": "apps/admin-web/src/i18n/zh-CN.json",
+      "bytes": 64151,
+      "sha256": "3a1fb4984af41be80e6add63a158c29bf59a2b1899ebb97f264619514e2a6e46"
+    },
+    {
+      "path": "apps/admin-web/src/styles/admin-controls.css",
+      "bytes": 4056,
+      "sha256": "a0943cf629b0714343dc6a9028ee6b0cd94a6176a74da3d97549cce63bf01d99"
+    },
+    {
+      "path": "apps/admin-web/src/styles/theme.css",
+      "bytes": 642,
+      "sha256": "af832bacbdd1c220f0a5926e4e39340f6bd284776b7da24ca494a86f25de0a7f"
+    },
+    {
+      "path": "apps/admin-web/src/views/AgentsView.vue",
+      "bytes": 15318,
+      "sha256": "2750a767ea3b6c8ba231d97495b2f65764a327e39d84ac1de6f89da646a99998"
+    },
+    {
+      "path": "apps/admin-web/src/views/CollaborationView.vue",
+      "bytes": 32921,
+      "sha256": "483416fe89d9d0344cb2883e5d84266718f044579fc80bf6079914bd384b9d19"
+    },
+    {
+      "path": "apps/admin-web/src/views/LayoutView.vue",
+      "bytes": 9440,
+      "sha256": "35c1d8bac3890b5d9754cc5f921fb51a5028d6a27aa4d48d6fd1d6648043cc93"
+    },
+    {
+      "path": "apps/admin-web/src/views/LoginView.vue",
+      "bytes": 7346,
+      "sha256": "61a61093bfe88612f29388b7f80468801a2531f9a28b7603c878bc17d659079f"
+    },
+    {
+      "path": "apps/admin-web/src/views/MembersView.vue",
+      "bytes": 17434,
+      "sha256": "3a268fe33812f17e299b5428f90cc6ddf1658b21fab660528d3d8ffde50cc333"
+    },
+    {
+      "path": "apps/admin-web/src/views/NotificationChannelsView.vue",
+      "bytes": 7468,
+      "sha256": "cff6c04dd504236ea14374fa850df5591a836644cb65ab44e58b3262a8c1fd9e"
+    },
+    {
+      "path": "apps/admin-web/src/views/OrgView.vue",
+      "bytes": 28076,
+      "sha256": "2bb6124cb58123ddd49eebb6abdaaf1b1085fe381c1a8565ea6b5ac157eff8e9"
+    },
+    {
+      "path": "apps/admin-web/src/views/ProjectAclView.vue",
+      "bytes": 17733,
+      "sha256": "3a2a30d1bd6314248a97c4edb0cbc6036bd2747855680895a10ff9b66aed44fb"
+    },
+    {
+      "path": "apps/admin-web/src/views/ProjectAgentsView.vue",
+      "bytes": 14511,
+      "sha256": "2c4ae447c31861fb564c3790aae7ac74a9dbc27f8e624d02e6e787d475244e58"
+    },
+    {
+      "path": "apps/admin-web/src/views/ProjectScheduleGrantsView.vue",
+      "bytes": 3928,
+      "sha256": "9596d16b8cdb845eb1a8cc9fc22afc3ae381cfbce9a95ccf5f21745f1d56ea02"
+    },
+    {
+      "path": "apps/admin-web/src/views/ProjectSyncAccessView.vue",
+      "bytes": 13677,
+      "sha256": "f448939e543e7db7c073023aef4a35190283bb06dc856db0c578dd439044b2c1"
+    },
+    {
+      "path": "apps/admin-web/src/views/SchedulePolicyView.vue",
+      "bytes": 6838,
+      "sha256": "437b11e4e145f69d599211ca130ffc39dc0cc12b45d8afaff663921658ccad0f"
+    },
+    {
+      "path": "apps/admin-web/src/views/SyncPolicyView.vue",
+      "bytes": 9284,
+      "sha256": "87c8fd7f5f8611fdd30ad91bd72c6f717a765f5cc5a34d181d88556d4eca6ae2"
+    },
+    {
+      "path": "apps/admin-web/src/views/UsersView.vue",
+      "bytes": 10697,
+      "sha256": "e1ba2df1bc5608038b92389ac16118f857e628f7e1cf0378a9b41a6e6829a6b9"
+    },
+    {
+      "path": "apps/admin-web/src/views/WorkspacesView.vue",
+      "bytes": 8394,
+      "sha256": "66965a1a2556dd20332db5213350ddbd49e6de38e3edf65b6e7f4a8378e9dcf3"
+    },
+    {
+      "path": "apps/admin-web/tests/views/MembersView.test.ts",
+      "bytes": 32962,
+      "sha256": "d828bfec76e6efa8eb33a8039c780c1998552db1b31a455dd5c9f44a876b1bc6"
+    },
+    {
+      "path": "apps/admin-web/tests/views/OrgView.test.ts",
+      "bytes": 25507,
+      "sha256": "237c1a2bd4645bacacf2a85575049a8a21ac3464d928c090334609adff8087da"
+    },
+    {
+      "path": "apps/admin-web/tests/views/ProjectAclView.test.ts",
+      "bytes": 31405,
+      "sha256": "34f1926eb3f971e36615b5e8df9d52c3ccb2da1186b19dd6f3c4479b95dba47e"
+    },
+    {
+      "path": "apps/admin-web/tests/views/UsersView.test.ts",
+      "bytes": 17360,
+      "sha256": "3340ad22234b5eef0a37df17cbed4866212d0b9b209d637f9a91cbf505159d6f"
+    },
+    {
+      "path": "apps/admin-web/tests/views/WorkspacesView.test.ts",
+      "bytes": 13019,
+      "sha256": "23336309809596a0166f0d16ca89cfda5ec24b741d437efc65fd55d224fd6cb5"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/acl-role-en-640.jpg",
+      "bytes": 51303,
+      "sha256": "dc6456dd40d358e987f8eca8385b4627f21337a432f1eef4a4645113838ae3e3"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/agent-pending-zh-1280.jpg",
+      "bytes": 77218,
+      "sha256": "22d875a6af9a0586179c8d75d405b841001cc6523d0f118d9727f0be786cd99f"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/browser-receipt.json",
+      "bytes": 13326,
+      "sha256": "7d04457afb79fd81ce990b725d6f1c83bee6bebb230d5c046753cf2adee530e5"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/browser-server-tail.log",
+      "bytes": 916,
+      "sha256": "faedf6d7aa659321a6d4d33d257d9317d1942b767b9825488e32ec5e6c29ee9d"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/build-final.log",
+      "bytes": 841,
+      "sha256": "0563c414481351ec9f0213529f89ed37868e86d684440f452ce0ce1b83026d7f"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/build.log",
+      "bytes": 841,
+      "sha256": "77fdcd513df7025b4d39dcea92f65a477bb0944e8e608145b1550181433c5518"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/candidate-contract-red.log",
+      "bytes": 3890,
+      "sha256": "343f5fb3081e54ea309b905e00684a945c3c9c34e692a27072b4403b0b763ac5"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/candidate-green.log",
+      "bytes": 4771,
+      "sha256": "518bffb2e4550da8c14adaad97270d696375884a440229aaafcc0cf28ef9383e"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/candidate-red.log",
+      "bytes": 3746,
+      "sha256": "cbc5c435fb80e0041451f935b16594d2392d0eff75e42dcc78eb791c3ca20075"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/candidate-valid-red.log",
+      "bytes": 3900,
+      "sha256": "804fe59fdc2131c7e837ac9e9153c6fba3605bd85ae8740b407eeac82d853760"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/collaboration-en-640.jpg",
+      "bytes": 63786,
+      "sha256": "068f378418000b21f67dd6ad8d050f2a4b0a4d157e52a5be171fe1fb6282f6ce"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/collaboration-policy-zh-1280.jpg",
+      "bytes": 82809,
+      "sha256": "65fcc68beefb1080b22f03505f8e2d37b9ff3fbb4c80e010472527567fddf5a7"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/channels.json",
+      "bytes": 14332,
+      "sha256": "0e71693678cafe872a868d55141cf03c4603113cfeb4a5416acb6faac1a341b0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/collaboration-fixtures.ts",
+      "bytes": 8707,
+      "sha256": "b5a40a45735f076bcd1d4cb777e09e86ce29935beb563224dad863aac70e0934"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/grant-options.json",
+      "bytes": 1221,
+      "sha256": "b4ef4217f622b1da697a2dc40997a12b379017865f22fc128865e1ac471b7cab"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/grants.json",
+      "bytes": 45,
+      "sha256": "59cd3a68854b06d87866a9ba819327bc6c870dafc2942df3f164c604877a130c"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/index.html",
+      "bytes": 569,
+      "sha256": "a59b44f3fdf5ac19e89c431ccbaffd33f4ead08f39eb2ef9dacc827f715c9b9f"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/main.ts",
+      "bytes": 10801,
+      "sha256": "f40cacc9f1b4ac50b3d97ea1157dba2363a0bf71d84f43c92abf89195e1f106c"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/schedule-policy.json",
+      "bytes": 1425,
+      "sha256": "9ec8b9e3bd22f133d5c11fec8f9ccfdd129289c2be116a3b04d7b02785602251"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/fixture/serve.mjs",
+      "bytes": 1183,
+      "sha256": "43a5b19931175d0162401028ecda8620029a6c37b7d9d257d8c894f2266004de"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/image-metadata.json",
+      "bytes": 2350,
+      "sha256": "eee4da2780aada106a4f25fabcf91e7299eb093b13f84c97ff1197db155133d9"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/login-en-640x400.jpg",
+      "bytes": 16285,
+      "sha256": "e7a02b27df90aaccd76f3c6a4c05a9a3d2eb308d7c233288422f958b2e069726"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/members-en-1280.jpg",
+      "bytes": 61621,
+      "sha256": "8b0c070b59a69a021f9e5929c7bdcae44823b5bc5c848c16de8eaf517a3e120e"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/members-role-width-before.jpg",
+      "bytes": 59408,
+      "sha256": "77fb707cb5acc59e50f4ec1c47aec78a1835d7d2e71aa2555f635d51acad5062"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/notification-form-en-640.jpg",
+      "bytes": 64661,
+      "sha256": "0d8b3eeb29dac2a190e61e8d848588d4d52d0821b32790b189845361cf4aa72b"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/notifications-en-1280.jpg",
+      "bytes": 82928,
+      "sha256": "4a3ee1a0b122c87ba7510a673e8639396efb3139eecc422d0aee542c2e415271"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/org-zh-1280.jpg",
+      "bytes": 49552,
+      "sha256": "4f7879b633bebad2baa74bdb791c88f616766abe6a99288efeee5a02cad60661"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/org-zh-640.jpg",
+      "bytes": 54374,
+      "sha256": "14da3e4d915c8053bfebd08542e42abd81e620d0fb0576392ee3f4a748eb418a"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/presentation-red.log",
+      "bytes": 40540,
+      "sha256": "b0bc9140c84a55435252c9ebcbc28de3a5d25b144748b575a2492e1816014cad"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/project-script-zh-1280.jpg",
+      "bytes": 89146,
+      "sha256": "f02f91bcc838c2b74f299e6bf95f2beb07e1e865d184cd3282f23f943ce78de3"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/schedule-grants-zh-1280.jpg",
+      "bytes": 79405,
+      "sha256": "983bd48db7841562131071ea45b43ce77c858dde9fc4da364f5bc00acb941fe2"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/schedule-policy-zh-1280.jpg",
+      "bytes": 114122,
+      "sha256": "51b832b963de448808c203826afa1109865abd52de5b1ed8e39f032336f22e28"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/sync-access-en-640.jpg",
+      "bytes": 62340,
+      "sha256": "db88bc4e98f48efc0f5cce952b427368f64c7153b02769d087c14d1e04e1ef74"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/sync-final.log",
+      "bytes": 269,
+      "sha256": "2754b5b1c807024ec13c9862071f6ef8d7d92337e845733dd8eb61faf7baba1e"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/sync-policy-en-640.jpg",
+      "bytes": 63918,
+      "sha256": "06deca2360161efd418e5660df33a0d53e542d0aef6618cf34b445e95227f80a"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/sync-policy-input-en-540.jpg",
+      "bytes": 61988,
+      "sha256": "51e4acaff6cc9689d0a67edc6b6ec6cf77f3f7f90a315e35fc8565c6003599b8"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/sync-policy-overflow-before.jpg",
+      "bytes": 64640,
+      "sha256": "a348844f3834a5d259917ddb1a19ebf19a79e7e93da4915fd2e20b0ad1a266f0"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/targeted-correction.log",
+      "bytes": 6272,
+      "sha256": "5a1bc7a08b5b0b360ebe7d5a0e7bda898187044e1cf29ae967b95f0437e55163"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/targeted.log",
+      "bytes": 20676,
+      "sha256": "12020bc967cb2005fb80bd5b196013f7ad052b24d688434fd580cb87fb3542a8"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/users-en-640.jpg",
+      "bytes": 40742,
+      "sha256": "8e05e074454ff048ba1bc29b4f4da1865c8978675c08fd07ae3b929f5e74c192"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/workspace-agents-en-1280.jpg",
+      "bytes": 89381,
+      "sha256": "dbac1b540af83d33a408a277d263338c0ca07eee42344bbbe473b5c3c699e2ad"
+    },
+    {
+      "path": "docs/design/f8-frontend/p4a/workspace-modal-en-640x400.jpg",
+      "bytes": 24262,
+      "sha256": "c6540587d24ce4422a279e7515e1b05efd1218c7dad96dec78b67da804681a8d"
+    },
+    {
+      "path": "docs/f8-frontend-polish-acceptance.md",
+      "bytes": 10112,
+      "sha256": "a6f5fcf92bbadc99aa5fc65582dee2b76650a48dec6ed038d3c5a1deedf88a0a"
+    },
+    {
+      "path": "docs/f8-frontend-polish-design.md",
+      "bytes": 14535,
+      "sha256": "3ad416f67bdc31e9cd3a5cf2083ce1a2324c61912d25990e90eb367864257944"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p4a-design.md",
+      "bytes": 2887,
+      "sha256": "62a84e4777f6b8f1c9a034a37fc01e3ce2d5c02206dcb3e3b854a8d4b7217f0a"
+    },
+    {
+      "path": "docs/f8-frontend-polish-p4a-validation.md",
+      "bytes": 8390,
+      "sha256": "bfb45f0df3a32600887ec5bc2061ebcd01119c49d6fd0d7b75e9fc300a47da78"
+    },
+    {
+      "path": "docs/f8-frontend-polish-worklog.md",
+      "bytes": 17509,
+      "sha256": "f1c0ef01475e8edf99ccfe9586bc81930d989656d94d65644503208faff08264"
+    }
+  ]
+}

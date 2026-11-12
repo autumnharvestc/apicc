@@ -1,0 +1,350 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/admin-web
+
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/WorkspacesView.test.ts (10 tests | 5 failed) 4158ms
+     × 挂载拉取清单：行渲染 name/myRole/createdAt 1604ms
+     × 空名称提交 → 本地校验错误、零请求；填名提交 → POST + 清单刷新 + 关闭 460ms
+     × 输入工作区名匹配 → 确定启用 → 删除 + 清单刷新 + 关闭 275ms
+   × P4a workspace role labels retain codes and identity in zh-CN 201ms
+   × P4a workspace role labels retain codes and identity in en 136ms
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/UsersView.test.ts (13 tests | 5 failed) 5102ms
+     × 清单渲染：username/displayName/平台角色 tag/状态/创建时间 1834ms
+     × 创建账号：空表单本地校验零请求；合法载荷逐字 POST /admin/users + 清单刷新 + 关闭 605ms
+     × 停用 → POST disable + 清单刷新显示已停用（行内动作切换为启用）；启用 → POST enable 411ms
+     × 停用失败（cannot_disable_self 模拟）→ 页顶 error 通道上屏、清单不动 259ms
+     × 生产装配时序（审查重要 1 回归）：超管深链 /users——守卫等验活收口，稳定落在 /users 不弹回 184ms
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/ProjectAclView.test.ts (27 tests | 1 failed) 8980ms
+     × T10 ACL conflict preserves a chosen role, reloads the actual scope and keeps NONE explicit 318ms
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+Not implemented: Window's getComputedStyle() method: with pseudo-elements
+ ❯ tests/views/MembersView.test.ts (28 tests | 1 failed) 10913ms
+     × preserves failed role draft and explicitly reads a current comparison without replay 218ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 12 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/views/MembersView.test.ts > T10 member recovery editing > preserves failed role draft and explicitly reads a current comparison without replay
+AssertionError: expected '管理控制台工作区成员管理项目 ACL组织管理工作区代理与策略调度策略同步分…' to contain '当前角色: VIEWER'
+
+Expected: "当前角色: VIEWER"
+Received: "管理控制台工作区成员管理项目 ACL组织管理工作区代理与策略调度策略同步分层策略同步管理通知渠道协作权限与策略语言中文EnglishAlice退出登录成员管理请求失败revision conflict搜索用户名或昵称查看者 (VIEWER)添 加显示名称用户名角色操作    Alicealice所有者 (OWNER)协作权限点重新加载并核对差异当前修订: 8 · 当前角色: 编辑者 (EDITOR)所有者 (OWNER)移 除Bobbob编辑者 (EDITOR)协作权限点重新加载并核对差异当前修订: 9 · 当前角色: 查看者 (VIEWER)管理员 (ADMIN)移 除Carolcarol查看者 (VIEWER)协作权限点重新加载并核对差异当前修订: 8 · 当前角色: 编辑者 (EDITOR)查看者 (VIEWER)移 除"
+
+ ❯ tests/views/MembersView.test.ts:203:82
+    201|     await wrapper.get('[data-testid=members-reload-u-2]').trigger('cli…
+    202|     expect.soft(calls.slice(before).map(c=>({method:c.method,url:c.url…
+    203|     expect.soft(wrapper.text()).toContain('当前修订: 9');expect.soft(wrapp…
+       |                                                                                  ^
+    204|     expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
+    205|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/12]⎯
+
+ FAIL  tests/views/ProjectAclView.test.ts > ProjectAclView 项目选择（裁定 A/C） > T10 ACL conflict preserves a chosen role, reloads the actual scope and keeps NONE explicit
+AssertionError: expected '管理控制台工作区成员管理项目 ACL组织管理工作区代理与策略调度策略同步分…' to contain '当前角色: NONE'
+
+Expected: "当前角色: NONE"
+Received: "管理控制台工作区成员管理项目 ACL组织管理工作区代理与策略调度策略同步分层策略同步管理通知渠道协作权限与策略语言中文EnglishAlice退出登录项目 ACL请求失败revision conflict选择项目订单 · 不可读内容：仅可管理及恢复权限不可读内容：仅可管理及恢复权限NONE = 明确拒绝该用户访问本项目；删除行 = 恢复工作区角色继承。用户 IDACL 角色操作   u-2拒绝访问（NONE）协作权限点重新加载并核对差异当前修订: 9 · 当前角色: 拒绝访问（NONE）查看者 (VIEWER)删除行搜索用户名或昵称查看者 (VIEWER)添 加"
+
+ ❯ tests/views/ProjectAclView.test.ts:233:33
+    231|     expect.soft(calls.slice(count).map(c=>({method:c.method,url:c.url}…
+    232|     expect.soft(wrapper.text()).toContain('当前修订: 9');
+    233|     expect.soft(wrapper.text()).toContain('当前角色: NONE');expect(calls.f…
+       |                                 ^
+    234|   });
+    235|   function pendingHandler():FetchHandler {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/12]⎯
+
+ FAIL  tests/views/UsersView.test.ts > UsersView 清单与行内动作（任务 5） > 清单渲染：username/displayName/平台角色 tag/状态/创建时间
+AssertionError: expected [ DOMWrapper{ …(3) }, …(2) ] to have a length of 2 but got 3
+
+- Expected
++ Received
+
+- 2
++ 3
+
+ ❯ tests/views/UsersView.test.ts:149:18
+    147|     expect(wrapper.find("[data-testid=users-view]").exists()).toBe(tru…
+    148|     const rows = wrapper.findAll("tbody tr");
+    149|     expect(rows).toHaveLength(2);
+       |                  ^
+    150|     expect(rows[0]!.text()).toContain("alice");
+    151|     expect(rows[0]!.text()).toContain("Alice");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/12]⎯
+
+ FAIL  tests/views/UsersView.test.ts > UsersView 清单与行内动作（任务 5） > 创建账号：空表单本地校验零请求；合法载荷逐字 POST /admin/users + 清单刷新 + 关闭
+AssertionError: expected [ DOMWrapper{ …(3) }, …(3) ] to have a length of 3 but got 4
+
+- Expected
++ Received
+
+- 3
++ 4
+
+ ❯ tests/views/UsersView.test.ts:188:41
+    186|     await flushPromises();
+    187|     expect(posted).toEqual({ username: "bob", password: "password123",…
+    188|     expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+       |                                         ^
+    189|     expect(bodyFind("users-form-username")).toBeNull(); // 成功关窗
+    190|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/12]⎯
+
+ FAIL  tests/views/UsersView.test.ts > UsersView 清单与行内动作（任务 5） > 停用 → POST disable + 清单刷新显示已停用（行内动作切换为启用）；启用 → POST enable
+AssertionError: expected '' to contain '已停用'
+
+- Expected
++ Received
+
+- 已停用
+
+ ❯ tests/views/UsersView.test.ts:198:52
+    196|     await flushPromises();
+    197|     expect(calls.some((c) => c.method === "POST" && c.url === `${BASE}…
+    198|     expect(wrapper.findAll("tbody tr")[0]!.text()).toContain("已停用");
+       |                                                    ^
+    199|     expect(wrapper.find('[data-testid="user-enable-u1"]').exists()).to…
+    200|     expect(wrapper.find('[data-testid="user-disable-u1"]').exists()).t…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/12]⎯
+
+ FAIL  tests/views/UsersView.test.ts > UsersView 错误面（上屏不抛出） > 停用失败（cannot_disable_self 模拟）→ 页顶 error 通道上屏、清单不动
+AssertionError: expected [ DOMWrapper{ …(3) }, …(2) ] to have a length of 2 but got 3
+
+- Expected
++ Received
+
+- 2
++ 3
+
+ ❯ tests/views/UsersView.test.ts:259:41
+    257|     expect(users.error).toBe("不能停用自己");
+    258|     expect(wrapper.find('[data-testid="users-error"]').text()).toConta…
+    259|     expect(wrapper.findAll("tbody tr")).toHaveLength(2); // 清单不动
+       |                                         ^
+    260|   });
+    261|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/12]⎯
+
+ FAIL  tests/views/UsersView.test.ts > 用户管理入口显隐与守卫（session.role） > 生产装配时序（审查重要 1 回归）：超管深链 /users——守卫等验活收口，稳定落在 /users 不弹回
+AssertionError: expected [ DOMWrapper{ …(3) }, …(2) ] to have a length of 2 but got 3
+
+- Expected
++ Received
+
+- 2
++ 3
+
+ ❯ tests/views/UsersView.test.ts:297:41
+    295|     expect(router.currentRoute.value.path).toBe("/users"); // 未被弹回工作区列表
+    296|     expect(wrapper.find('[data-testid="users-view"]').exists()).toBe(t…
+    297|     expect(wrapper.findAll("tbody tr")).toHaveLength(2); // 清单已渲染
+       |                                         ^
+    298|   });
+    299|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/12]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > WorkspacesView 清单 > 挂载拉取清单：行渲染 name/myRole/createdAt
+AssertionError: expected [ DOMWrapper{ …(3) }, …(2) ] to have a length of 2 but got 3
+
+- Expected
++ Received
+
+- 2
++ 3
+
+ ❯ tests/views/WorkspacesView.test.ts:102:18
+    100|     expect(calls.some((c) => c.method === "GET" && c.url === `${BASE}/…
+    101|     const rows = wrapper.findAll("tbody tr");
+    102|     expect(rows).toHaveLength(2);
+       |                  ^
+    103|     expect(rows[0]!.text()).toContain("团队空间");
+    104|     expect(rows[0]!.text()).toContain("OWNER");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/12]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > WorkspacesView 创建（a-modal） > 空名称提交 → 本地校验错误、零请求；填名提交 → POST + 清单刷新 + 关闭
+AssertionError: expected [ DOMWrapper{ …(3) }, …(3) ] to have a length of 3 but got 4
+
+- Expected
++ Received
+
+- 3
++ 4
+
+ ❯ tests/views/WorkspacesView.test.ts:143:41
+    141|     expect(calls.some((c) => c.method === "POST" && c.url === `${BASE}…
+    142|     expect(calls.filter((c) => c.method === "GET" && c.url === `${BASE…
+    143|     expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+       |                                         ^
+    144|     expect(bodyFind("ws-create-name")).toBeNull();
+    145|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/12]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > WorkspacesView 删除（仅 OWNER 行；二次输入名确认） > 输入工作区名匹配 → 确定启用 → 删除 + 清单刷新 + 关闭
+AssertionError: expected [ DOMWrapper{ …(3) }, …(1) ] to have a length of 1 but got 2
+
+- Expected
++ Received
+
+- 1
++ 2
+
+ ❯ tests/views/WorkspacesView.test.ts:214:41
+    212|     expect(calls.some((c) => c.method === "DELETE" && c.url === `${BAS…
+    213|     expect(calls.filter((c) => c.method === "GET" && c.url === `${BASE…
+    214|     expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+       |                                         ^
+    215|     expect(bodyFind("ws-delete-name")).toBeNull();
+    216|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/12]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > P4a workspace role labels retain codes and identity in zh-CN
+AssertionError: expected '' to contain '所有者 (OWNER)'
+
+- Expected
++ Received
+
+- 所有者 (OWNER)
+
+ ❯ tests/views/WorkspacesView.test.ts:240:21
+    238|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    239|  const row=wrapper.findAll('tbody tr')[0]!;
+    240|  expect(row.text()).toContain(locale==='zh-CN'?'所有者 (OWNER)':'Owner (O…
+       |                     ^
+    241|  await row.get('[data-testid=ws-open]').trigger('click');await flushPr…
+    242|  expect(calls.some(c=>c.url===`${BASE}/workspaces/ws-1`&&c.method==='G…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/12]⎯
+
+ FAIL  tests/views/WorkspacesView.test.ts > P4a workspace role labels retain codes and identity in en
+AssertionError: expected '' to contain 'Owner (OWNER)'
+
+- Expected
++ Received
+
+- Owner (OWNER)
+
+ ❯ tests/views/WorkspacesView.test.ts:240:21
+    238|  await wrapper.get('[data-testid=layout-locale]').setValue(locale);awa…
+    239|  const row=wrapper.findAll('tbody tr')[0]!;
+    240|  expect(row.text()).toContain(locale==='zh-CN'?'所有者 (OWNER)':'Owner (O…
+       |                     ^
+    241|  await row.get('[data-testid=ws-open]').trigger('click');await flushPr…
+    242|  expect(calls.some(c=>c.url===`${BASE}/workspaces/ws-1`&&c.method==='G…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/12]⎯
+
+
+ Test Files  4 failed | 11 passed (15)
+      Tests  12 failed | 260 passed (272)
+   Start at  10:44:37
+   Duration  20.66s (transform 21.06s, setup 0ms, import 73.40s, tests 85.57s, environment 31.64s)
+

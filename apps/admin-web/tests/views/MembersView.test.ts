@@ -200,7 +200,7 @@ describe('T10 member recovery editing',()=>{
     revision=9;const before=calls.length;
     await wrapper.get('[data-testid=members-reload-u-2]').trigger('click');await flushPromises();
     expect.soft(calls.slice(before).map(c=>({method:c.method,url:c.url}))).toEqual([{method:'GET',url:`${BASE}/workspaces/ws-1/access-members/u-2`}]);
-    expect.soft(wrapper.text()).toContain('当前修订: 9');expect.soft(wrapper.text()).toContain('当前角色: VIEWER');
+    expect.soft(wrapper.text()).toContain('当前修订: 9');expect.soft(wrapper.text()).toContain('当前角色: 查看者 (VIEWER)');
     expect(calls.filter(c=>c.method==='PUT')).toHaveLength(1);
   });
   it('removal confirmation explains stale overrides and external links cannot revive',async()=>{
@@ -460,4 +460,24 @@ describe("MembersView 顺修（任务 5 审查）", () => {
     expect(expectBody("members-transfer-error").text()).toContain("不能变更 OWNER 的角色");
     expect(bodyFind("members-transfer-name")).not.toBeNull(); // Modal 不关，错误可见
   });
+});
+
+it.each(['zh-CN','en'])('P4a member role labels preserve original role writes in %s',async(locale)=>{
+ const {wrapper,calls}=await mountMembers(memberHandler());
+ await wrapper.get('[data-testid=layout-locale]').setValue(locale);await flushPromises();
+ expect(wrapper.get('[data-testid=members-table]').text()).toContain(locale==='zh-CN'?'所有者 (OWNER)':'Owner (OWNER)');
+ const options=antdSelect(wrapper,'members-role-u-2').props('options') as Array<{value:string;label:string}>;
+ expect(options.find(o=>o.value==='ADMIN')?.label).toBe(locale==='zh-CN'?'管理员 (ADMIN)':'Administrator (ADMIN)');
+ expect(antdSelect(wrapper,'members-role-u-1').props('disabled')).toBe(true);
+ antdSelect(wrapper,'members-role-u-2').vm.$emit('change','ADMIN');await flushPromises();
+ expect(calls.find(c=>c.method==='PUT')?.body).toMatchObject({role:'ADMIN',expectedRevision:1});
+});
+
+it.each(['zh-CN','en'] as const)('P4a candidate member summary uses role labels in %s',async(locale)=>{
+ const {wrapper,workspaces,calls}=await mountMembers(memberHandler(),()=>json(200,member('u-9',{workspaceRole:'EDITOR',projectOverride:null,overrideState:'inherited'})));
+ await wrapper.get('[data-testid=layout-locale]').setValue(locale);workspaces.candidates=[{id:'u-9',username:'dave',displayName:'Dave'}];
+ await wrapper.get('[data-testid=members-add-user] input').setValue('dave');await flushPromises();
+ expect(wrapper.get('[data-testid=members-add-scope]').text()).toContain(locale==='zh-CN'?'编辑者 (EDITOR)':'Editor (EDITOR)');
+ expect(wrapper.get('[data-testid=members-add-scope]').text()).toContain(locale==='zh-CN'?'继承':'Inherit');
+ expect(calls.filter(c=>c.method!=='GET')).toHaveLength(0);
 });
