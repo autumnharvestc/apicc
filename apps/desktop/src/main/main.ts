@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import type { WebContents } from "electron";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { attachQuitGuard } from "./quitGuard.js";
+import { lossyExportDialog } from "./designExportDialog.js";
 import { atomicWriteFile } from "./atomicFile.js";
 import { defaultCredentialPrivateRoot, defaultNetworkPrivateRoot, defaultOAuthPrivateRoot } from "@apicc/core";
 
@@ -122,19 +123,8 @@ app.whenReady().then(() => {
     await atomicWriteFile(result.filePath, content);
     return result.filePath;
   };
-  const confirmLossyExport = async (diagnostics: readonly { code: string; path: string; message: string }[]): Promise<boolean> => {
-    const visible = diagnostics.slice(0, 10).map(({ code, path, message }) => `${code} — ${path}: ${message}`);
-    if (diagnostics.length > visible.length) visible.push(`… ${diagnostics.length - visible.length} more diagnostic(s)`);
-    const result = await dialog.showMessageBox({
-      type: "warning",
-      title: "OpenAPI export may lose semantics",
-      message: "The selected OpenAPI document omits or transforms some contract semantics. Continue exporting?",
-      detail: visible.join("\n"),
-      buttons: ["Cancel", "Export anyway"],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-    });
+  const confirmLossyExport = async (diagnostics: readonly { code: string; path: string; message: string }[], locale: "zh-CN" | "en"): Promise<boolean> => {
+    const result = await dialog.showMessageBox(lossyExportDialog(diagnostics, locale));
     return result.response === 1;
   };
   // 在线依赖（M3-B 任务 1，规格 §2 D9）：token 存 userData 目录（safeStorage 加密，

@@ -1,0 +1,82 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/main/design-export-locale.test.ts (4 tests | 3 failed) 823ms
+     × keeps diagnostics and safe cancel defaults in zh-CN 7ms
+     × passes zh-CN through strict IPC and cancellation never writes 449ms
+     × passes en through strict IPC and cancellation never writes 364ms
+ ❯ tests/renderer/components/DesignPanel.test.ts (23 tests | 1 failed | 22 skipped) 865ms
+     × captures the current UI language for every native export request 862ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/main/design-export-locale.test.ts > native design export locale > keeps diagnostics and safe cancel defaults in zh-CN
+AssertionError: expected [ 'Cancel', 'Export anyway' ] to deeply equal [ '取消', '仍然导出' ]
+
+- Expected
++ Received
+
+  [
+-   "取消",
+-   "仍然导出",
++   "Cancel",
++   "Export anyway",
+  ]
+
+ ❯ tests/main/design-export-locale.test.ts:13:25
+     11|     const facts=Array.from({length:12},(_,i)=>({code:`CODE_${i}`,path:…
+     12|     const box=lossyExportDialog(facts,locale);
+     13|     expect(box.buttons).toEqual(locale==='en'?['Cancel','Export anyway…
+       |                         ^
+     14|     expect(box.title).toBe(locale==='en'?'OpenAPI export may lose sema…
+     15|     expect(box.detail).toContain('CODE_0 — contract.body: original bus…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  tests/main/design-export-locale.test.ts > native design export locale > passes zh-CN through strict IPC and cancellation never writes
+ FAIL  tests/main/design-export-locale.test.ts > native design export locale > passes en through strict IPC and cancellation never writes
+Error: [design:export] 入参校验失败: 0 Unrecognized key: "locale"
+ ❯ parseIpcArgs src/shared/ipc-contract.ts:581:11
+    579|     const issue = result.error.issues[0];
+    580|     const location = issue ? `${issue.path.join(".") || "(root)"} ${is…
+    581|     throw new Error(`[${channel}] 入参校验失败: ${location}`);
+       |           ^
+    582|   }
+    583|   return result.data as IpcArgsMap[Channel];
+ ❯ dispatch src/main/ipc.ts:415:15
+ ❯ handle src/main/ipc.ts:1293:18
+ ❯ tests/main/design-export-locale.test.ts:31:34
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  tests/renderer/components/DesignPanel.test.ts > DesignPanel > captures the current UI language for every native export request
+AssertionError: expected { …(4) } to match object { locale: 'zh-CN', …(2) }
+(8 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+    "format": "markdown",
+-   "locale": "zh-CN",
+    "scope": {
+      "kind": "project",
+    },
+  }
+
+ ❯ tests/renderer/components/DesignPanel.test.ts:83:31
+     81|       await wrapper.get('[data-testid="design-export"]').trigger('clic…
+
+     82|       await clickTeleported('design-export-saved');
+     83|       expect(received.at(-1)).toMatchObject({locale:language,format:'m…
+       |                               ^
+     84|     }
+     85|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 1 passed | 22 skipped (27)
+   Start at  12:27:20
+   Duration  7.86s (transform 5.43s, setup 0ms, import 9.38s, tests 1.69s, environment 908ms)
+

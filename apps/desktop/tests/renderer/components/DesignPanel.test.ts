@@ -72,6 +72,17 @@ async function clickTeleported(testId: string): Promise<void> {
 }
 
 describe("DesignPanel", () => {
+  it('captures the current UI language for every native export request', async () => {
+    const {wrapper,api,i18n}=await mountDesignPanel();
+    const received:unknown[]=[];
+    api.designExport=async input=>{received.push(input);return '';};
+    for(const language of ['zh-CN','en'] as const){
+      i18n.global.locale.value=language;
+      await wrapper.get('[data-testid="design-export"]').trigger('click');await flushPromises();
+      await clickTeleported('design-export-saved');
+      expect(received.at(-1)).toMatchObject({locale:language,format:'markdown',scope:{kind:'project'}});
+    }
+  });
   it("未加载接口时渲染空态", async () => {
     const api = createMemoryApi();
     const workspace = useWorkspaceStore(api);

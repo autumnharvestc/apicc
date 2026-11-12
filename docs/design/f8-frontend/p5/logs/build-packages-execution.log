@@ -1,0 +1,2 @@
+$ tsc -p tsconfig.build.json && node scripts/build-source-host-resources.mjs && node scripts/build-identity.mjs
+execution build identity 856d2dea2dde23d4fd223aa3774d72c5724c02b979ab32a7571286048e109b5d (271 source files)

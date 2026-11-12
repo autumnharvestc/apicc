@@ -1,0 +1,14 @@
+[OK]   实际包的协作 IPC/Core 纯子路径及独立 viewer 资源可加载
+PACKAGED_SOURCE_HOST_LIFECYCLE {"ms":3019,"kind":"helper-spawn","pid":15180}
+PACKAGED_SOURCE_HOST_LIFECYCLE {"ms":3179,"kind":"started"}
+PACKAGED_SOURCE_HOST_LIFECYCLE {"ms":3263,"kind":"collected-frame","activeZero":true,"exitCode":0}
+PACKAGED_SOURCE_HOST_LIFECYCLE {"ms":3268,"kind":"helper-exit","code":0}
+PACKAGED_SOURCE_HOST_LIFECYCLE {"ms":3268,"kind":"helper-close","code":0}
+PACKAGED_SOURCE_HOST_READY {"entry":"C:\\Users\\imini\\.codex\\worktrees\\f8-frontend-polish\\apicc\\local\\f8-frontend-p5\\package\\win-unpacked\\resources\\app.asar\\node_modules\\@apicc\\execution\\dist\\source-host\\index.js","descendantPid":22328,"descendantAlive":false,"collected":true,"missingToolCode":"SYNC_TOOL_UNAVAILABLE"}
+[OK]   实际包 source-host 物理 helper 已收集真实后代，缺工具诊断有限可读
+[OK]   无 FATAL/模块缺失错误（输出 0 字符）
+[OK]   CDP 已发现 renderer 页面：url=file:///C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/local/f8-frontend-p5/package/win-unpacked/resources/app.asar/dist-renderer/index.html
+[OK]   存活至少 8s（pid=16716，exitCode=null）
+[OK]   renderer 加载成功：document.title="apicc" url=file:///C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/local/f8-frontend-p5/package/win-unpacked/resources/app.asar/dist-renderer/index.html
+[OK]   renderer 挂载非空：#app 子元素 1 个
+打包冒烟全部通过

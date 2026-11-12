@@ -255,7 +255,7 @@ export function useDesignStore(api: ApiccApi, editor: Editor) {
       async exportDocument(
         format: "markdown" | "html" | "openapi-3.0" | "openapi-3.1",
         scope: DocumentScope,
-        options?: { encoding?: "json" | "yaml"; infoVersion?: string },
+        options?: { encoding?: "json" | "yaml"; infoVersion?: string; locale?: "zh-CN" | "en" },
       ): Promise<string> {
         const key = editor.activeKey;
         const session = key ? editor.sessions[key] : undefined;

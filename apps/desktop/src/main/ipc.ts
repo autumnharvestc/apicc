@@ -90,7 +90,7 @@ export interface IpcDepsOptions {
     encoding?: NonNullable<DesignExportInput["encoding"]>,
   ) => Promise<string>;
   /** The native host asks for consent only after the exporter identifies semantic loss. */
-  confirmLossyExport?: (diagnostics: readonly { code: string; path: string; message: string }[]) => Promise<boolean>;
+  confirmLossyExport?: (diagnostics: readonly { code: string; path: string; message: string }[], locale: "zh-CN" | "en") => Promise<boolean>;
   /** User-selected file metadata; the renderer never reads this path or its bytes. */
   pickDebugFile?: () => Promise<DebugFileReference | null>;
   /** Native picker stays in main; only the selected file's SecretStore outcome crosses IPC. */
@@ -1031,7 +1031,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
           if (result.blocked) {
             const diagnostics = result.diagnostics.filter((diagnostic) => diagnostic.lossy)
               .map(({ code, path, message }) => ({ code, path, message }));
-            if (!(await confirmLossyExport(diagnostics))) return "";
+            if (!(await confirmLossyExport(diagnostics, input.locale ?? "en"))) return "";
           }
           let content: string;
           if (encoding === "yaml") {

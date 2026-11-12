@@ -28,7 +28,7 @@ const props = defineProps<{
   reportError?: (e: unknown) => void;
   readOnly?: boolean;
 }>();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const savedVersion = ref<string | null>(null);
 const activeView = ref<"contract" | "document">("document");
@@ -161,10 +161,13 @@ async function exportDocument(saveFirst: boolean) {
     const path = await props.design.exportDocument(
       exportFormat.value,
       buildExportScope(),
-      openapiExport.value ? {
-        encoding: exportEncoding.value,
-        ...(exportInfoVersion.value.trim() ? { infoVersion: exportInfoVersion.value.trim() } : {}),
-      } : undefined,
+      {
+        locale: locale.value === 'en' ? 'en' : 'zh-CN',
+        ...(openapiExport.value ? {
+          encoding: exportEncoding.value,
+          ...(exportInfoVersion.value.trim() ? { infoVersion: exportInfoVersion.value.trim() } : {}),
+        } : {}),
+      },
     );
     exportOpen.value = false;
     if (path) void message.success(t("design.exported", { path }));

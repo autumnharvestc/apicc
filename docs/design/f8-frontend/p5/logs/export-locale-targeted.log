@@ -1,0 +1,30 @@
+
+ RUN  v4.1.11 C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/apps/desktop
+
+ ❯ tests/main/design-export-locale.test.ts (4 tests | 2 failed) 818ms
+     × passes zh-CN through strict IPC and cancellation never writes 457ms
+     × passes en through strict IPC and cancellation never writes 356ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/main/design-export-locale.test.ts > native design export locale > passes zh-CN through strict IPC and cancellation never writes
+ FAIL  tests/main/design-export-locale.test.ts > native design export locale > passes en through strict IPC and cancellation never writes
+Error: OpenAPI 导出包含结构错误；未写入输出文件
+ ❯ dispatch src/main/ipc.ts:1029:19
+    1027|           });
+    1028|           if (result.diagnostics.some((diagnostic) => diagnostic.sever…
+    1029|             throw new Error("OpenAPI 导出包含结构错误；未写入输出文件");
+       |                   ^
+    1030|           }
+    1031|           if (result.blocked) {
+ ❯ handle src/main/ipc.ts:1293:18
+ ❯ tests/main/design-export-locale.test.ts:31:34
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  2 failed | 32 passed (34)
+   Start at  12:28:07
+   Duration  21.23s (transform 6.01s, setup 0ms, import 10.93s, tests 19.32s, environment 925ms)
+

@@ -21,6 +21,7 @@ export const DesignExportInputSchema = z.object({
   format: z.enum(["markdown", "html", "openapi-3.0", "openapi-3.1"]),
   encoding: z.enum(["json", "yaml"]).optional(),
   infoVersion: z.string().optional(),
+  locale: z.enum(["zh-CN", "en"]).optional(),
   scope: DocumentScopeSchema,
 }).strict();
 export type DesignExportInput = z.infer<typeof DesignExportInputSchema>;

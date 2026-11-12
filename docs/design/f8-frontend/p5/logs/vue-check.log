@@ -1,0 +1,3 @@
+$ vue-tsc --noEmit -p tsconfig.json
+tests/main/design-export-locale.test.ts(42,42): error TS2493: Tuple type '[]' of length '0' has no element at index '1'.
+[ELIFECYCLE] Command failed with exit code 2.
