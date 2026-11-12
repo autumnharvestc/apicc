@@ -1,0 +1,22 @@
+{
+  "window": {
+    "app": "process:C:\\Users\\imini\\.codex\\worktrees\\f8-frontend-polish\\apicc\\local\\f8-frontend-p5\\package\\win-unpacked\\apicc.exe",
+    "id": 263558,
+    "title": "apicc"
+  },
+  "screenshots": [
+    {
+      "height": 639,
+      "id": "screenshot-0",
+      "originX": -2,
+      "originY": -12,
+      "width": 1097,
+      "zIndex": 0
+    }
+  ],
+  "accessibility": {
+    "document_text": "F8 P5 synthetic only\n￼\n主页\nF8 P5 合成项目-长名称完整展示\n￼\nF8 P5 第二项目\n￼\n￼\n打开或查找项目\n在线模式\n￼\n￼\n中文\n￼\n自动\n￼\n亮色\n￼\n暗色\n外部规范同步\n￼\n接口\n￼\n运行\n￼\n工作流\n￼\n测试\n￼\n环境\n￼\n长模块名称-订单服务-Order service\n￼\n无环境\n运 行\n运行历史\n￼\n￼\n运行",
+    "focused_element": "14 文档 apicc Value: file:///C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/local/f8-frontend-p5/package/win-unpacked/resources/app.asar/dist-renderer/index.html ID: RootWebArea",
+    "tree": "Window: \"apicc\", App: apicc.exe.\n\t0 窗口 apicc Secondary Actions: Raise\n\t\t1 窗格 (disabled)\n\t\t2 区域 apicc\n\t\t\t3 区域\n\t\t\t\t4 区域\n\t\t\t\t\t5 区域\n\t\t\t\t\t\t6 区域\n\t\t\t\t\t\t\t7 菜单栏\n\t\t\t\t\t\t\t\t8 按钮 File\n\t\t\t\t\t\t\t\t9 按钮 Edit ID: view_1\n\t\t\t\t\t\t\t\t10 按钮 View ID: view_2\n\t\t\t\t\t\t\t\t11 按钮 Window ID: view_3\n\t\t\t\t\t\t\t12 区域\n\t\t\t\t\t\t\t\t13 区域\n\t\t\t\t\t\t\t\t\t14 文档 apicc Value: file:///C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/local/f8-frontend-p5/package/win-unpacked/resources/app.asar/dist-renderer/index.html ID: RootWebArea\n\t\t\t\t\t\t\t\t\t\t15 章节标题\n\t\t\t\t\t\t\t\t\t\t\t16 组 Description: F8 P5 synthetic only\n\t\t\t\t\t\t\t\t\t\t\t\t17 文本 F8 P5 synthetic only\n\t\t\t\t\t\t\t\t\t\t\t18 选项卡 主页\n\t\t\t\t\t\t\t\t\t\t\t\t19 选项卡项目 (selectable) home 主页\n\t\t\t\t\t\t\t\t\t\t\t\t\t20 图形 home\n\t\t\t\t\t\t\t\t\t\t\t\t72 选项卡项目 (selectable) F8 P5 合成项目-长名称完整展示 Description: F8 P5 合成项目-长名称完整展示 · C:\\Users\\imini\\.codex\\worktrees\\f8-frontend-polish\\apicc\\local\\f8-frontend-p5\\native-spi9Qw\\workspace · 80000000-0000-4000-8000-000000000002\n\t\t\t\t\t\t\t\t\t\t\t\t73 按钮 关闭 F8 P5 合成项目-长名称完整展示\n\t\t\t\t\t\t\t\t\t\t\t\t\t74 图形 close\n\t\t\t\t\t\t\t\t\t\t\t\t410 选项卡项目 (selectable) F8 P5 第二项目 Description: F8 P5 第二项目 · C:\\Users\\imini\\.codex\\worktrees\\f8-frontend-polish\\apicc\\local\\f8-frontend-p5\\native-spi9Qw\\workspace · 80000000-0000-4000-8000-000000000002\n\t\t\t\t\t\t\t\t\t\t\t\t411 按钮 关闭 F8 P5 第二项目\n\t\t\t\t\t\t\t\t\t\t\t\t\t412 图形 close\n\t\t\t\t\t\t\t\t\t\t\t46 组\n\t\t\t\t\t\t\t\t\t\t\t\t47 组\n\t\t\t\t\t\t\t\t\t\t\t\t\t48 组合框 ID: rc_select_0\n\t\t\t\t\t\t\t\t\t\t\t\t\t49 文本 打开或查找项目\n\t\t\t\t\t\t\t\t\t\t\t21 按钮 在线模式 Description: 在线模式\n\t\t\t\t\t\t\t\t\t\t\t22 按钮 setting Description: 设置\n\t\t\t\t\t\t\t\t\t\t\t\t23 图形 setting\n\t\t\t\t\t\t\t\t\t\t\t24 按钮 global 中文 Description: 语言\n\t\t\t\t\t\t\t\t\t\t\t\t25 图形 global\n\t\t\t\t\t\t\t\t\t\t\t26 组 Description: 主题\n\t\t\t\t\t\t\t\t\t\t\t\t27 单选按钮 (selectable, settable, string) 自动\n\t\t\t\t\t\t\t\t\t\t\t\t28 文本 自动\n\t\t\t\t\t\t\t\t\t\t\t\t29 单选按钮 (selectable, settable, string) 亮色\n\t\t\t\t\t\t\t\t\t\t\t\t30 文本 亮色\n\t\t\t\t\t\t\t\t\t\t\t\t31 单选按钮 (selectable, settable, string) 暗色\n\t\t\t\t\t\t\t\t\t\t\t\t32 文本 暗色\n\t\t\t\t\t\t\t\t\t\t413 按钮 外部规范同步\n\t\t\t\t\t\t\t\t\t\t414 导航\n\t\t\t\t\t\t\t\t\t\t\t415 按钮 api 接口\n\t\t\t\t\t\t\t\t\t\t\t\t416 图形 api\n\t\t\t\t\t\t\t\t\t\t\t417 按钮 play-circle 运行\n\t\t\t\t\t\t\t\t\t\t\t\t418 图形 play-circle\n\t\t\t\t\t\t\t\t\t\t\t419 按钮 deployment-unit 工作流\n\t\t\t\t\t\t\t\t\t\t\t\t420 图形 deployment-unit\n\t\t\t\t\t\t\t\t\t\t\t421 按钮 experiment 测试\n\t\t\t\t\t\t\t\t\t\t\t\t422 图形 experiment\n\t\t\t\t\t\t\t\t\t\t\t423 按钮 global 环境\n\t\t\t\t\t\t\t\t\t\t\t\t424 图形 global\n\t\t\t\t\t\t\t\t\t\t2381 组\n\t\t\t\t\t\t\t\t\t\t\t2382 组\n\t\t\t\t\t\t\t\t\t\t\t\t2383 组合框 ID: rc_select_30\n\t\t\t\t\t\t\t\t\t\t\t\t2384 文本 长模块名称-订单服务-Order service\n\t\t\t\t\t\t\t\t\t\t2385 组\n\t\t\t\t\t\t\t\t\t\t\t2386 组\n\t\t\t\t\t\t\t\t\t\t\t\t2387 组合框 ID: rc_select_31\n\t\t\t\t\t\t\t\t\t\t\t\t2388 文本 无环境\n\t\t\t\t\t\t\t\t\t\t2389 按钮 运 行\n\t\t\t\t\t\t\t\t\t\t2390 按钮 运行历史\n\t\t\t\t\t\t\t\t\t\t1577 组\n\t\t\t\t\t\t\t\t\t\t2391 组\n\t\t\t\t\t\t\t\t\t\t\t2392 工具提示 运行\n\t\t\t\t\t\t\t\t45 区域\n\nDocument text: ```\nF8 P5 synthetic only\n￼\n主页\nF8 P5 合成项目-长名称完整展示\n￼\nF8 P5 第二项目\n￼\n￼\n打开或查找项目\n在线模式\n￼\n￼\n中文\n￼\n自动\n￼\n亮色\n￼\n暗色\n外部规范同步\n￼\n接口\n￼\n运行\n￼\n工作流\n￼\n测试\n￼\n环境\n￼\n长模块名称-订单服务-Order service\n￼\n无环境\n运 行\n运行历史\n￼\n￼\n运行\n```"
+  }
+}

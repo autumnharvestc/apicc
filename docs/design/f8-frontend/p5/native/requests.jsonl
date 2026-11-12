@@ -1,0 +1,4 @@
+{"time":"2026-11-12T04:53:46.576Z","method":"GET","path":"/echo"}
+{"time":"2026-11-12T04:54:26.050Z","method":"GET","path":"/fail"}
+{"time":"2026-11-12T04:55:09.619Z","method":"GET","path":"/slow"}
+{"time":"2026-11-12T04:55:16.490Z","path":"/slow","event":"response-close","completed":false}

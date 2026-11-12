@@ -1,0 +1,10 @@
+{
+  "recordedAt": "2026-11-12T13:11:25.5975328+08:00",
+  "sourceCommit": "c8dc49fdcf535490d98870d76e5d7591d3166b3c",
+  "workflow": "id: 80000000-0000-4000-8000-000000000003\nname: F8 P5 合成项目-长名称完整展示\nvariables: {}\nglobals:\n  query: []\n  headers: []\n  cookies: []\n  body: []\nenvironments: []\nworkflows:\n  - id: 80000000-0000-4000-8000-000000000006\n    name: F8 P5 合成工作流\n    status: draft\n    nodes:\n      - id: fetch\n        label: P5 保存重开节点\n        position:\n          x: 120\n          y: 120\n        kind: request\n        apiId: 80000000-0000-4000-8000-000000000100\n        caseId: smoke\n    edges: []",
+  "apiFile": "local/f8-frontend-p5/native-spi9Qw/workspace\\groups\\80000000-0000-4000-8000-000000000002\\projects\\80000000-0000-4000-8000-000000000003\\collections\\80000000-0000-4000-8000-000000000004\\apis\\80000000-0000-4000-8000-000000000100\\api.yaml",
+  "apiDescriptionMatches": [
+    "local/f8-frontend-p5/native-spi9Qw/workspace\\groups\\80000000-0000-4000-8000-000000000002\\projects\\80000000-0000-4000-8000-000000000003\\collections\\80000000-0000-4000-8000-000000000004\\apis\\80000000-0000-4000-8000-000000000100\\api.yaml:5:  description: P5 原生保存与主页往返验证 / synthetic draft"
+  ],
+  "workflowPositionManualCheck": "pending"
+}

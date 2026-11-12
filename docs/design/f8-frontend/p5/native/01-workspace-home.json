@@ -1,0 +1,22 @@
+{
+  "window": {
+    "app": "process:C:\\Users\\imini\\.codex\\worktrees\\f8-frontend-polish\\apicc\\local\\f8-frontend-p5\\package\\win-unpacked\\apicc.exe",
+    "id": 263558,
+    "title": "apicc"
+  },
+  "screenshots": [
+    {
+      "height": 633,
+      "id": "screenshot-0",
+      "originX": 10,
+      "originY": 0,
+      "width": 1087,
+      "zIndex": 0
+    }
+  ],
+  "accessibility": {
+    "document_text": "F8 P5 synthetic only\n￼\n主页\n￼\n打开或查找项目\n在线模式\n￼\n￼\n中文\n￼\n自动\n￼\n亮色\n￼\n暗色\n我的团队\nF8 P5 synthetic only\n合成分组\n重命名\n删除\n新建分组\n打开本地工作区\n新建本地目录\n服务器\n尚未添加远程服务器——点右上「管理连接」配置\n管理连接\nF8 P5 synthetic only\n导入项目\n新建项目\nF\n￼\nF8 P5 合成项目-长名称完整展示F8 P5 合成项目-长名称完…\nF\n￼\nF8 P5 第二项目",
+    "focused_element": "0 窗口 apicc Secondary Actions: Raise",
+    "tree": "Window: \"apicc\", App: apicc.exe.\n\t0 窗口 apicc Secondary Actions: Raise\n\t\t1 窗格 (disabled)\n\t\t2 区域 apicc\n\t\t\t3 区域\n\t\t\t\t4 区域\n\t\t\t\t\t5 区域\n\t\t\t\t\t\t6 区域\n\t\t\t\t\t\t\t7 菜单栏\n\t\t\t\t\t\t\t\t8 按钮 File\n\t\t\t\t\t\t\t\t9 按钮 Edit ID: view_1\n\t\t\t\t\t\t\t\t10 按钮 View ID: view_2\n\t\t\t\t\t\t\t\t11 按钮 Window ID: view_3\n\t\t\t\t\t\t\t12 区域\n\t\t\t\t\t\t\t\t13 区域\n\t\t\t\t\t\t\t\t\t14 文档 apicc Value: file:///C:/Users/imini/.codex/worktrees/f8-frontend-polish/apicc/local/f8-frontend-p5/package/win-unpacked/resources/app.asar/dist-renderer/index.html ID: RootWebArea\n\t\t\t\t\t\t\t\t\t\t15 章节标题\n\t\t\t\t\t\t\t\t\t\t\t16 组 Description: F8 P5 synthetic only\n\t\t\t\t\t\t\t\t\t\t\t\t17 文本 F8 P5 synthetic only\n\t\t\t\t\t\t\t\t\t\t\t18 选项卡 主页\n\t\t\t\t\t\t\t\t\t\t\t\t19 选项卡项目 (selectable) home 主页\n\t\t\t\t\t\t\t\t\t\t\t\t\t20 图形 home\n\t\t\t\t\t\t\t\t\t\t\t46 组\n\t\t\t\t\t\t\t\t\t\t\t\t47 组\n\t\t\t\t\t\t\t\t\t\t\t\t\t48 组合框 ID: rc_select_0\n\t\t\t\t\t\t\t\t\t\t\t\t\t49 文本 打开或查找项目\n\t\t\t\t\t\t\t\t\t\t\t21 按钮 在线模式 Description: 在线模式\n\t\t\t\t\t\t\t\t\t\t\t22 按钮 setting Description: 设置\n\t\t\t\t\t\t\t\t\t\t\t\t23 图形 setting\n\t\t\t\t\t\t\t\t\t\t\t24 按钮 global 中文 Description: 语言\n\t\t\t\t\t\t\t\t\t\t\t\t25 图形 global\n\t\t\t\t\t\t\t\t\t\t\t26 组 Description: 主题\n\t\t\t\t\t\t\t\t\t\t\t\t27 单选按钮 (selectable, settable, string) 自动\n\t\t\t\t\t\t\t\t\t\t\t\t28 文本 自动\n\t\t\t\t\t\t\t\t\t\t\t\t29 单选按钮 (selectable, settable, string) 亮色\n\t\t\t\t\t\t\t\t\t\t\t\t30 文本 亮色\n\t\t\t\t\t\t\t\t\t\t\t\t31 单选按钮 (selectable, settable, string) 暗色\n\t\t\t\t\t\t\t\t\t\t\t\t32 文本 暗色\n\t\t\t\t\t\t\t\t\t\t33 组\n\t\t\t\t\t\t\t\t\t\t\t34 文本 我的团队\n\t\t\t\t\t\t\t\t\t\t\t50 文本 F8 P5 synthetic only\n\t\t\t\t\t\t\t\t\t\t51 组\n\t\t\t\t\t\t\t\t\t\t\t52 文本 合成分组\n\t\t\t\t\t\t\t\t\t\t\t53 组\n\t\t\t\t\t\t\t\t\t\t\t\t54 按钮 重命名\n\t\t\t\t\t\t\t\t\t\t\t\t55 按钮 (disabled) 删除 Description: 请先删除分组下全部项目\n\t\t\t\t\t\t\t\t\t\t56 按钮 新建分组\n\t\t\t\t\t\t\t\t\t\t57 按钮 打开本地工作区\n\t\t\t\t\t\t\t\t\t\t58 按钮 新建本地目录\n\t\t\t\t\t\t\t\t\t\t38 文本 服务器\n\t\t\t\t\t\t\t\t\t\t39 文本 尚未添加远程服务器——点右上「管理连接」配置\n\t\t\t\t\t\t\t\t\t\t40 按钮 管理连接\n\t\t\t\t\t\t\t\t\t\t59 文本 F8 P5 synthetic only\n\t\t\t\t\t\t\t\t\t\t41 按钮 导入项目\n\t\t\t\t\t\t\t\t\t\t42 按钮 新建项目\n\t\t\t\t\t\t\t\t\t\t60 组\n\t\t\t\t\t\t\t\t\t\t\t61 文本 F\n\t\t\t\t\t\t\t\t\t\t\t62 组\n\t\t\t\t\t\t\t\t\t\t\t\t63 按钮 更多操作 Description: 更多操作\n\t\t\t\t\t\t\t\t\t\t\t\t\t64 图形 ellipsis\n\t\t\t\t\t\t\t\t\t\t\t65 按钮 F8 P5 合成项目-长名称完整展示 Description: F8 P5 合成项目-长名称完整展示\n\t\t\t\t\t\t\t\t\t\t66 组\n\t\t\t\t\t\t\t\t\t\t\t67 文本 F\n\t\t\t\t\t\t\t\t\t\t\t68 组\n\t\t\t\t\t\t\t\t\t\t\t\t69 按钮 更多操作 Description: 更多操作\n\t\t\t\t\t\t\t\t\t\t\t\t\t70 图形 ellipsis\n\t\t\t\t\t\t\t\t\t\t\t71 按钮 F8 P5 第二项目 Description: F8 P5 第二项目\n\t\t\t\t\t\t\t\t45 区域\n\nDocument text: ```\nF8 P5 synthetic only\n￼\n主页\n￼\n打开或查找项目\n在线模式\n￼\n￼\n中文\n￼\n自动\n￼\n亮色\n￼\n暗色\n我的团队\nF8 P5 synthetic only\n合成分组\n重命名\n删除\n新建分组\n打开本地工作区\n新建本地目录\n服务器\n尚未添加远程服务器——点右上「管理连接」配置\n管理连接\nF8 P5 synthetic only\n导入项目\n新建项目\nF\n￼\nF8 P5 合成项目-长名称完整展示F8 P5 合成项目-长名称完…\nF\n￼\nF8 P5 第二项目\n```"
+  }
+}
