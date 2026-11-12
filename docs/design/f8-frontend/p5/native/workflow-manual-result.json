@@ -1,0 +1,15 @@
+{
+  "recordedAt": "2026-11-12T13:30:10.2705337+08:00",
+  "userConfirmation": "位置保留，绑定不变",
+  "beforePosition": {
+    "x": 120,
+    "y": 120
+  },
+  "afterPosition": {
+    "x": 362,
+    "y": 221
+  },
+  "apiId": "80000000-0000-4000-8000-000000000100",
+  "caseId": "smoke",
+  "persistedWorkflow": "id: 80000000-0000-4000-8000-000000000003\nname: F8 P5 合成项目-长名称完整展示\nvariables: {}\nglobals:\n  query: []\n  headers: []\n  cookies: []\n  body: []\nenvironments: []\nworkflows:\n  - id: 80000000-0000-4000-8000-000000000006\n    name: F8 P5 合成工作流\n    status: draft\n    nodes:\n      - id: fetch\n        label: P5 保存重开节点\n        position:\n          x: 362\n          y: 221\n        kind: request\n        apiId: 80000000-0000-4000-8000-000000000100\n        caseId: smoke\n    edges: []"
+}

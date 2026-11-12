@@ -1,7 +1,9 @@
 {
-  "recordedAt": "2026-11-12T13:12:09.2242379+08:00",
+  "recordedAt": "2026-11-12T13:30:10.4777017+08:00",
   "fixturePid": 13572,
   "fixtureStopped": true,
-  "desktop": "left open for the pending workflow manual check",
-  "normalDesktopExit": "pending"
+  "desktop": "closed normally via Alt+F4",
+  "normalDesktopExit": "passed: window absent and no process with isolated executable path",
+  "ownedProcessCount": 0,
+  "discardPrompt": "not shown"
 }

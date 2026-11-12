@@ -1,0 +1,12 @@
+{
+  "sourceCommit": "c8dc49fdcf535490d98870d76e5d7591d3166b3c",
+  "platform": "Windows x64",
+  "node": "22.19.0",
+  "package": "C:\\Users\\imini\\.codex\\worktrees\\f8-frontend-polish\\apicc\\local\\f8-frontend-p5\\apicc-f8-frontend-p5-candidate.zip",
+  "bytes": 180947344,
+  "sha256": "aaea73d0c643e4cc57fb96c87427ad69f076e921a91770b62201a69a052e1617",
+  "asarSha256": "6f6e08c99c8316a3ddf7d106ea744879f15ba8f89d6cf8fbca8fd04ed328cae1",
+  "smoke": "passed",
+  "nativeAcceptance": "passed within documented scope; workflow position confirmed manually; normal exit verified",
+  "fullLocalGate": "not-run"
+}

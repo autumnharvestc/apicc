@@ -1,6 +1,6 @@
 # P5 原生截图与操作证据
 
-2026-11-12，候选源码 `c8dc49fd`，真实 Windows 目录包。仅操作本轮 `F8 P5 synthetic only` 合成工作区，回环服务 `127.0.0.1:64934`；隔离 profile/workspace/history/credentials。每张截图的同名 JSON 保留窗口、截图尺寸、可访问树。扩展名沿用 `.png`，工具实际输出为 JPEG；审核解码的31张图片宽高均与JSON一致。未读取页面DOM或用浏览器夹具代替原生。
+2026-11-12，候选源码 `c8dc49fd`，真实 Windows 目录包。仅操作本轮 `F8 P5 synthetic only` 合成工作区，回环服务 `127.0.0.1:64934`；隔离 profile/workspace/history/credentials。每张截图的同名 JSON 保留窗口、截图尺寸、可访问树。扩展名沿用 `.png`，工具实际输出为 JPEG；截至30号审核解码的31张图片宽高均与JSON一致，31号为后补手验状态。未读取页面DOM或用浏览器夹具代替原生。
 
 | 证据编号 | 内容与结论 |
 | --- | --- |
@@ -19,7 +19,10 @@
 | 28-keyboard-history | Tab/Shift+Tab确认历史按钮焦点后，Enter实际打开历史抽屉；Esc正常关闭 |
 | 29 | 已保存接口关闭页签再重开，AX说明仍为“P5 原生保存与主页往返验证 / synthetic draft”，磁盘一致；元数据位于滚动区，并非本图中全部可见 |
 | 30-reopened-description-visible | 文件名沿用当时预期，但此尝试未展开说明区域；随后另一次分隔拖动也未生效，不计为可见说明或拖动成功证据 |
+| 31-workflow-user-verified | 用户完成拖动→保存→返回列表→重开并确认“位置保留，绑定不变”。随后核对实际窗口及磁盘，位置从120,120变为362,221，API100与smoke绑定保持；详情见workflow-manual-result.json |
 
 工具边界：隐藏启动无法枚举，获用户授权后显示本轮窗口。原生对话框一次遇用户输入检测、一次因仅文本状态缺几何，均刷新后操作；直接拖窗口边缘未调尺寸，改用系统菜单“大小”完成。上述工具过程不作为产品故障或成功证据。所有未完成项以主验证表为准。
 
 日志：`native-stderr.log` 如实保留CSP回退INFO；`requests.jsonl` 为合成HTTP请求与响应关闭事件。未出现不等于既有P4a ResizeObserver根因已修复。
+
+最终退出：用户位置手验后正常Alt+F4退出，无丢弃草稿提示；原窗口与隔离exe全部进程消失，回环服务亦停止。`session-status.json`为最终状态，`persisted-synthetic-state.json`保留手验前的历史坐标与pending记录。31首次捕获曾错误返回被遮挡的其他窗口画面，未用作验收；激活指定apicc并等画面稳定后替换为当前正确截图。
