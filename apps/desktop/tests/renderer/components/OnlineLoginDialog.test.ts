@@ -515,7 +515,7 @@ describe("OnlineLoginDialog 登出前草稿确认（终审 Important 2）", () =
     await flushPromises();
     expect(online.loggedIn).toBe(true);
     expect(tabs.tabs).toHaveLength(1);
-    expect(tabs.tabs[0]!.workspaceRef).toEqual({ kind: "online", workspaceId: wsId, name: "示例在线空间" });
+    expect(tabs.tabs[0]!.workspaceRef).toEqual({ kind: "online", workspaceId: wsId, name: "示例在线空间", baseUrl: online.activeBaseUrl });
     expect(online.sessions[wsId]).toBeDefined();
     expect(bodyFind("online-logout-impact")).toBeNull();
   });

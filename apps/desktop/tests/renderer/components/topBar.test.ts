@@ -1,18 +1,10 @@
 // @vitest-environment jsdom
-// 计划 C 任务 6（不变量 4：工作区级关闭唯一入口=退出在线工作区按钮，新增确认弹窗）：
-// exitOnline 直接 closeWorkspace 改为确认 Modal——列出该工作区受影响签（项目名 + 草稿态，
-// tabs store 的 projectHasDrafts 统计），确认后先 tabs.closeWorkspaceTabs（关其全部签+驱逐
-// 各项目会话，无签级 dirty 确认——工作区级关闭本身已确认）再 online.closeWorkspace(wsId)；
-// 取消不动。装配约定同 projectTabs.test.ts：tabs store 由 createTabsStore(deps) 真实构造
-// 后经 props 注入，deps 全内存 stub（不发 IPC）；a-modal（ConfirmDialog）传送门内容用
-// body 作用域查询（expectBody/bodyHas）。
 import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
 import TopBar from "../../../src/renderer/src/components/TopBar.vue";
 import type { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
-import type { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
 import type { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import { createPluginsStore } from "../../../src/renderer/src/stores/plugins.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
@@ -20,7 +12,6 @@ import type { OnlineSession } from "../../../src/renderer/src/stores/online.js";
 import {
   createEvictProjectSessions,
   createTabsStore,
-  type ProjectTab,
   type TabsStoreDeps,
   type WorkspaceRef,
 } from "../../../src/renderer/src/stores/tabs.js";
@@ -80,10 +71,6 @@ const ONLINE_REF_WS1: WorkspaceRef = { kind: "online", workspaceId: "ws-1", name
 const P1 = { id: "p-1", name: "项目一" };
 const P2 = { id: "p-2", name: "项目二" };
 const P3 = { id: "p-3", name: "本地项目", locator: { workspaceId: "20000000-0000-4000-8000-000000000001", groupId: "20000000-0000-4000-8000-000000000002", projectId: "20000000-0000-4000-8000-000000000013" } satisfies ProjectLocator };
-
-function projectIdOf(tab: ProjectTab): string {
-  return "projectLocator" in tab ? tab.projectLocator.projectId : tab.projectId;
-}
 
 function sessionStub(id: string): OnlineSession {
   return {
@@ -171,7 +158,6 @@ async function mountTopBar(fixture: ReturnType<typeof makeFixture>) {
   const wrapper = mount(TopBar, {
     props: {
       workspace: fixture.workspace as unknown as ReturnType<typeof useWorkspaceStore>,
-      tree: fixture.tree as unknown as ReturnType<typeof useTreeStore>,
       api: {} as ApiccApi,
       online: fixture.topbarOnline,
       plugins,
@@ -238,6 +224,7 @@ describe("TopBar network settings scope", () => {
     if (!localTab) throw new Error("Fixture is missing a local project tab");
     await fixture.tabs.activateTab(localTab.tabId);
     const wrapper = await mountTopBar(fixture);
+    expect(wrapper.get('[data-testid="workspace-name"]').attributes("title")).toBe("本地工作区");
     await wrapper.find('[data-testid="settings-toggle"]').trigger("click");
     await flushPromises();
     expect(bodyFind("network-settings")).not.toBeNull();
@@ -245,20 +232,22 @@ describe("TopBar network settings scope", () => {
     await fixture.tabs.activateHome();
     await flushPromises();
     expect(bodyFind("network-settings")).toBeNull();
+    expect(wrapper.get('[data-testid="workspace-name"]').attributes("title")).toBe("本地工作区");
     const onlineTab = fixture.tabs.tabs.find((tab) => tab.workspaceRef.kind === "online");
     if (!onlineTab) throw new Error("Fixture is missing an online project tab");
     await fixture.tabs.activateTab(onlineTab.tabId);
     await flushPromises();
     expect(bodyFind("network-settings")).toBeNull();
+    expect(wrapper.get('[data-testid="workspace-name"]').attributes("title")).toBe("在线一");
   });
 });
 
 describe("F7e T10 application AI settings", () => {
   // Catches accidentally gating personal settings on a local project, or opening a second AI store/dialog.
-  it.each(["Home", "local", "online", "more"] as const)("%s opens the shared AI management dialog from application settings", async (location) => {
+  it.each(["Home", "local", "online"] as const)("%s opens the shared AI management dialog from application settings", async (location) => {
     const fixture = makeFixture();
     await seedTabs(fixture);
-    if (location === "Home" || location === "more") await fixture.tabs.activateHome();
+    if (location === "Home") await fixture.tabs.activateHome();
     else {
       const tab = fixture.tabs.tabs.find((value) => value.workspaceRef.kind === location);
       if (!tab) throw new Error(`Missing ${location} fixture tab`);
@@ -273,19 +262,14 @@ describe("F7e T10 application AI settings", () => {
     const harness = defineComponent({ setup: () => () => [
       h(TopBar, {
         workspace: fixture.workspace as unknown as ReturnType<typeof useWorkspaceStore>,
-        tree: fixture.tree as unknown as ReturnType<typeof useTreeStore>,
-        api, online: fixture.topbarOnline, plugins, tabs: fixture.tabs, reportError: vi.fn(), ai,
+          api, online: fixture.topbarOnline, plugins, tabs: fixture.tabs, reportError: vi.fn(), ai,
       }),
       h(AiConfigDialog, { ai }),
     ] });
     const wrapper = mount(harness, { global: { plugins: [i18n] } });
     await flushPromises();
     expect(ai.configDialogOpen).toBe(false);
-    if (location === "more") {
-      await wrapper.get('[data-testid="topbar-more"]').trigger("click");
-      await flushPromises();
-      await expectBody("more-settings").trigger("click");
-    } else await wrapper.get('[data-testid="settings-toggle"]').trigger("click");
+    await wrapper.get('[data-testid="settings-toggle"]').trigger("click");
     await flushPromises();
     const drawer = new DOMWrapper(document.body).find(".ant-drawer-body");
     expect(drawer.exists(), "application settings drawer must be mounted before checking its actions").toBe(true);
@@ -301,61 +285,5 @@ describe("F7e T10 application AI settings", () => {
     await flushPromises();
     expect(ai.configDialogOpen).toBe(false);
     expect(bodyFind("ai-config-body")).toBeNull();
-  });
-});
-
-describe("TopBar 退出在线工作区确认（计划 C 任务 6，不变量 4）", () => {
-  it("点击退出 → 确认弹窗列出该工作区签与草稿态；取消不动（会话与签表原样）", async () => {
-    const fixture = makeFixture();
-    await seedTabs(fixture);
-    const wrapper = await mountTopBar(fixture);
-    await wrapper.find('[data-testid="online-exit"]').trigger("click");
-    await flushPromises();
-    // 确认前不关闭：弹窗列出 ws-1 的两个签，项目一标注草稿
-    expect(fixture.topbarOnline.closeWorkspace).not.toHaveBeenCalled();
-    expect(fixture.tabs.tabs).toHaveLength(3);
-    expect(expectBody("online-exit-impact").exists()).toBe(true);
-    expect(expectBody("online-exit-tab-0").text()).toContain("项目一");
-    expect(expectBody("online-exit-tab-0").find('[data-testid="online-exit-draft"]').exists()).toBe(true);
-    expect(expectBody("online-exit-tab-1").text()).toContain("项目二");
-    expect(expectBody("online-exit-tab-1").find('[data-testid="online-exit-draft"]').exists()).toBe(false);
-    // 取消：签表与会话原样，弹窗关闭
-    await expectBody("dialog-cancel").trigger("click");
-    await flushPromises();
-    expect(fixture.tabs.tabs).toHaveLength(3);
-    expect(fixture.topbarOnline.closeWorkspace).not.toHaveBeenCalled();
-    expect(fixture.online.activeWorkspaceId).toBe("ws-1");
-    expect(bodyFind("online-exit-impact")).toBeNull();
-  });
-
-  it("确认 → 先关该工作区全部签（逐签驱逐会话）再 closeWorkspace(wsId)；其他工作区与本地签保留", async () => {
-    const fixture = makeFixture();
-    await seedTabs(fixture);
-    const wrapper = await mountTopBar(fixture);
-    await wrapper.find('[data-testid="online-exit"]').trigger("click");
-    await flushPromises();
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    // ws-1 全部签关闭（含脏签——工作区级关闭已确认，签级不再拦截），本地签保留
-    expect(fixture.tabs.tabs.map(projectIdOf)).toEqual([P3.locator.projectId]);
-    // 驱逐真实落地：ws-1 会话的 p-1 前缀脏缓冲被逐
-    expect(fixture.onlineSessions["ws-1"].buffers["p-1/collections/c/apis/a/api.yaml"]).toBeUndefined();
-    // 工作区会话出表（带 id），其他驻留工作区不受影响
-    expect(fixture.topbarOnline.closeWorkspace).toHaveBeenCalledTimes(1);
-    expect(fixture.topbarOnline.closeWorkspace).toHaveBeenCalledWith("ws-1");
-    expect(fixture.onlineSessions["ws-2"]).toBeDefined();
-    expect(bodyFind("online-exit-impact")).toBeNull();
-  });
-
-  it("无签工作区也确认：弹窗呈现空签文案；确认仅关工作区会话", async () => {
-    const fixture = makeFixture();
-    const wrapper = await mountTopBar(fixture);
-    await wrapper.find('[data-testid="online-exit"]').trigger("click");
-    await flushPromises();
-    expect(expectBody("online-exit-impact").text()).toContain("没有打开的项目签");
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    expect(fixture.topbarOnline.closeWorkspace).toHaveBeenCalledWith("ws-1");
-    expect(fixture.tabs.tabs).toHaveLength(0);
   });
 });

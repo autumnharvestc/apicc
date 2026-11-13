@@ -407,6 +407,16 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         if (original?.generation === generation && original.root === root) original.envs = copy(detail.envs);
       },
 
+      refreshProjectEnvironments(root: string, project: ProjectLocator, environments: EditorSession["envs"]): void {
+        if (getContext().root !== root) return;
+        for (const session of Object.values(this.sessions)) {
+          if (session.root === root && sameProject(session.locator, project)) session.envs = copy(environments);
+        }
+        for (const session of Object.values(this.freeSessions)) {
+          if (session.root === root && sameProject(session.project, project)) session.envs = copy(environments);
+        }
+      },
+
       deactivate(): void {
         this.activation += 1;
         this.activeKey = null;

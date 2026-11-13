@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Tree as ATree, Tooltip as ATooltip } from "ant-design-vue";
-import { AppstoreOutlined, DeleteOutlined, EditOutlined, FolderOutlined, MoreOutlined, ProjectOutlined } from "@ant-design/icons-vue";
+import { AppstoreOutlined, DeleteOutlined, EditOutlined, FolderOutlined, MoreOutlined, PlusOutlined, ProjectOutlined } from "@ant-design/icons-vue";
 import type { WorkflowImpactEntryDTO } from "../../../shared/types.js";
 import type { ApiccApi, ContainerTarget, NodeCreateInput, NodeCreatedDTO } from "../../../shared/types.js";
 import type { NodeLocator, ProjectLocator } from "../../../shared/locations.js";
@@ -14,6 +14,7 @@ import type { useModuleMemoryStore } from "../stores/moduleMemory.js";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import ContainerManageDialog from "./ContainerManageDialog.vue";
+import ActionMenu from "./ActionMenu.vue";
 
 /**
  * 左侧树：递归结构按 DTO 固定深度展开（分组→项目→集合→[文件夹→]接口；project 末尾
@@ -50,6 +51,9 @@ const props = defineProps<{
   /** 活动项目（M9-C 层级调整）：本地模式传入即把树作用域化至该项目子树
    * （工作区顶层即项目；分组层在主页管理）。空/未选 = 空态提示选择项目。 */
   activeProjectLocator?: ProjectLocator | null;
+  showCreateInHeader?: boolean;
+  compact?: boolean;
+  hidden?: boolean;
 }>();
 const emit = defineEmits<{ select: [node: TreeNodeDTO | NodeCreatedDTO] }>();
 const { t } = useI18n();
@@ -60,7 +64,8 @@ const { t } = useI18n();
 const expanded = ref(new Set<string>(props.moduleMemory?.apiTree.expanded ?? []));
 const isReadOnly = computed(() => !!props.readonly || (props.treeRoot === undefined && props.workspace.readOnly));
 const selectedKeys = ref<string[]>([]);
-const openMoreKey = ref<string | null>(null);
+const directory = ref<HTMLElement>();
+let returnFocus: HTMLElement | null = null;
 watch(() => props.tree.selected?.key ?? null, (key) => { selectedKeys.value = key ? [key] : []; }, { immediate: true });
 watch(() => props.moduleMemory?.apiTree.expanded, (keys) => {
   if (!props.treeRoot && props.activeProjectLocator) expanded.value = new Set(keys ?? []);
@@ -76,9 +81,9 @@ function descendantContainerIds(node: TreeNodeDTO): string[] {
   return ids;
 }
 
-function toggle(node: TreeNodeDTO) {
+function toggle(node: TreeNodeDTO, opening = !expanded.value.has(node.key)) {
   const next = new Set(expanded.value);
-  if (next.has(node.key)) {
+  if (!opening) {
     next.delete(node.key);
   } else {
     next.add(node.key);
@@ -89,6 +94,10 @@ function toggle(node: TreeNodeDTO) {
     props.moduleMemory.apiTree.expanded = [...next];
     props.moduleMemory.touch();
   }
+}
+function expandTreeNode(_keys: (string | number)[], event: { node: object; expanded: boolean }) {
+  const node = event.node as { dto?: TreeNodeDTO };
+  if (node.dto) toggle(node.dto, event.expanded);
 }
 
 // —— a-tree 数据面：受控 keys + 由 DTO 构造的 treeData（key=id，dto 字段携带原节点） ——
@@ -195,6 +204,21 @@ const effectiveExpandedKeys = computed(() => {
 const filterNoMatch = computed(
   () => !!props.filter?.trim() && treeData.value.length === 0,
 );
+const createTarget = computed<TreeNodeDTO | null>(() => {
+  if (isReadOnly.value || !rootNode.value) return null;
+  const selected = props.tree.selected?.key;
+  function findTarget(node: TreeNodeDTO, parent: TreeNodeDTO | null): TreeNodeDTO | null {
+    if (node.key === selected) return node.kind === "api" ? parent : node;
+    for (const child of node.children ?? []) {
+      const found = findTarget(child, node);
+      if (found) return found;
+    }
+    return null;
+  }
+  const target = findTarget(rootNode.value, null);
+  return target?.kind === "workflow" ? rootNode.value : target ?? rootNode.value;
+});
+const createItems = computed(() => createTarget.value ? nodeCreateItems(createTarget.value) : []);
 
 function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.key];
@@ -207,22 +231,58 @@ function selectNode(node: TreeNodeDTO) {
   }
   emit("select", node);
 }
-
-function toggleMore(node: TreeNodeDTO, event: MouseEvent) {
-  event.stopPropagation();
-  openMoreKey.value = openMoreKey.value === node.key ? null : node.key;
+function selectTreeNode(_keys: (string | number)[], event: { node: object }) {
+  const node = event.node as { dto?: TreeNodeDTO };
+  if (node.dto) selectNode(node.dto);
 }
 
-function runMoreAction(node: TreeNodeDTO, action: "manage" | "api" | "folder") {
-  openMoreKey.value = null;
+function nodeCreateItems(node: TreeNodeDTO) {
+  const kinds: CreateKind[] = node.kind === "root" ? ["group"] : node.kind === "group" ? ["project"]
+    : node.kind === "project" ? ["collection"] : node.kind === "collection" || node.kind === "folder" ? ["api", "folder"] : [];
+  const titles = { group: "tree.newGroup", project: "tree.newProject", collection: "tree.newCollection", folder: "tree.newFolder", api: "tree.newApi" };
+  return kinds.map((kind) => ({ key: kind, label: t(titles[kind]), testId: `new-${kind}` }));
+}
+
+function rowMenuItems(node: TreeNodeDTO) {
+  const container = node.kind === "collection" || node.kind === "folder";
+  return [
+    ...(container ? [{ key: "manage", label: t("container.manage"), testId: "container-manage" }] : []),
+    ...nodeCreateItems(node),
+    ...(props.compact ? [
+      { key: "rename", label: t("tree.renameTooltip"), testId: "node-rename" },
+      { key: "delete", label: t("tree.deleteTooltip"), testId: "node-delete" },
+    ] : []),
+  ];
+}
+
+function runNodeAction(node: TreeNodeDTO | null, action: string) {
+  if (!node || isReadOnly.value || props.hidden) return;
   if (action === "manage") openManage(node);
-  else startCreate(node, action);
+  else if (action === "rename") node.kind === "workflow" ? startWorkflowRename(node) : startRename(node);
+  else if (action === "delete") node.kind === "workflow" ? startWorkflowDelete(node) : startDelete(node);
+  else if (action === "group") startCreateGroup();
+  else if (action === "project" || action === "collection" || action === "api" || action === "folder") startCreate(node, action);
+}
+
+function rememberActionFocus() {
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+
+function restoreActionFocus() {
+  const origin = returnFocus;
+  returnFocus = null;
+  void nextTick(() => {
+    const target = origin?.isConnected && origin.getClientRects().length ? origin
+      : directory.value?.querySelector<HTMLElement>(".node.selected .row-title, .node .row-title") ?? directory.value;
+    target?.focus({ preventScroll: true });
+  });
 }
 
 // —— 容器管理对话框（M10）：以完整 ContainerTarget 定位，不接受裸 kind/id ——
 const manageState = ref<{ open: boolean; target: ContainerTarget | null; name: string }>({ open: false, target: null, name: "" });
 function openManage(node: TreeNodeDTO) {
   if (node.source !== "local" || (node.kind !== "collection" && node.kind !== "folder")) return;
+  rememberActionFocus();
   manageState.value = {
     open: true,
     target: node.kind === "collection"
@@ -245,23 +305,27 @@ interface DialogState {
 const dialog = ref<DialogState>({ open: false, title: "", impact: [], run: () => {} });
 
 function openDialog(state: Omit<DialogState, "open">) {
+  rememberActionFocus();
   // impact 默认空数组（创建/重命名不传即无影响清单）；state 显式携带时覆盖。
   dialog.value = { impact: [], open: true, ...state };
 }
 
 function closeDialog() {
   dialog.value = { ...dialog.value, open: false };
+  restoreActionFocus();
 }
 
 async function onDialogConfirm(value: string | null) {
   const run = dialog.value.run;
-  closeDialog();
+  dialog.value = { ...dialog.value, open: false };
   // 宽审查 I1：先关对话框再执行 run；run 的拒绝统一转报组合根错误展示条，
   // 不再是未处理的 rejection。创建/重命名/删除链路共用此收口点。
   try {
     await run(value);
   } catch (e) {
     props.reportError(e);
+  } finally {
+    restoreActionFocus();
   }
 }
 
@@ -419,92 +483,67 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 </script>
 
 <template>
-  <aside class="side" data-testid="side-tree">
-    <EmptyState v-if="isEmpty || !rootNode" :text="emptyText" />
-    <EmptyState v-else-if="filterNoMatch" :text="t('tree.noMatch')" />
-    <template v-else>
-      <!-- 作用域化（M9-C）：根行隐藏——项目名即顶层容器行，分组在主页管理 -->
-      <div v-if="!scoped" class="root-row">
-        <span class="root-label">{{ rootNode.label }}</span>
-        <a-button v-if="!isReadOnly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
+  <aside ref="directory" class="side" :class="{ compact }" tabindex="-1" data-testid="side-tree">
+    <div v-if="showCreateInHeader" class="directory-header">
+      <div class="directory-heading">
+        <span class="sider-title" data-testid="sider-title">{{ t("workbench.directory") }}</span>
+        <ActionMenu v-if="createTarget && createItems.length" :key="createTarget.key"
+          test-id="directory-create" :label="t('workbench.createIn', { name: createTarget.label })" :items="createItems"
+          :hidden="hidden"
+          @select="runNodeAction(createTarget, $event)">
+          <PlusOutlined />
+        </ActionMenu>
       </div>
-      <a-tree
-        class="tree"
-        :tree-data="treeData"
-        :expanded-keys="effectiveExpandedKeys"
-        :selected-keys="selectedKeys"
-        :virtual="false"
-        block-node
-      >
-        <template #title="{ dto }">
-          <!-- 接口叶子：整行 tree-api-row，选中经 tree-api 按钮 emit select -->
-          <div v-if="dto.kind === 'api'" class="node leaf api-row" data-testid="tree-api-row">
-            <button class="api-btn" data-testid="tree-api" :data-node-id="dto.id" @click.stop="selectNode(dto)">
-              <!-- 在线树 api 叶无 method 字段（只读浏览），徽标仅本地接口渲染 -->
-              <span v-if="dto.method" class="method" :class="`m-${dto.method.toLowerCase()}`">{{ dto.method }}</span>
-              <span class="api-name" :title="dto.label">{{ dto.label }}</span>
-            </button>
-            <span v-if="!isReadOnly" class="action-rail">
-              <a-tooltip :title="t('tree.renameTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action" data-testid="node-rename" :aria-label="t('tree.renameTooltip')" :title="t('tree.renameTooltip')" @click.stop="startRename(dto)"><EditOutlined /></button></a-tooltip>
-              <a-tooltip :title="t('tree.deleteTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action danger" data-testid="node-delete" :aria-label="t('tree.deleteTooltip')" :title="t('tree.deleteTooltip')" @click.stop="startDelete(dto)"><DeleteOutlined /></button></a-tooltip>
-            </span>
-          </div>
-          <!-- 只读配置叶（M3-B 任务 3）：在线工作区的工作流/环境/项目/集合配置等，仅选中浏览 -->
-          <div v-else-if="dto.kind === 'file'" class="node leaf" data-testid="tree-file-row">
-            <button class="api-btn file-btn" data-testid="tree-file" :data-node-id="dto.id" @click="selectNode(dto)">
-              {{ dto.label }}
-            </button>
-          </div>
-          <!-- 工作流叶子（M2-B 收口）：project children 尾部，label + 状态徽标色点
-               （draft 灰/published 蓝/enabled 绿），动作钮 重命名/删除 -->
-          <div v-else-if="dto.kind === 'workflow'" class="node leaf" data-testid="tree-workflow-row" :title="t('tree.workflows')">
-            <button class="api-btn" data-testid="tree-workflow" :data-node-id="dto.id" :data-status="dto.status" @click="selectNode(dto)">
-              <span class="wf-dot" :class="`wf-dot-${dto.status}`" :title="t(`wf.status.${dto.status}`)"></span>{{ dto.label }}
-            </button>
-            <span v-if="!isReadOnly" class="actions">
-              <button class="act" data-testid="node-rename" @click="startWorkflowRename(dto)">{{ t("tree.rename") }}</button>
-              <button class="act danger" data-testid="node-delete" @click="startWorkflowDelete(dto)">{{ t("tree.delete") }}</button>
-            </span>
-          </div>
-          <!-- 容器节点：折叠钮 + 层级图标（M11：模块/文件夹/项目 图标区分）+ 悬停动作钮 -->
-          <div v-else class="node">
-              <button class="toggle" data-testid="tree-group-toggle" @click.stop="toggle(dto)">
-              {{ expanded.has(dto.key) ? "▾" : "▸" }}
-            </button>
-            <AppstoreOutlined v-if="dto.kind === 'collection'" class="kind-icon mod" />
-            <FolderOutlined v-else-if="dto.kind === 'folder'" class="kind-icon dir" />
-            <ProjectOutlined v-else-if="dto.kind === 'project'" class="kind-icon proj" />
-            <!-- 项目名可点击（计划 C 不变量 1 补全，任务 7 冒烟修复）：本地 → tree.select 经
-                 组合根兜底监听成签；在线（readonly）→ 仅 emit select，App 路由到在线成签。
-                 此前容器节点只有折叠钮，在线项目签在界面上没有任何成签入口。 -->
-            <span
-              class="label"
-              :class="{ 'label-link': dto.kind === 'project' }"
-              :title="dto.kind === 'collection' || dto.kind === 'folder' ? dto.label : undefined"
-              @click="dto.kind === 'project' && selectNode(dto)"
-            >{{ dto.label }}</span>
-            <span v-if="!isReadOnly && (dto.kind === 'collection' || dto.kind === 'folder')" class="action-rail">
-              <a-tooltip :title="t('tree.moreActions')" :trigger="['hover', 'focus']" placement="top">
-                <button type="button" class="icon-action more-trigger" data-testid="tree-more" :aria-label="t('tree.moreActions')" :title="t('tree.moreActions')" :aria-expanded="openMoreKey === dto.key" @click.stop="toggleMore(dto, $event)"><MoreOutlined /></button>
+      <slot name="search" />
+    </div>
+    <div class="directory-tree">
+      <EmptyState v-if="isEmpty || !rootNode" :text="emptyText" />
+      <EmptyState v-else-if="filterNoMatch" :text="t('tree.noMatch')" />
+      <template v-else>
+        <div v-if="!scoped" class="root-row">
+          <span class="root-label" :title="rootNode.label">{{ rootNode.label }}</span>
+          <a-button v-if="!showCreateInHeader && !isReadOnly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
+        </div>
+        <a-tree :key="rootNode.key" class="tree" :tree-data="treeData" :expanded-keys="effectiveExpandedKeys" :selected-keys="selectedKeys" :virtual="false" block-node @select="selectTreeNode" @expand="expandTreeNode">
+          <template #title="{ dto }">
+            <div class="node" :class="{ selected: selectedKeys.includes(dto.key) }"
+              :data-testid="dto.kind === 'api' ? 'tree-api-row' : dto.kind === 'workflow' ? 'tree-workflow-row' : dto.kind === 'file' ? 'tree-file-row' : undefined">
+              <button v-if="dto.kind !== 'api' && dto.kind !== 'file' && dto.kind !== 'workflow'"
+                type="button" class="toggle" data-testid="tree-group-toggle" :aria-expanded="effectiveExpandedKeys.includes(dto.key)"
+                :title="t('workbench.toggleNode', { name: dto.label })" :aria-label="t('workbench.toggleNode', { name: dto.label })" @click.stop="toggle(dto)">
+                {{ effectiveExpandedKeys.includes(dto.key) ? "▾" : "▸" }}
+              </button>
+              <AppstoreOutlined v-if="dto.kind === 'collection'" class="kind-icon mod" />
+              <FolderOutlined v-else-if="dto.kind === 'folder'" class="kind-icon" />
+              <ProjectOutlined v-else-if="dto.kind === 'project'" class="kind-icon" />
+              <a-tooltip :title="dto.label" :trigger="['focus']" placement="right">
+                <button type="button" class="row-title"
+                :data-testid="dto.kind === 'api' ? 'tree-api' : dto.kind === 'workflow' ? 'tree-workflow' : dto.kind === 'file' ? 'tree-file' : undefined"
+                :data-node-id="dto.id" :data-status="dto.kind === 'workflow' ? dto.status : undefined" :title="dto.label"
+                :aria-label="dto.kind === 'workflow' ? dto.label + ' · ' + t(`wf.status.${dto.status}`) : undefined"
+                  @click.stop="selectNode(dto)" @keydown.enter.stop @keydown.space.stop>
+                  <span v-if="dto.kind === 'api' && dto.method" class="method" :class="`m-${dto.method.toLowerCase()}`">{{ dto.method }}</span>
+                  <span v-if="dto.kind === 'workflow'" class="wf-dot" :class="`wf-dot-${dto.status}`" :title="t(`wf.status.${dto.status}`)"></span>
+                  <span :class="dto.kind === 'api' ? 'api-name' : 'label'" :title="dto.label">{{ dto.label }}</span>
+                </button>
               </a-tooltip>
-              <a-tooltip :title="t('tree.renameTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action" data-testid="node-rename" :aria-label="t('tree.renameTooltip')" :title="t('tree.renameTooltip')" @click.stop="startRename(dto)"><EditOutlined /></button></a-tooltip>
-              <a-tooltip :title="t('tree.deleteTooltip')" :trigger="['hover', 'focus']" placement="top"><button type="button" class="icon-action danger" data-testid="node-delete" :aria-label="t('tree.deleteTooltip')" :title="t('tree.deleteTooltip')" @click.stop="startDelete(dto)"><DeleteOutlined /></button></a-tooltip>
-              <div v-if="openMoreKey === dto.key" class="more-menu" role="menu" :aria-label="t('tree.moreActions')" @click.stop>
-                <button v-if="dto.kind === 'collection' || dto.kind === 'folder'" type="button" role="menuitem" data-testid="container-manage" @click.stop="runMoreAction(dto, 'manage')">{{ t('container.manage') }}</button>
-                <button type="button" role="menuitem" data-testid="new-api" @click.stop="runMoreAction(dto, 'api')">{{ t('tree.newApi') }}</button>
-                <button type="button" role="menuitem" data-testid="new-folder" @click.stop="runMoreAction(dto, 'folder')">{{ t('tree.newFolder') }}</button>
-              </div>
-            </span>
-            <span v-else-if="!isReadOnly" class="actions legacy-actions">
-              <button v-if="dto.kind === 'group'" class="act" data-testid="new-project" @click="startCreate(dto, 'project')">{{ t("tree.newProject") }}</button>
-              <button v-if="dto.kind === 'project'" class="act" data-testid="new-collection" @click="startCreate(dto, 'collection')">{{ t("tree.newCollection") }}</button>
-              <button class="act" data-testid="node-rename" @click.stop="startRename(dto)">{{ t("tree.rename") }}</button>
-              <button class="act danger" data-testid="node-delete" @click.stop="startDelete(dto)">{{ t("tree.delete") }}</button>
-            </span>
-          </div>
-        </template>
-      </a-tree>
-    </template>
+              <span v-if="!isReadOnly && dto.kind !== 'file'" class="action-rail" @click.stop @keydown.stop>
+                <ActionMenu v-if="rowMenuItems(dto).length" class="icon-action more-trigger"
+                  test-id="tree-more" :label="t('tree.moreActions')" :items="rowMenuItems(dto)"
+                  :hidden="hidden"
+                  @select="runNodeAction(dto, $event)">
+                  <MoreOutlined />
+                </ActionMenu>
+                <template v-if="!compact">
+                  <button type="button" class="icon-action" data-testid="node-rename" :aria-label="t('tree.renameTooltip')" :title="t('tree.renameTooltip')" @click.stop="runNodeAction(dto, 'rename')"><EditOutlined /></button>
+                  <button type="button" class="icon-action danger" data-testid="node-delete" :aria-label="t('tree.deleteTooltip')" :title="t('tree.deleteTooltip')" @click.stop="runNodeAction(dto, 'delete')"><DeleteOutlined /></button>
+                </template>
+              </span>
+            </div>
+          </template>
+        </a-tree>
+      </template>
+    </div>
     <ContainerManageDialog
       v-if="manageState.open && manageState.target"
       :api="api"
@@ -512,7 +551,7 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
       :name="manageState.name"
       :read-only="workspace.readOnly"
       :report-error="reportError"
-      @close="manageState.open = false"
+      @close="manageState.open = false; restoreActionFocus()"
       @saved="workspace.refresh().catch(() => undefined)"
     />
     <ConfirmDialog
@@ -538,154 +577,86 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 
 <style scoped>
 .side {
-  height: 100%;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   font-size: 13px;
 }
-.root-row {
+.directory-header { flex: none; padding: 6px 8px 8px; }
+.directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 32px; }
+.sider-title { font-weight: 600; }
+.directory-tree { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
+.root-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; }
+.root-label { font-weight: 600; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side :deep(.ant-tree) { background: transparent; color: var(--text); }
+.side :deep(.ant-tree-switcher) { display: none; }
+.side :deep(.ant-tree-indent) { flex: 0 0 auto; max-width: 36px; overflow: hidden; }
+.side :deep(.ant-tree-indent-unit) { width: 9px; }
+.side :deep(.ant-tree-treenode) { padding: 0; }
+.side :deep(.ant-tree-node-content-wrapper) { flex: 1; min-width: 0; padding: 0; }
+.side :deep(.ant-tree-node-content-wrapper:hover),
+.side :deep(.ant-tree-node-content-wrapper.ant-tree-node-selected) { background: transparent; }
+.side :deep(.ant-tree-block-node) { width: 100%; }
+.side.compact :deep(.ant-tree-indent) { max-width: 32px; }
+.side.compact :deep(.ant-tree-indent-unit) { width: 8px; }
+.node {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 3px;
+  height: 32px;
+  min-width: 0;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 5px;
 }
-.root-label {
-  font-weight: 600;
-  color: var(--text-muted);
+.node:hover, .node:focus-within { background: var(--hover); }
+.node.selected { background: var(--workbench-directory-selected); }
+.toggle, .row-title, .icon-action {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
 }
-/* a-tree 自带的切换箭头隐藏（自绘折叠钮）；缩进保留——M11 用户澄清④：层级不平铺 */
-.side :deep(.ant-tree-switcher) { display: none; }
-/* 原生每级 24px 会耗尽窄侧栏；保留层级步进并限制深树占用，名称仍独立省略。 */
-.side :deep(.ant-tree-indent) { flex: 0 0 auto; max-width: 48px; overflow: hidden; }
-.side :deep(.ant-tree-indent-unit) { width: 12px; }
-.side :deep(.ant-tree-node-content-wrapper) { flex: 1; min-width: 0; }
-.side :deep(.ant-tree-block-node) { width: 100%; }
-.node {
-  position: relative;
+.toggle { width: 16px; flex: 0 0 16px; color: var(--text-muted); }
+.row-title {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 6px;
-  min-height: 30px;
-  box-sizing: border-box;
-  border-radius: 6px;
-}
-.node:hover { background: var(--panel); }
-.toggle {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  width: 16px;
-  flex: 0 0 16px;
-  padding: 0;
-}
-.label {
+  height: 28px;
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: start;
+  border-radius: 3px;
 }
-/* 项目名可点（成签入口）：指针 + 弱高亮提示可交互 */
-.label-link {
-  cursor: pointer;
-}
-.label-link:hover {
-  color: var(--accent);
-}
-/* M11：层级图标——模块（服务）与文件夹视觉区分 */
+.label, .api-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kind-icon { flex: none; font-size: 13px; color: var(--text-muted); }
 .kind-icon.mod { color: var(--accent); }
-.actions {
-  margin-left: auto;
-  display: inline-flex;
-  opacity: 0;
-  pointer-events: none;
-  gap: 2px;
-}
-.node:hover .actions, .node:focus-within .actions { opacity: 1; pointer-events: auto; }
-.legacy-actions { flex: 0 0 auto; }
-.api-row { min-width: 0; }
-.api-row:hover, .api-row:focus-within { background: var(--panel); }
-.action-rail {
-  margin-left: auto;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0;
-  width: 72px;
-  min-width: 72px;
-  flex: 0 0 72px;
-}
-.api-row .action-rail { width: 48px; min-width: 48px; flex-basis: 48px; }
-.icon-action {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
+.action-rail { display: flex; flex: none; align-items: center; }
+.action-rail > .icon-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
+  flex: 0 0 28px;
+  width: 28px;
+  min-width: 0;
+  height: 28px;
+  min-height: 0;
   color: var(--text-muted);
-  cursor: pointer;
+  border-radius: 4px;
   opacity: 0;
   pointer-events: none;
 }
-.node:hover .action-rail .icon-action,
-.node:focus-within .action-rail .icon-action,
-.api-row:hover .action-rail .icon-action,
-.api-row:focus-within .action-rail .icon-action { opacity: 1; pointer-events: auto; }
-.icon-action:hover, .icon-action:focus-visible { background: var(--border); outline: 2px solid var(--accent); outline-offset: 1px; }
+.node.selected .icon-action,
+.node:hover .icon-action,
+.node:focus-within .icon-action,
+.icon-action[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+.icon-action:hover, .icon-action:focus-visible { background: var(--border); }
 .icon-action.danger { color: var(--fail); }
-@media (hover: none) { .actions, .icon-action { opacity: 1; pointer-events: auto; } }
-.more-menu {
-  position: absolute;
-  top: calc(100% + 2px);
-  right: 0;
-  z-index: 30;
-  display: grid;
-  min-width: 150px;
-  padding: 4px;
-  border: 1px solid var(--border, #d9d9d9);
-  border-radius: 4px;
-  background: var(--bg, #fff);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 15%);
-}
-.more-menu button { border: 0; background: transparent; color: var(--text); text-align: left; padding: 6px 8px; cursor: pointer; }
-.more-menu button:hover, .more-menu button:focus-visible { background: var(--panel); outline: none; }
-.act, .api-btn {
-  border: none;
-  background: none;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 11px;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.act { white-space: nowrap; }
-.act.danger { color: var(--fail); }
-.act:hover { background: var(--border); }
-.api-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  padding: 2px 4px;
-  min-width: 0;
-  flex: 1 1 auto;
-  text-align: left;
-}
-.api-btn:hover { background: var(--border); }
-.api-name { display: block; min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 在线只读配置叶：弱化字重视觉区分（无动作钮） */
-.file-btn {
-  color: var(--text-muted);
-  font-size: 12px;
-}
+@media (hover: none) { .icon-action { opacity: 1; pointer-events: auto; } }
+@media (forced-colors: active) { .node.selected { outline: 1px solid Highlight; outline-offset: -1px; } }
 .method {
   flex: 0 0 auto;
   font-size: 10px;
@@ -694,9 +665,9 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 }
 /* M8：方法语义色徽标（与调试 URL 栏方法着色同表） */
 .method.m-get { color: var(--pass); }
-.method.m-post { color: #fa8c16; }
+.method.m-post { color: var(--workbench-method-post); }
 .method.m-put { color: var(--accent); }
-.method.m-patch { color: #722ed1; }
+.method.m-patch { color: var(--workbench-method-patch); }
 .method.m-delete { color: var(--fail); }
 .method.m-head,
 .method.m-options { color: var(--text-muted); }

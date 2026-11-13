@@ -1,83 +1,82 @@
 // @vitest-environment jsdom
-// 注：TopBar 控件现代化（计划 2C 任务 2）后的适配形态——
-// 语言 = a-dropdown 菜单：点击 lang-toggle 打开（菜单经传送门渲染到 document.body，
-// 菜单项带 data-locale），点菜单项改写 locale；
-// 主题 = a-segmented 三段选择器：选项由 input[type=radio] 承载，对对应段 trigger
-// change 即等效用户选中该段；受控值 themePreference 为模块级响应式 ref。
-import { describe, expect, it, beforeAll } from "vitest";
-import { mount, flushPromises, DOMWrapper } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 import ThemeLanguageToggle from "../../../src/renderer/src/components/ThemeLanguageToggle.vue";
 import { initI18n } from "../../../src/renderer/src/i18n/bridge";
+import { savePreference } from "../../../src/renderer/src/theme";
 
-beforeAll(() => {
-  // jsdom 未实现 matchMedia（主题解析 system 偏好需要）；固定 false → system 解析为 light。
-  Object.defineProperty(window, "matchMedia", {
-    writable: true,
-    configurable: true,
-    value: (query: string) => ({
-      matches: false,
-      media: query,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-    }),
-  });
-  localStorage.removeItem("apicc.theme");
-  localStorage.setItem("apicc.locale", "zh-CN");
+enableAutoUnmount(afterEach);
+beforeEach(() => initI18n().setLocale("zh-CN"));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  initI18n().setLocale("zh-CN");
+  savePreference("system");
 });
 
-/** 语言下拉菜单项（a-dropdown 传送门渲染在 document.body，见文件头说明）。 */
-function langOption(locale: string): DOMWrapper<Element> {
-  const el = document.body.querySelector(`[data-locale="${locale}"]`);
-  if (!el) throw new Error(`document.body 中找不到 [data-locale="${locale}"]（语言下拉未展开？）`);
-  return new DOMWrapper(el);
-}
+const mountToggle = () => mount(ThemeLanguageToggle, {
+  attachTo: document.body,
+  props: { showApplicationMenu: true },
+  global: { plugins: [initI18n().i18n] },
+});
+const menu = () => new DOMWrapper(document.body).get('[role="menu"]');
 
 describe("ThemeLanguageToggle", () => {
-  it("下拉菜单点选 English 改写 locale（bridge 单例）", async () => {
-    const { i18n } = initI18n();
-    // 单例 locale 可能被同文件其他用例改写——显式归位后断言
-    i18n.global.locale.value = "zh-CN";
-    const wrapper = mount(ThemeLanguageToggle, { global: { plugins: [i18n] } });
-    await wrapper.find('[data-testid="lang-toggle"]').trigger("click");
+  it("uses one compact locale trigger and restores focus after keyboard selection", async () => {
+    const wrapper = mountToggle();
+    const trigger = wrapper.get<HTMLButtonElement>('[data-testid="lang-toggle"]');
+    expect(trigger.text()).toBe("中");
+    trigger.element.focus();
+    await trigger.trigger("keydown", { key: "ArrowDown" });
     await flushPromises();
-    await langOption("en").trigger("click");
-    expect(i18n.global.locale.value).toBe("en");
-    // 触发按钮文案随语言变化（地球图标 + 语言名，不再是裸 locale 代码）
-    expect(wrapper.find('[data-testid="lang-toggle"]').text()).toBe("English");
+    const chinese = menu().get('[data-locale="zh-CN"]');
+    expect(chinese.attributes("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(chinese.element);
+    await chinese.trigger("keydown", { key: "ArrowDown" });
+    const english = menu().get('[data-locale="en"]');
+    expect(document.activeElement).toBe(english.element);
+    expect(english.text()).toBe("English");
+    await english.trigger("click");
+    expect(trigger.text()).toBe("EN");
+    expect(document.activeElement).toBe(trigger.element);
+    expect(localStorage.getItem("apicc.locale")).toBe("en");
   });
 
-  it("Segmented 三段选择写 document 数据主题：system→light→dark→system(light)", async () => {
-    const { i18n } = initI18n();
-    // 单例 locale 被上一用例的下拉点选改写——显式归位后再断言主题切换不动语言。
-    i18n.global.locale.value = "zh-CN";
-    const wrapper = mount(ThemeLanguageToggle, { global: { plugins: [i18n] } });
-    // 挂载即应用当前偏好（system，matchMedia=false → light）
-    expect(document.documentElement.dataset.theme).toBe("light");
-    // 三段选项由 radio input 承载，顺序 = options 声明序 [system, light, dark]
-    const radio = (i: number) => {
-      const inputs = wrapper.findAll('input[type="radio"]');
-      if (inputs.length !== 3) throw new Error(`Segmented 选项数异常: ${inputs.length}`);
-      return inputs[i]!;
-    };
-    await radio(1).trigger("change"); // system → light
-    expect(document.documentElement.dataset.theme).toBe("light");
-    expect(localStorage.getItem("apicc.theme")).toBe("light");
-    await radio(2).trigger("change"); // light → dark
-    expect(document.documentElement.dataset.theme).toBe("dark");
+  it("shows the current theme, saves a selection and dismisses on Escape or outside click", async () => {
+    const wrapper = mountToggle();
+    const trigger = wrapper.get('[data-testid="theme-toggle"]');
+    expect(trigger.attributes("aria-label")).toContain("自动");
+    await trigger.trigger("click");
+    const dark = menu().get('[data-testid="theme-option-dark"]');
+    await dark.trigger("click");
+    expect(trigger.attributes("aria-label")).toContain("暗色");
     expect(localStorage.getItem("apicc.theme")).toBe("dark");
-    await radio(0).trigger("change"); // dark → system（matchMedia=false → light）
-    expect(document.documentElement.dataset.theme).toBe("light");
-    expect(localStorage.getItem("apicc.theme")).toBe("system");
-    expect(i18n.global.locale.value).toBe("zh-CN"); // 主题切换不影响语言
+    await trigger.trigger("click");
+    expect(menu().get('[data-testid="theme-option-dark"]').attributes("aria-checked")).toBe("true");
+    await menu().trigger("keydown", { key: "Escape" });
+    expect(trigger.attributes("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(trigger.element);
+    await trigger.trigger("click");
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(trigger.attributes("aria-expanded")).toBe("false");
   });
 
-  it("语言按钮与主题分段器带 i18n 悬浮提示（app.language/app.theme）", () => {
-    const { i18n } = initI18n();
-    i18n.global.locale.value = "zh-CN";
-    const wrapper = mount(ThemeLanguageToggle, { global: { plugins: [i18n] } });
-    expect(wrapper.find('[data-testid="lang-toggle"]').attributes("title")).toBe("语言");
-    expect(wrapper.find('[data-testid="theme-toggle"]').attributes("title")).toBe("主题");
+  it("moves an open menu and focus to the single global trigger after shrinking", async () => {
+    const wrapper = mountToggle();
+    await wrapper.get('[data-testid="theme-toggle"]').trigger("click");
+    vi.stubGlobal("innerWidth", 640);
+    window.dispatchEvent(new Event("resize"));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="theme-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="lang-toggle"]').exists()).toBe(false);
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+    const trigger = wrapper.get('[data-testid="topbar-more"]');
+    expect(document.activeElement).toBe(trigger.element);
+    await trigger.trigger("click");
+    expect(menu().get('[data-locale="en"]').text()).toBe("English");
+    expect(menu().get('[data-testid="theme-option-system"]').attributes("aria-checked")).toBe("true");
+    await menu().get('[data-testid="application-menu"]').trigger("click");
+    expect(wrapper.emitted("application-menu")).toEqual([[]]);
+    expect(document.activeElement).toBe(trigger.element);
   });
 });

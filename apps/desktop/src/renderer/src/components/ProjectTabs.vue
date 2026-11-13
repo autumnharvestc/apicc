@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { CloseOutlined, HomeOutlined, LeftOutlined, RightOutlined } from "@ant-design/icons-vue";
+import { CloseOutlined, EditOutlined, HomeOutlined, LeftOutlined, RightOutlined, UnorderedListOutlined, WarningOutlined } from "@ant-design/icons-vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
+import ActionMenu from "./ActionMenu.vue";
 import type { ProjectTab, TabsStore } from "../stores/tabs.js";
 
 /**
@@ -21,11 +22,32 @@ const { t } = useI18n();
 const scroller = ref<HTMLElement | null>(null);
 const tablist = ref<HTMLElement | null>(null);
 const overflow = ref(false);
+const narrowTabs = ref(false);
+const showProjectList = computed(() => props.tabs.tabs.length > 0 && (overflow.value || narrowTabs.value));
+const projectOptions = computed(() => props.tabs.tabs.flatMap((tab) => [
+  { key: `open:${tab.tabId}`, label: projectTabTitle(tab), checked: tab.tabId === props.tabs.activeTabId },
+  ...(narrowTabs.value ? [{ key: `close:${tab.tabId}`, label: `${t("common.close")} ${projectTabTitle(tab)}` }] : []),
+]));
 
 function updateOverflow() {
   const el = scroller.value;
   if (!el) return;
-  overflow.value = el.scrollWidth > el.clientWidth + 1;
+  const home = tablist.value?.querySelector<HTMLElement>(".home-tab");
+  const width = tablist.value?.clientWidth && home ? tablist.value.clientWidth - home.offsetWidth - 6 : el.clientWidth;
+  const stripWidth = Array.from(el.children).reduce((total, child) => total + (child as HTMLElement).offsetWidth + 4, 0);
+  overflow.value = Math.max(0, stripWidth - 4) > width + 1;
+  narrowTabs.value = width < 170 && window.innerWidth < 760;
+}
+
+function revealTab(tabId: string | null) {
+  const el = scroller.value;
+  if (!el || !tabId) return;
+  const entry = Array.from(el.children).find((child) => (child as HTMLElement).dataset.tabId === tabId);
+  if (!entry) return;
+  const visible = el.getBoundingClientRect();
+  const target = entry.getBoundingClientRect();
+  if (target.left < visible.left) el.scrollLeft += target.left - visible.left;
+  else if (target.right > visible.right) el.scrollLeft += Math.min(target.right - visible.right, target.left - visible.left);
 }
 
 function scrollByDir(dir: -1 | 1) {
@@ -40,7 +62,10 @@ onMounted(() => {
   updateOverflow();
   window.addEventListener("resize", updateOverflow);
   if (typeof ResizeObserver === "function" && scroller.value) {
-    resizeObserver = new ResizeObserver(updateOverflow);
+    resizeObserver = new ResizeObserver(() => {
+      updateOverflow();
+      revealTab(props.tabs.activeTabId);
+    });
     resizeObserver.observe(scroller.value);
   }
 });
@@ -53,10 +78,17 @@ watch(
   () => props.tabs.tabs.length,
   () => void nextTick(updateOverflow),
 );
+watch(() => props.tabs.activeTabId, (id) => void nextTick(() => revealTab(id)), { flush: "post" });
 
 // —— 点签激活（离线签点按即重试激活：activateTab 内部重跑工作区上下文编排）——
 function onActivate(tabId: string) {
-  void props.tabs.activateTab(tabId);
+  void props.tabs.activateTab(tabId).then(() => revealTab(props.tabs.activeTabId));
+}
+
+function pickProject(key: string) {
+  const tabId = key.slice(key.indexOf(":") + 1);
+  if (key.startsWith("close:")) requestClose(tabId);
+  else onActivate(tabId);
 }
 
 function onActivateHome() {
@@ -80,33 +112,60 @@ function onTabKeydown(event: KeyboardEvent) {
 }
 
 function projectTabTitle(tab: ProjectTab): string {
-  if ("projectLocator" in tab) return `${tab.projectName} · ${tab.workspaceRef.dir} · ${tab.projectLocator.groupId}`;
-  return `${tab.projectName} · ${tab.workspaceRef.name}`;
+  const context = "projectLocator" in tab ? `${tab.workspaceRef.dir} · ${tab.projectLocator.groupId}`
+    : [tab.workspaceRef.name, tab.workspaceRef.baseUrl].filter(Boolean).join(" · ");
+  return [tab.projectName, context, ...projectTabStatuses(tab)].join(" · ");
+}
+
+function projectTabStatuses(tab: ProjectTab): string[] {
+  return [
+    ...(props.tabs.isTabOffline(tab.tabId) ? [t("tabs.offline")] : []),
+    ...(props.tabs.projectHasDrafts(tab.tabId) ? [t("tabs.draft")] : []),
+  ];
+}
+
+function focusCurrentTab() {
+  tablist.value?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus({ preventScroll: true });
 }
 
 // —— 关签（dirty 确认两分支）——
 const closeConfirmOpen = ref(false);
 const pendingCloseTabId = ref<string | null>(null);
 
+const closeOrigin = ref<HTMLElement | null>(null);
+
 function requestClose(tabId: string) {
+  closeOrigin.value = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   if (props.tabs.projectHasDrafts(tabId)) {
     pendingCloseTabId.value = tabId;
     closeConfirmOpen.value = true;
     return;
   }
-  void props.tabs.closeTab(tabId);
+  void closeTab(tabId);
+}
+
+async function closeTab(tabId: string) {
+  const origin = closeOrigin.value;
+  closeOrigin.value = null;
+  await props.tabs.closeTab(tabId);
+  await nextTick();
+  if (origin?.isConnected) origin.focus({ preventScroll: true });
+  else focusCurrentTab();
 }
 
 function onCloseConfirm() {
   const tabId = pendingCloseTabId.value;
   pendingCloseTabId.value = null;
   closeConfirmOpen.value = false;
-  if (tabId) void props.tabs.closeTab(tabId);
+  if (tabId) void closeTab(tabId);
 }
 
 function onCloseCancel() {
   pendingCloseTabId.value = null;
   closeConfirmOpen.value = false;
+  const origin = closeOrigin.value;
+  closeOrigin.value = null;
+  void nextTick(() => origin?.isConnected ? origin.focus({ preventScroll: true }) : focusCurrentTab());
 }
 </script>
 
@@ -119,6 +178,8 @@ function onCloseCancel() {
       :class="{ active: tabs.selectedPage.kind === 'home' }"
       data-testid="topbar-home"
       role="tab"
+      :title="t('nav.home')"
+      :aria-label="t('nav.home')"
       :aria-selected="tabs.selectedPage.kind === 'home' ? 'true' : 'false'"
       :tabindex="tabs.selectedPage.kind === 'home' ? 0 : -1"
       @click="onActivateHome"
@@ -128,7 +189,7 @@ function onCloseCancel() {
       <span>{{ t("nav.home") }}</span>
     </button>
     <button
-      v-if="overflow"
+      v-if="overflow && !narrowTabs"
       type="button"
       class="tabs-arrow"
       data-testid="tabs-arrow-left"
@@ -138,7 +199,7 @@ function onCloseCancel() {
       <LeftOutlined />
     </button>
     <div ref="scroller" class="tabs-scroll" data-testid="project-tabs-scroll" @scroll="updateOverflow">
-      <div v-for="(tab, index) in tabs.tabs" :key="`${index}-${tab.tabId}`" class="tab-entry">
+      <div v-for="(tab, index) in tabs.tabs" :key="tab.tabId" class="tab-entry" :data-tab-id="tab.tabId" :class="{ active: tab.tabId === tabs.activeTabId }">
         <button
           type="button"
           class="tab-item"
@@ -147,7 +208,7 @@ function onCloseCancel() {
           :data-active="tabs.selectedPage.kind === 'project' && tab.tabId === tabs.selectedPage.tabId ? 'true' : 'false'"
           :data-offline="tabs.isTabOffline(tab.tabId) ? 'true' : 'false'"
           :aria-selected="tabs.selectedPage.kind === 'project' && tab.tabId === tabs.selectedPage.tabId ? 'true' : 'false'"
-          :aria-disabled="tabs.isTabOffline(tab.tabId) ? 'true' : undefined"
+          :aria-label="[tab.projectName, ...projectTabStatuses(tab)].join(' · ')"
           :tabindex="tabs.selectedPage.kind === 'project' && tab.tabId === tabs.selectedPage.tabId ? 0 : -1"
           :data-testid="`project-tab-${index}`"
           :title="projectTabTitle(tab)"
@@ -155,6 +216,8 @@ function onCloseCancel() {
           @keydown="onTabKeydown"
         >
           <span class="tab-name">{{ tab.projectName }}</span>
+          <WarningOutlined v-if="tabs.isTabOffline(tab.tabId)" class="tab-offline" />
+          <EditOutlined v-if="tabs.projectHasDrafts(tab.tabId)" />
         </button>
         <button
           type="button"
@@ -168,7 +231,7 @@ function onCloseCancel() {
       </div>
     </div>
     <button
-      v-if="overflow"
+      v-if="overflow && !narrowTabs"
       type="button"
       class="tabs-arrow"
       data-testid="tabs-arrow-right"
@@ -177,6 +240,10 @@ function onCloseCancel() {
     >
       <RightOutlined />
     </button>
+    <ActionMenu v-if="showProjectList" class="tab-menu"
+      test-id="project-tabs-list" :label="t('tabs.openProjects')" :items="projectOptions" @select="pickProject">
+      <UnorderedListOutlined />
+    </ActionMenu>
     </div>
     <!-- 关签 dirty 丢弃确认（有草稿才弹）：a-modal 传送门渲染于 body -->
     <ConfirmDialog
@@ -194,31 +261,33 @@ function onCloseCancel() {
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
+  height: 100%;
 }
 .tablist {
   display: flex;
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
+  height: 100%;
 }
 .home-tab,
 .tab-item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
+  height: 34px;
   padding: 0 12px;
   border: 0;
   border-radius: var(--control-radius, 6px);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 .home-tab {
   flex: none;
@@ -228,18 +297,25 @@ function onCloseCancel() {
   background: var(--active-weak);
 }
 .home-tab.active,
+.tab-entry.active {
+  color: var(--accent);
+  background: var(--bg);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.home-tab.active,
 .tab-item.active {
   color: var(--accent);
   font-weight: 600;
-  background: var(--active-weak);
-  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .tab-entry {
   display: inline-flex;
   align-items: center;
   flex: none;
   min-width: 0;
-  border-right: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius, 6px);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 .tabs-scroll {
   display: flex;
@@ -248,6 +324,8 @@ function onCloseCancel() {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  gap: 4px;
+  margin-inline-start: 6px;
 }
 .tabs-scroll::-webkit-scrollbar {
   display: none;
@@ -255,12 +333,7 @@ function onCloseCancel() {
 .tab-item {
   max-width: 200px;
 }
-/* 离线签：禁用视觉（点击仍触发重试激活，activateTab 失败保持离线态） */
-.tab-item.offline {
-  opacity: 0.45;
-  cursor: not-allowed;
-  text-decoration: line-through;
-}
+.tab-offline { color: var(--fail); }
 .tab-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -297,15 +370,26 @@ function onCloseCancel() {
   flex: none;
   display: inline-flex;
   align-items: center;
-  padding: 0 6px;
+  min-height: 30px;
+  padding: 0 5px;
   border: none;
   background: transparent;
   color: var(--text-muted);
-  opacity: 0.55;
   cursor: pointer;
   font-size: 11px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 .tabs-arrow:hover {
-  opacity: 1;
+  background: var(--active-weak);
+}
+.tab-menu { margin-inline-start: 3px; }
+@media (max-width: 759px) {
+  .home-tab { justify-content: center; width: 32px; padding: 0; }
+  .home-tab > span:not(.anticon) { display: none; }
+  .tab-item { max-width: 122px; padding: 0 6px; }
+}
+@media (forced-colors: active) {
+  .home-tab.active, .tab-entry.active { border: 1px solid Highlight; }
 }
 </style>

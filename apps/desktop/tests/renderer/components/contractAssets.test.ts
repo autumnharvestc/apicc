@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
-import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { useDebugStore } from "../../../src/renderer/src/stores/debug.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
@@ -44,6 +44,15 @@ async function mountRequestEditor(editor: ReturnType<typeof useEditorStore>, cur
   const wrapper = mount(RequestEditor, { attachTo, props: { editor, debug, api: current.api, assets, projectLocator: current.projectLocator }, global: { plugins: [i18n] } });
   mountedWrappers.push(wrapper);
   return wrapper;
+}
+
+function requestMenuOption(testId: string) {
+  return new DOMWrapper(document.body).get<HTMLButtonElement>(`[data-testid="${testId}"]`);
+}
+
+async function chooseProtocol(wrapper: VueWrapper, protocol: string) {
+  await wrapper.get('[data-testid="editor-protocol"]').trigger("click");
+  await requestMenuOption(`request-protocol-${protocol}`).trigger("click");
 }
 
 async function saveEditorFromUi(wrapper: VueWrapper, editor: ReturnType<typeof useEditorStore>): Promise<void> {
@@ -112,7 +121,8 @@ describe("Contract asset editor", () => {
     pathInput.vm.$emit("update:value", "/request-draft-only");
     await flushPromises();
     expect(editor.api!.contract.request.path).toBe("/request-draft-only");
-    await wrapper.get('[data-testid="save-request-btn"]').trigger("click");
+    await wrapper.get('[data-testid="request-more"]').trigger("click");
+    await requestMenuOption("save-request-btn").trigger("click");
     await flushPromises();
     await vi.waitFor(() => expect(wrapper.find('[data-testid="save-feedback"]').exists()).toBe(true));
 
@@ -134,15 +144,17 @@ describe("Contract asset editor", () => {
       fields: [{ path: "request.path", status: "redacted", needsInput: true }],
     }, true, editor)).toBe(true);
     await flushPromises();
-    expect((wrapper.get('[data-testid="save-request-btn"]').element as HTMLButtonElement).disabled).toBe(true);
+    await wrapper.get('[data-testid="request-more"]').trigger("click");
+    expect(requestMenuOption("save-request-btn").element.disabled).toBe(true);
     const sourceGeneration = editor.sessions[editor.activeKey!]!.generation;
     editor.evictProject(current.projectLocator, current.root);
     await editor.load(current.apiLocator);
     expect(editor.sessions[editor.activeKey!]!.generation).not.toBe(sourceGeneration);
     await flushPromises();
-    expect((wrapper.get('[data-testid="save-request-btn"]').element as HTMLButtonElement).disabled).toBe(false);
+    await wrapper.get('[data-testid="request-more"]').trigger("click");
+    expect(requestMenuOption("save-request-btn").element.disabled).toBe(false);
     saveDraft.mockClear();
-    await wrapper.get('[data-testid="save-request-btn"]').trigger("click");
+    await requestMenuOption("save-request-btn").trigger("click");
     await vi.waitFor(() => expect(saveDraft).toHaveBeenCalledOnce());
     expect(saveDraft).toHaveBeenCalledWith([]);
     await saveDraft.mock.results[0]!.value;
@@ -170,6 +182,7 @@ describe("Contract asset editor", () => {
       const key = wrapper.findAll('[data-testid="kv-key"]').at(-1);
       if (!key) throw new Error(`${name}: inline parameter row did not render`);
       await key.setValue(`required_${name}`);
+      await wrapper.get(`[data-testid="parameter-details-${name}-${index}"]`).trigger("click");
       await wrapper.get(`[data-testid="parameter-required-${name}-${index}"]`).setValue(true);
       await wrapper.get(`[data-testid="parameter-schema-${name}-${index}"] [data-testid="schema-scalar-type"]`).setValue("integer");
       const binding = list[index];
@@ -556,6 +569,7 @@ describe("Contract asset editor", () => {
     const queryTab = wrapper.get('[data-testid="tab-query"]');
     await queryTab.trigger("click");
     await flushPromises();
+    await wrapper.get('[data-testid="parameter-details-query-0"]').trigger("click");
     expect(wrapper.get('[data-testid="parameter-component-query-0"]').text()).toContain(parameter.name);
     expect((wrapper.get('[data-testid="response-component-0"]').element as HTMLSelectElement).value).toBe(response.id);
     const modelReferences = await fixture.api.assetReferences(fixture.projectLocator, fixture.model.id);
@@ -597,6 +611,7 @@ describe("Contract asset editor", () => {
     const wrapper = await mountRequestEditor(editor);
     await flushPromises();
 
+    await wrapper.get('[data-testid="asset-metadata-toggle"]').trigger("click");
     const metadataName = wrapper.get('[data-testid="asset-metadata-name"]');
     expect((metadataName.element as HTMLInputElement).value).toBe(editor.api!.contract.metadata.name);
     await metadataName.setValue("订单详情 v2");
@@ -911,7 +926,7 @@ describe("Contract asset editor", () => {
     const queryRequest = currentRequest();
     if (queryRequest.protocol !== "http") throw new Error("Expected HTTP request while editing query");
     const queryIndex = queryRequest.query.length - 1;
-    const queryRow = wrapper.findAll(".kv-row").find((row) => row.find(`[data-testid="parameter-required-query-${queryIndex}"]`).exists());
+    const queryRow = wrapper.findAll(".parameter-entry").find((row) => row.find(`[data-testid="parameter-details-query-${queryIndex}"]`).exists());
     if (!queryRow) throw new Error("Inline query row was not rendered");
     await queryRow.get('[data-testid="kv-key"]').setValue("q");
     await queryRow.get('[data-testid="kv-value"]').setValue("kept-query");
@@ -922,14 +937,14 @@ describe("Contract asset editor", () => {
     await wrapper.get('[data-testid="body-field-value"]').setValue("kept-form");
 
     // 连续协议切换保留 session drafts；所有协议输入均由真实控件完成。
-    await wrapper.get('input[value="websocket"]').setValue(true);
+    await chooseProtocol(wrapper, "websocket");
     await wrapper.get('[data-testid="tab-message"]').trigger("click");
     await wrapper.get('[data-testid="editor-message"]').setValue("frame payload");
-    await wrapper.get('input[value="soap"]').setValue(true);
+    await chooseProtocol(wrapper, "soap");
     await wrapper.get('[data-testid="tab-envelope"]').trigger("click");
     await wrapper.get('[data-testid="editor-envelope"]').setValue("<Envelope>soap</Envelope>");
     await wrapper.get('[data-testid="editor-soap-action"]').setValue("urn:task10b");
-    await wrapper.get('input[value="http"]').setValue(true);
+    await chooseProtocol(wrapper, "http");
     const restoredHttp = currentRequest();
     if (restoredHttp.protocol !== "http") throw new Error("Expected HTTP draft after protocol round trip");
     expect(restoredHttp.method).toBe("POST");
@@ -943,7 +958,7 @@ describe("Contract asset editor", () => {
     if (currentRequest().protocol !== "http") throw new Error("Reopened request is not HTTP");
     expect(currentRequest().query.find((item) => item.kind === "inline" && item.name === "q")?.value).toBe("kept-query");
 
-    await wrapper.get('input[value="websocket"]').setValue(true);
+    await chooseProtocol(wrapper, "websocket");
     await wrapper.get('[data-testid="tab-message"]').trigger("click");
     await wrapper.get('[data-testid="editor-message"]').setValue("saved WebSocket frame");
     await saveEditorFromUi(wrapper, editor);
@@ -951,7 +966,7 @@ describe("Contract asset editor", () => {
     await reopen("websocket");
     expect(currentRequest()).toMatchObject({ protocol: "websocket", message: "saved WebSocket frame", path: "/task10b/http" });
 
-    await wrapper.get('input[value="soap"]').setValue(true);
+    await chooseProtocol(wrapper, "soap");
     await wrapper.get('[data-testid="tab-envelope"]').trigger("click");
     await wrapper.get('[data-testid="editor-envelope"]').setValue("<Envelope>saved</Envelope>");
     await wrapper.get('[data-testid="editor-soap-action"]').setValue("urn:task10b:saved");

@@ -1,63 +1,85 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
-import { Dropdown, Menu, MenuItem, Segmented, Button } from "ant-design-vue";
-import { GlobalOutlined } from "@ant-design/icons-vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { LOCALES, useLocale } from "../i18n/bridge";
-import { applyTheme, savePreference, themePreference, type Theme } from "../theme";
+import { DesktopOutlined, DownOutlined, EllipsisOutlined } from "@ant-design/icons-vue";
+import { LOCALES } from "../i18n/index";
+import { useLocale } from "../i18n/bridge";
+import { savePreference, themePreference } from "../theme";
+import ActionMenu from "./ActionMenu.vue";
 
-// TopBar 语言/主题切换现代化（计划 2C 任务 2）：
-// 语言 = a-dropdown 菜单（地球图标触发，菜单项带 data-locale 供联动测试定位）；
-// 主题 = a-segmented 三段选择器，受控绑定 themePreference（模块级响应式 ref，
-// savePreference 同步写）→ ConfigProvider algorithm 联动；applyTheme 同步 DOM。
+const props = defineProps<{ showApplicationMenu?: boolean }>();
+const emit = defineEmits<{ "application-menu": [] }>();
 const { t } = useI18n();
 const { locale, setLocale } = useLocale();
-const langLabel = computed(() => (locale.value === "zh-CN" ? "中文" : "English"));
-const themeOptions = computed(() => [
-  { label: t("app.themeAuto"), value: "system" },
-  { label: t("app.themeLight"), value: "light" },
-  { label: t("app.themeDark"), value: "dark" },
+const narrow = ref(false);
+const languageMenu = ref<InstanceType<typeof ActionMenu>>();
+const themeMenu = ref<InstanceType<typeof ActionMenu>>();
+const globalMenu = ref<InstanceType<typeof ActionMenu>>();
+const menuToggle = ref<HTMLElement>();
+const themeNames = { system: "app.themeAuto", light: "app.themeLight", dark: "app.themeDark" };
+const languageItems = computed(() => LOCALES.map((value) => ({
+  key: value,
+  label: value === "zh-CN" ? "中文" : "English",
+  checked: value === locale.value,
+  testId: "lang-option",
+  locale: value,
+})));
+const themeItems = computed(() => (["system", "light", "dark"] as const).map((value) => ({
+  key: value,
+  label: t(themeNames[value]),
+  checked: value === themePreference.value,
+  testId: `theme-option-${value}`,
+})));
+const menuItems = computed(() => [
+  ...(narrow.value ? [...languageItems.value, ...themeItems.value] : []),
+  ...(props.showApplicationMenu ? [{ key: "application-menu", label: t("topbar.applicationMenu"), testId: "application-menu" }] : []),
 ]);
 
-function onThemeChange(value: unknown) {
-  const preference = value as Theme;
-  savePreference(preference);
-  applyTheme(preference, window.matchMedia("(prefers-color-scheme: dark)").matches);
+async function measureWidth() {
+  const compact = window.innerWidth < 760;
+  if (compact === narrow.value) return;
+  const hadFocus = globalMenu.value?.hasFocus() || languageMenu.value?.hasFocus() || themeMenu.value?.hasFocus();
+  globalMenu.value?.close(false);
+  narrow.value = compact;
+  if (hadFocus) {
+    await nextTick();
+    menuToggle.value?.querySelector<HTMLButtonElement>(narrow.value ? "[data-testid=topbar-more]" : "[data-testid=lang-toggle]")?.focus();
+  }
 }
 
-// 挂载即应用已存偏好：html[data-theme] 驱动 CSS 变量（styles/theme.css 的
-// `html[data-theme] body` 规则），启动时不落 DOM 会导致 body 基础样式与暗色变量缺失。
+function select(key: string) {
+  if (key === "zh-CN" || key === "en") setLocale(key);
+  else if (key === "system" || key === "light" || key === "dark") savePreference(key);
+  else if (key === "application-menu") emit("application-menu");
+}
+
 onMounted(() => {
-  applyTheme(themePreference.value, window.matchMedia("(prefers-color-scheme: dark)").matches);
+  void measureWidth();
+  window.addEventListener("resize", measureWidth);
 });
+onBeforeUnmount(() => window.removeEventListener("resize", measureWidth));
 </script>
 
 <template>
-  <div class="toggles">
-    <Dropdown :trigger="['click']">
-      <Button data-testid="lang-toggle" size="small" :title="t('app.language')">
-        <GlobalOutlined />
-        {{ langLabel }}
-      </Button>
-      <template #overlay>
-        <Menu @click="({ key }: { key: string | number }) => setLocale(key as never)">
-          <MenuItem v-for="l in LOCALES" :key="l" data-testid="lang-option" :data-locale="l">
-            <span :style="l === locale ? 'font-weight:600' : ''">{{ l === "zh-CN" ? "中文" : "English" }}</span>
-          </MenuItem>
-        </Menu>
-      </template>
-    </Dropdown>
-    <Segmented
-      data-testid="theme-toggle"
-      size="small"
-      :title="t('app.theme')"
-      :options="themeOptions"
-      :value="themePreference"
-      @change="onThemeChange"
-    />
+  <div ref="menuToggle" class="toggles">
+    <template v-if="!narrow">
+      <ActionMenu ref="languageMenu" test-id="lang-toggle" :label="t('app.language')" :items="languageItems" @select="select">
+        {{ locale === "zh-CN" ? "中" : "EN" }} <DownOutlined class="arrow" />
+      </ActionMenu>
+      <ActionMenu ref="themeMenu" test-id="theme-toggle" :label="`${t('app.theme')} · ${t(themeNames[themePreference])}`" :items="themeItems" @select="select">
+        <DesktopOutlined v-if="themePreference === 'system'" />
+        <span v-else class="theme-symbol" aria-hidden="true">{{ themePreference === "light" ? "☀︎" : "☾" }}</span>
+        <DownOutlined class="arrow" />
+      </ActionMenu>
+    </template>
+    <ActionMenu v-if="menuItems.length" ref="globalMenu" test-id="topbar-more" :label="t('topbar.more')" :items="menuItems" @select="select">
+      <EllipsisOutlined />
+    </ActionMenu>
   </div>
 </template>
 
 <style scoped>
-.toggles { display: inline-flex; align-items: center; gap: 8px; }
+.toggles { display: flex; align-items: center; gap: 3px; flex: none; }
+.arrow { font-size: 9px; }
+.theme-symbol { font-size: 16px; line-height: 1; }
 </style>

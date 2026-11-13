@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // ConnectionPanel 组件测试（轨三收口）：服务器档案增删改+登录/浏览动作的唯一管理入口。
 // 从 OnlineLoginDialog.test.ts 迁入（档案管理自登录对话框收口至主页连接面板）。
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
@@ -64,20 +64,38 @@ async function mountPanel() {
 
 describe("ConnectionPanel", () => {
   it("distinguishes account authentication from browsing for an already signed-in profile", async () => {
-    const { wrapper, online, i18n } = await mountPanel();
+    const { wrapper, api, online, i18n } = await mountPanel();
     await online.login('alice', 'password8');
+    const resume = vi.spyOn(api, "onlineResume");
+    const user = online.user;
     for (const language of ['zh-CN', 'en'] as const) {
       i18n.global.locale.value = language; await flushPromises();
       const account = wrapper.get('[data-testid="connection-login"]');
-      expect.soft(account.text()).toContain(language === 'zh-CN' ? '账户' : 'Account');
+      expect.soft(account.text()).toContain(language === 'zh-CN' ? '账户' : 'account');
       expect.soft(account.text()).not.toBe(wrapper.get('[data-testid="connection-browse"]').text());
-      await account.trigger('click'); expect(online.dialogOpen).toBe(true); online.dialogOpen = false;
+      await account.trigger('click');
+      expect(online.dialogOpen).toBe(true);
+      expect(online.user).toEqual(user);
+      expect(resume).not.toHaveBeenCalled();
+      online.dialogOpen = false;
       online.error = "Error invoking remote method 'online:me': Error: online-not-signed-in";
       await flushPromises();
       expect.soft(wrapper.get('[data-testid="connections-error"]').text()).toContain(language === 'zh-CN' ? '请先登录在线服务器' : 'Sign in to the online server first');
       online.error = 'unknown-server-error: original business detail'; await flushPromises();
       expect(wrapper.get('[data-testid="connections-error"]').text()).toContain('unknown-server-error: original business detail');
+      online.error = null;
     }
+  });
+  it("reopens sign-in for an expired session on the selected connection", async () => {
+    const { wrapper, api, online } = await mountPanel();
+    await online.login("alice", "password8");
+    const resume = vi.spyOn(api, "onlineResume").mockResolvedValue({ outcome: "signed-out" });
+    online.error = "Error invoking remote method 'online:workspaces': Error: online-not-signed-in";
+    await wrapper.get('[data-testid="connection-login"]').trigger("click");
+    await flushPromises();
+    expect(resume).toHaveBeenCalledExactlyOnceWith({ baseUrl: SERVER_A });
+    expect(online.dialogOpen).toBe(true);
+    expect(online.loggedIn).toBe(false);
   });
   it("连接列表：档案行（昵称+地址）渲染；未登录无状态标签", async () => {
     const { wrapper } = await mountPanel();

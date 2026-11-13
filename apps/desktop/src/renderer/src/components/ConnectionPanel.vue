@@ -85,12 +85,6 @@ function removeConnection(baseUrl: string) {
   props.online.removeProfile(baseUrl);
 }
 
-/** 登录：激活该档案（resume 恢复链路由 store 负责）并打开登录对话框。 */
-function loginConnection(baseUrl: string) {
-  props.online.setActive(baseUrl);
-  props.online.dialogOpen = true;
-}
-
 /** 浏览：切到该服务器视图；仅当目标非当前激活档案才走 setActive（setActive 会清登录态，
  * 对已激活且已登录的档案重复调用反而登出）；已登录时顺带刷新工作区清单。 */
 function browseConnection(baseUrl: string) {
@@ -141,7 +135,7 @@ function browseConnection(baseUrl: string) {
         </a-tag>
         </div>
         <div class="conn-actions">
-        <a-button size="small" type="text" data-testid="connection-login" @click="loginConnection(p.baseUrl)">
+        <a-button size="small" type="text" data-testid="connection-login" @click="online.openConnectionAccount(p.baseUrl)">
           {{ online.loggedIn && online.activeBaseUrl === p.baseUrl ? t("home.connectionAccount") : t("home.connectionLogin") }}
         </a-button>
         <a-button size="small" type="text" data-testid="connection-browse" @click="browseConnection(p.baseUrl)">

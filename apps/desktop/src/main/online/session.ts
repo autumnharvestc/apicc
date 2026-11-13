@@ -219,6 +219,7 @@ export interface OnlineSessionDeps {
 /** 在线工作区驻留会话（计划 C 任务 1）：状态 + 按工作区隔离的树缓存。 */
 interface OnlineWorkspaceSession {
   workspaceState: OnlineWorkspaceState;
+  baseUrl: string | null;
   treeCache: { tree: OnlineTree; groups: OnlineGroup[] } | null;
 }
 
@@ -239,6 +240,8 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
   function requireWorkspace(workspaceId: string): OnlineWorkspaceState {
     const active = activeSession();
     if (!active || active.workspaceState.id !== workspaceId) throw new Error("online-workspace-not-open");
+    if (active.baseUrl && active.baseUrl !== current?.baseUrl) throw new Error("online-workspace-server-conflict");
+    active.baseUrl ??= current?.baseUrl ?? null;
     return active.workspaceState;
   }
 
@@ -257,6 +260,13 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     return current.client;
   }
 
+  function requireWorkspaceClient(workspaceId: string): OnlineClient {
+    const client = requireClient();
+    const owner = sessions.get(workspaceId)?.baseUrl;
+    if (owner && owner !== current?.baseUrl) throw new Error("online-workspace-server-conflict");
+    return client;
+  }
+
   /** put/delete 共用的冲突出口转换：OnlineConflictError → outcome 结果对象（过 IPC 不丢字段）。 */
   async function pushOutcome(run: () => Promise<OnlinePutFileResult>): Promise<OnlinePushOutcome> {
     try {
@@ -273,7 +283,11 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
       const captured = current;
       const serverId = captured ? `${captured.baseUrl.replace(/\/$/, "")}/api/v1` : "";
       const assertCurrent = () => {
-        if (!captured || current !== captured || context.ownerId !== captured.userId || context.serverId !== serverId || activeId !== context.scope.workspaceId || !sessions.has(context.scope.workspaceId)) throw new Error("online-session-changed");
+        const workspace = sessions.get(context.scope.workspaceId);
+        if (!captured || current !== captured || context.ownerId !== captured.userId || context.serverId !== serverId
+            || activeId !== context.scope.workspaceId || !workspace || (workspace.baseUrl && workspace.baseUrl !== captured.baseUrl)) {
+          throw new Error("online-session-changed");
+        }
       };
       assertCurrent();
       const base = new URL(serverId);
@@ -301,8 +315,12 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
      * 不受影响。与本地工作区的互斥（裁定 E）由 IPC 组合层保证。
      */
     openWorkspace(input: OnlineWorkspaceOpenInput): void {
+      const baseUrl = current?.baseUrl ?? null;
+      const existing = sessions.get(input.workspaceId);
+      if (existing?.baseUrl && existing.baseUrl !== baseUrl) throw new Error("online-workspace-server-conflict");
       sessions.set(input.workspaceId, {
         workspaceState: { id: input.workspaceId, name: input.name, myRole: input.myRole },
+        baseUrl,
         treeCache: null,
       });
       activeId = input.workspaceId;
@@ -313,7 +331,10 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
      * 表中有且已登录才切换；否则抛既有「尚未打开在线工作区」口径错误。
      */
     activateWorkspace(workspaceId: string): void {
-      if (!current || !sessions.has(workspaceId)) throw new Error("online-workspace-not-open");
+      const session = sessions.get(workspaceId);
+      if (!current || !session) throw new Error("online-workspace-not-open");
+      if (session.baseUrl && session.baseUrl !== current.baseUrl) throw new Error("online-workspace-server-conflict");
+      session.baseUrl ??= current.baseUrl;
       activeId = workspaceId;
     },
 
@@ -429,17 +450,17 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     },
 
     async getTree(workspaceId: string): Promise<OnlineTree> {
-      return requireClient().getTree(workspaceId);
+      return requireWorkspaceClient(workspaceId).getTree(workspaceId);
     },
 
     async getFiles(input: OnlineFilesGetInput): Promise<OnlineFilesResult> {
       // 直通出口（不缓存文件内容——版本号由渲染层编辑缓冲自持，审查次要 5 顺修备案）
-      return requireClient().getFiles(input.workspaceId, input.paths);
+      return requireWorkspaceClient(input.workspaceId).getFiles(input.workspaceId, input.paths);
     },
 
     async putFile(input: OnlineFilePutInput): Promise<OnlinePushOutcome> {
       const { workspaceId, path, content, baseVersion } = input;
-      const outcome = await pushOutcome(() => requireClient().putFile(workspaceId, { path, content, baseVersion }));
+      const outcome = await pushOutcome(() => requireWorkspaceClient(workspaceId).putFile(workspaceId, { path, content, baseVersion }));
       // 推送成功使该工作区的树缓存失效（推送后 refreshTreeView 取到新 hash/新文件）；
       // 冲突不动缓存——服务端现状以冲突对象带回。按工作区失效（计划 C 任务 1），不扰其他驻留项。
       if (outcome.outcome === "pushed") {
@@ -451,7 +472,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
 
     async batchPush(input: OnlineFilesBatchInput): Promise<OnlineBatchResult> {
       const { workspaceId, files } = input;
-      const result = await requireClient().batchPush(workspaceId, { files });
+      const result = await requireWorkspaceClient(workspaceId).batchPush(workspaceId, { files });
       // 任一文件推送成功即该工作区树缓存失效（迁移推送后的树刷新必须见到新文件/新 hash）。
       if (result.results.some((r) => r.status === "pushed")) {
         const entry = sessions.get(workspaceId);
@@ -462,7 +483,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
 
     async deleteFile(input: OnlineFileDeleteInput): Promise<OnlineDeleteOutcome> {
       try {
-        await requireClient().deleteFile(input.workspaceId, { path: input.path, baseVersion: input.baseVersion });
+        await requireWorkspaceClient(input.workspaceId).deleteFile(input.workspaceId, { path: input.path, baseVersion: input.baseVersion });
         const entry = sessions.get(input.workspaceId);
         if (entry) entry.treeCache = null;
         return { outcome: "deleted" };
@@ -474,12 +495,12 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
 
     /** 迁移映射桥（计划 C 任务 2）：本地名称目录 → 服务端实体（直通出口，行级三态由渲染层换算）。 */
     async projectMapping(input: OnlineProjectMappingInput): Promise<OnlineMappingResult> {
-      return requireClient().onlineProjectMapping(input.workspaceId, input.entries);
+      return requireWorkspaceClient(input.workspaceId).onlineProjectMapping(input.workspaceId, input.entries);
     },
 
     /** 组织分组只读清单（计划 C 任务 2 迁移拉取：groupId → 组名反查数据源）。 */
     async listGroups(workspaceId: string): Promise<OnlineGroup[]> {
-      return requireClient().listGroups(workspaceId);
+      return requireWorkspaceClient(workspaceId).listGroups(workspaceId);
     },
   };
 }

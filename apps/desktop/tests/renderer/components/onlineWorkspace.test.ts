@@ -5,7 +5,7 @@
 // （file 叶/无动作钮）、OnlineLoginDialog 工作区列表（打开在线工作区入口）。
 // 计划 C 任务 2（裁定 E 互斥退役）：本地打开/在线打开并存驻留——另一侧会话原样保留。
 // antd 适配沿用既有约定：a-modal 传送门内容用 body 作用域查询（expectBody/bodyHas）。
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -496,6 +496,25 @@ describe("OnlineConflictDialog（裁定 C：409 → 拉取覆盖我的 / 放弃�
 });
 
 describe("OnlineMigrateDialog（裁定 D：目录选择 + 进度 + 结果清单）", () => {
+  it("R7 丢弃旧工作区的目录选择，即使另一工作区已重新打开迁移向导", async () => {
+    const f = await fixture();
+    let finishPick!: (directory: string) => void;
+    const pick = new Promise<string>((resolve) => { finishPick = resolve; });
+    f.api.wsPickDirectory = () => pick;
+    const migrate = vi.spyOn(f.online, "migratePull");
+    f.online.migrateDialogOpen = true;
+    await f.mount(OnlineMigrateDialog, { canMigrate: () => true });
+    await expectBody("migrate-pull-btn").trigger("click");
+    expect(expectBody("migrate-push-btn").attributes("disabled")).toBeDefined();
+    f.online.migrateDialogOpen = false;
+    f.online.activeWorkspaceId = "another-workspace";
+    f.online.migrateDialogOpen = true;
+    await flushPromises();
+    finishPick("/tmp/old-workspace-selection");
+    await flushPromises();
+    expect(migrate).not.toHaveBeenCalled();
+    expect(expectBody("migrate-push-btn").attributes("disabled")).toBeUndefined();
+  });
   it("拉取：选目录后执行，结果清单计数与明细上屏", async () => {
     const f = await fixture();
     f.online.migrateDialogOpen = true; // a-modal 传送门渲染前置（显隐由 store 驱动）
@@ -568,28 +587,6 @@ describe("TopBar 主页入口与工作区名（本地/在线并存驻留，计�
     await flushPromises();
     expect(f.workspace.opened).toBe(true); // 并存：本地不退
     expect(wrapper.find('[data-testid="workspace-name"]').text()).toContain(f.online.activeWorkspace!.name);
-    expect(wrapper.find('[data-testid="online-migrate"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="online-exit"]').exists()).toBe(true);
-  });
-
-  it("退出在线工作区 → 确认弹窗先行（计划 C 任务 6）：取消保持驻留，确认后会话清理", async () => {
-    const f = await fixture();
-    const wrapper = await f.mount(TopBar);
-    await wrapper.find('[data-testid="online-exit"]').trigger("click");
-    await flushPromises();
-    // 确认弹窗先行（列出受影响签；本用例无签 → 空签文案），取消不动
-    expect(bodyFind("online-exit-impact")).not.toBeNull();
-    await expectBody("dialog-cancel").trigger("click");
-    await flushPromises();
-    expect(f.online.activeWorkspace).not.toBeNull();
-    // 再点并确认：会话出表清场
-    await wrapper.find('[data-testid="online-exit"]').trigger("click");
-    await flushPromises();
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
-    expect(f.online.activeWorkspace).toBeNull();
-    expect(f.online.onlineTree).toBeNull();
-    expect(f.online.editorPath).toBeNull();
   });
 
   it("在线激活时点「打开本地目录」→ 本地打开且在线会话原样驻留（并存，互斥退役）", async () => {

@@ -1,36 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Space as ASpace, Button as AButton, Typography as ATypography, Select as ASelect, Drawer as ADrawer, Dropdown as ADropdown } from "ant-design-vue";
-import { EllipsisOutlined, SettingOutlined } from "@ant-design/icons-vue";
+import { Button as AButton, Drawer as ADrawer } from "ant-design-vue";
+import { ExclamationCircleOutlined, SettingOutlined } from "@ant-design/icons-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
-import type { useTreeStore } from "../stores/tree.js";
 import type { createOnlineStore } from "../stores/online.js";
 import type { createPluginsStore } from "../stores/plugins.js";
-import type { createTabsStore, ProjectTab } from "../stores/tabs.js";
-import type { ProjectLocator } from "../../../shared/locations.js";
+import type { createTabsStore } from "../stores/tabs.js";
 import ThemeLanguageToggle from "./ThemeLanguageToggle.vue";
 import ProjectTabs from "./ProjectTabs.vue";
 import PluginsView from "./PluginsView.vue";
 import NetworkSettings from "./NetworkSettings.vue";
 import OnlineExecutionCacheSettings from "./OnlineExecutionCacheSettings.vue";
-import ConfirmDialog from "./ConfirmDialog.vue";
+import appIcon from "../../../../build/icon.png";
 
-const ATypographyText = ATypography.Text;
-
-/**
- * 顶栏（M9-C 层级调整）：工作区/模式徽标 + 项目切换下拉（本地模式；选中即切换活动
- * 项目——侧树作用域化至该项目）+ 在线模式入口 + 设置抽屉（插件管理，插件归应用设置项）
- * + 语言/主题。本地目录的 打开/新建 迁至主页（HomeView）；远程在线仍走既有登录对话框。
- * store 与 api 经 props 注入（组合根一次装配）；reportError 为组合根错误反馈通道。
- * 计划 C 任务 6（不变量 4）：退出在线工作区 = 工作区级关闭唯一入口，改为确认 Modal——
- * 列出该工作区的签（项目名 + 草稿态，tabs store 的 projectHasDrafts 统计），确认后先
- * tabs.closeWorkspaceTabs（关其全部签+驱逐各项目会话，签级不再确认）再 online.closeWorkspace。
- */
 const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
-  tree: ReturnType<typeof useTreeStore>;
   api: ApiccApi;
   online: ReturnType<typeof createOnlineStore>;
   plugins: ReturnType<typeof createPluginsStore>;
@@ -38,140 +24,95 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
   ai?: import("../stores/ai.js").AiStore;
 }>();
-const emit = defineEmits<{ (event: "manage-connections"): void }>();
 const { t } = useI18n();
 
-function openOnline() {
-  if (props.online.hasActiveProfile) props.online.dialogOpen = true;
-  else emit("manage-connections");
-}
-
 const settingsOpen = ref(false);
+const problemsOpen = ref(false);
+const settingsTrigger = ref<HTMLButtonElement>();
+const problemsTrigger = ref<HTMLButtonElement>();
 const activeLocalProjectTab = computed(() => {
   const tab = props.tabs.activeTab;
-  if (!tab || !("projectLocator" in tab) || tab.workspaceRef.kind !== "local" || props.workspace.root !== tab.workspaceRef.dir) return null;
+  if (!tab || !("projectLocator" in tab) || props.workspace.root !== tab.workspaceRef.dir) return null;
   return tab;
 });
+const workspaceContext = ref<"local" | "online">(props.online.activeWorkspace ? "online" : "local");
+watch(() => props.workspace.root, () => { workspaceContext.value = "local"; }, { flush: "sync" });
+watch(() => props.online.activeWorkspace?.id, (id) => { workspaceContext.value = id ? "online" : "local"; }, { flush: "sync" });
+watch(() => props.tabs.activeTab, (tab) => {
+  if (tab) workspaceContext.value = tab.workspaceRef.kind;
+}, { flush: "sync", immediate: true });
+const workspaceName = computed(() => {
+  const active = props.tabs.activeTab;
+  if (active && "projectLocator" in active) return activeLocalProjectTab.value ? props.workspace.name || active.workspaceRef.dir : active.workspaceRef.dir;
+  if (active) return props.online.activeWorkspace?.id === active.workspaceRef.workspaceId ? props.online.activeWorkspace.name : active.workspaceRef.name;
+  return (workspaceContext.value === "online" ? props.online.activeWorkspace?.name : props.workspace.name)
+    || props.workspace.name || props.online.activeWorkspace?.name || t("topbar.noWorkspace");
+});
+const showLocalProblems = computed(() => props.workspace.problems.length > 0
+  && (activeLocalProjectTab.value !== null || (!props.tabs.activeTab && workspaceContext.value === "local")));
+const hasNativeMenu = typeof window.apicc?.showApplicationMenu === "function";
+const nativeOverlay = window.apicc?.windowsTitleBarOverlay === true;
+let lastEditor: HTMLElement | null = null;
 
-// —— 项目切换（本地模式）：value 为完整 ProjectLocator，避免跨分组同 ID 串项 ——
-const projects = computed(() =>
-  (props.workspace.tree?.children ?? [])
-    .flatMap((g) => g.children ?? [])
-    .filter((n) => n.kind === "project")
-    .map((p) => ({ label: p.label, value: JSON.stringify(p.locator) })),
-);
-function onProjectSelect(value: string) {
-  try {
-    const locator = JSON.parse(value) as ProjectLocator;
-    const project = props.workspace.findProject(locator);
-    if (project) void props.tabs.openProjectTab(
-      { kind: "local", dir: props.workspace.root },
-      { locator: project.locator, name: project.label },
-    );
-  } catch (error) {
-    props.reportError(error);
+function rememberEditor(event: FocusEvent) {
+  if (event.target instanceof HTMLElement && event.target.matches("input:not([type=button]), textarea, [contenteditable=true]")) {
+    lastEditor = event.target;
   }
 }
 
-function openSettings() {
-  settingsOpen.value = true;
+if (hasNativeMenu) {
+  onMounted(() => document.addEventListener("focusin", rememberEditor));
+  onBeforeUnmount(() => document.removeEventListener("focusin", rememberEditor));
 }
 
-// —— 退出在线工作区（计划 C 任务 6，不变量 4：工作区级关闭唯一入口，确认弹窗列出受影响签）——
-const exitConfirmOpen = ref(false);
-/** 打开确认时快照受影响签（确认期间签表变化不漂移展示）。 */
-const exitAffectedTabs = ref<ProjectTab[]>([]);
-
-function requestExitOnline() {
-  const ws = props.online.activeWorkspace;
-  if (!ws) return;
-  exitAffectedTabs.value = props.tabs.tabs.filter(
-    (tab) => tab.workspaceRef.kind === "online" && tab.workspaceRef.workspaceId === ws.id,
-  );
-  exitConfirmOpen.value = true;
+function openApplicationMenu() {
+  // Electron's native Edit roles use the focused renderer control.
+  if (lastEditor?.isConnected && lastEditor.getClientRects().length > 0) lastEditor.focus({ preventScroll: true });
+  void window.apicc?.showApplicationMenu?.().catch(props.reportError);
 }
 
-async function onExitConfirm() {
-  exitConfirmOpen.value = false;
-  const ws = props.online.activeWorkspace;
-  if (!ws) return;
-  try {
-    // 先关该工作区全部签（逐签驱逐项目会话；工作区级关闭本身已经确认，签级不再拦截），
-    // 再出表关闭工作区会话（在线树/编辑缓冲随会话释放，顶栏工作区名随 activeWorkspace 复位）。
-    await props.tabs.closeWorkspaceTabs({ kind: "online", workspaceId: ws.id, name: ws.name });
-    await props.online.closeWorkspace(ws.id);
-  } catch (e) {
-    props.reportError(e);
-  }
-}
-
-function onExitCancel() {
-  exitConfirmOpen.value = false;
+function restoreDrawerFocus(open: boolean, trigger: HTMLButtonElement | undefined) {
+  if (open || props.ai?.configDialogOpen) return;
+  const target = trigger?.isConnected ? trigger : document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
+  target?.focus({ preventScroll: true });
 }
 </script>
 
 <template>
-  <header class="topbar" data-testid="topbar">
-    <a-typography-text strong class="workspace-name" data-testid="workspace-name" :title="online.activeWorkspace?.name ?? (workspace.name || t('app.openWorkspace'))">
-      {{ online.activeWorkspace?.name ?? (workspace.name || t("app.openWorkspace")) }}
-    </a-typography-text>
+  <header class="topbar" :class="{ 'titlebar-overlay': nativeOverlay }" data-testid="topbar">
+    <img class="app-icon" :src="appIcon" alt="" width="28" height="28" draggable="false" />
+    <span class="workspace-name" data-testid="workspace-name" tabindex="0" :title="workspaceName">
+      {{ workspaceName }}
+      <span class="workspace-full-name" aria-hidden="true">{{ workspaceName }}</span>
+    </span>
     <ProjectTabs class="project-navigation" :tabs="tabs" />
-    <!-- 项目下拉是查找/打开入口；当前选择只由统一页签栏表示。 -->
-    <a-select
-      v-if="!online.activeWorkspace && workspace.opened"
-      class="project-switch"
-      :value="undefined"
-      :options="projects"
-      :placeholder="t('topbar.projectPlaceholder')"
-      data-testid="project-switch"
-      @update:value="(v) => onProjectSelect(v as string)"
-    />
-    <a-typography-text v-if="workspace.problems.length && !online.activeWorkspace" type="danger" data-testid="workspace-problems">
-      {{ t("workspace.problems") }}: {{ workspace.problems.length }}
-    </a-typography-text>
-    <a-space class="topbar-tools" :size="6">
-      <!-- 迁移/退出（任务 3）：仅在线工作区激活时可见 -->
-      <a-button v-if="online.activeWorkspace" size="small" data-testid="online-migrate" @click="online.migrateDialogOpen = true">
-        {{ t("online.migrate") }}
-      </a-button>
-      <a-button v-if="online.activeWorkspace" size="small" data-testid="online-exit" @click="requestExitOnline">
-        {{ t("online.exitOnline") }}
-      </a-button>
-      <!-- 在线模式入口：对话框本体由组合根渲染，按钮只置 online.dialogOpen -->
-      <a-button size="small" class="online-toggle" data-testid="online-toggle" :title="online.loggedIn ? t('online.loggedInAs', { name: online.user?.displayName ?? '', server: online.activeName }) : t('online.title')" @click="openOnline">
-        <span class="online-icon" aria-hidden="true">◉</span>
-        <span v-if="online.loggedIn" class="online-label" data-testid="online-status">
-          {{ t("online.loggedInAs", { name: online.user?.displayName ?? "", server: online.activeName }) }}
-        </span>
-        <span v-else class="online-label" data-testid="online-status">{{ t("online.title") }}</span>
-      </a-button>
-      <!-- 设置抽屉（M9-C 裁定 D5）：插件管理归应用设置项 -->
-      <a-button size="small" data-testid="settings-toggle" :title="t('settings.title')" @click="openSettings">
+    <div class="topbar-tools">
+      <button
+        v-if="showLocalProblems"
+        ref="problemsTrigger"
+        type="button"
+        class="topbar-button workspace-problems"
+        data-testid="workspace-problems"
+        :title="t('topbar.workspaceProblemCount', { count: workspace.problems.length })"
+        :aria-label="t('topbar.workspaceProblemCount', { count: workspace.problems.length })"
+        @click="problemsOpen = true"
+      >
+        <ExclamationCircleOutlined /> {{ workspace.problems.length }}
+      </button>
+      <ThemeLanguageToggle :show-application-menu="hasNativeMenu" @application-menu="openApplicationMenu" />
+      <button ref="settingsTrigger" type="button" class="topbar-button" data-testid="settings-toggle" :title="t('settings.title')" :aria-label="t('settings.title')" @click="settingsOpen = true">
         <SettingOutlined />
-      </a-button>
-      <ThemeLanguageToggle class="topbar-theme" />
-      <a-dropdown class="topbar-more" :trigger="['click']" placement="bottomRight">
-        <a-button size="small" :title="t('topbar.more')" :aria-label="t('topbar.more')" data-testid="topbar-more">
-          <EllipsisOutlined />
-        </a-button>
-        <template #overlay>
-          <div class="topbar-more-menu" role="menu">
-            <button type="button" role="menuitem" data-testid="more-projects" @click="tabs.activateHome()">{{ t("topbar.projectPlaceholder") }}</button>
-            <button type="button" role="menuitem" data-testid="more-online-toggle" @click="openOnline">{{ t("online.title") }}</button>
-            <button type="button" role="menuitem" data-testid="more-settings" @click="openSettings">{{ t("settings.title") }}</button>
-            <button v-if="online.activeWorkspace" type="button" role="menuitem" data-testid="more-online-migrate" @click="online.migrateDialogOpen = true">{{ t("online.migrate") }}</button>
-            <button v-if="online.activeWorkspace" type="button" role="menuitem" data-testid="more-online-exit" @click="requestExitOnline">{{ t("online.exitOnline") }}</button>
-            <ThemeLanguageToggle class="more-theme" />
-          </div>
-        </template>
-      </a-dropdown>
-    </a-space>
-    <a-drawer
-      v-model:open="settingsOpen"
-      :title="t('settings.title')"
-      width="min(560px, 100vw)"
-      data-testid="settings-drawer"
-    >
+      </button>
+    </div>
+    <a-drawer v-model:open="problemsOpen" :title="t('workspace.problems')" width="min(560px, 100vw)" @after-open-change="restoreDrawerFocus($event, problemsTrigger)">
+      <ul class="problem-list">
+        <li v-for="(problem, index) in workspace.problems" :key="index">
+          <div>{{ problem.message }}</div>
+          <small>{{ problem.file }}</small>
+        </li>
+      </ul>
+    </a-drawer>
+    <a-drawer v-model:open="settingsOpen" :title="t('settings.title')" width="min(560px, 100vw)" data-testid="settings-drawer" @after-open-change="restoreDrawerFocus($event, settingsTrigger)">
       <a-button v-if="ai" block data-testid="settings-ai" @click="settingsOpen = false; ai.configDialogOpen = true">{{ t("aiSettings.title") }}</a-button>
       <PluginsView :plugins="plugins" />
       <OnlineExecutionCacheSettings v-if="online.execution" :execution="online.execution" :open="settingsOpen" />
@@ -183,28 +124,6 @@ function onExitCancel() {
         :read-only="workspace.readOnly"
       />
     </a-drawer>
-    <!-- 退出在线工作区确认（计划 C 任务 6）：a-modal 传送门渲染于 body，受影响签清单走默认插槽 -->
-    <ConfirmDialog
-      :open="exitConfirmOpen"
-      :title="t('online.exitOnline')"
-      @confirm="onExitConfirm"
-      @cancel="onExitCancel"
-    >
-      <div data-testid="online-exit-impact">
-        <p>{{ t("online.exitConfirmDesc", { count: exitAffectedTabs.length }) }}</p>
-        <ul v-if="exitAffectedTabs.length > 0" class="exit-impact-list">
-          <li
-            v-for="(tab, index) in exitAffectedTabs"
-            :key="tab.tabId"
-            :data-testid="`online-exit-tab-${index}`"
-          >
-            {{ tab.projectName }}
-            <span v-if="tabs.projectHasDrafts(tab.tabId)" data-testid="online-exit-draft">（{{ t("online.exitHasDraft") }}）</span>
-          </li>
-        </ul>
-        <p v-else>{{ t("online.exitNoTabs") }}</p>
-      </div>
-    </ConfirmDialog>
   </header>
 </template>
 
@@ -215,75 +134,77 @@ function onExitCancel() {
   gap: 8px;
   width: 100%;
   min-width: 0;
-  height: 48px;
+  height: max(46px, env(titlebar-area-height, 0px));
   flex: none;
   box-sizing: border-box;
-  overflow: hidden;
-  padding: 6px 12px;
+  padding: 0 8px;
+  padding-left: calc(8px + env(titlebar-area-x, 0px));
+  padding-right: calc(8px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)));
   border-bottom: 1px solid var(--border);
-  background: var(--bg);
-  box-shadow: var(--panel-shadow);
+  background: var(--workbench-topbar);
+  color: var(--text);
 }
+.topbar.titlebar-overlay { app-region: drag; -webkit-app-region: drag; }
+.app-icon { display: block; flex: none; }
 .workspace-name {
-  flex: none;
-  max-width: 150px;
+  flex: 0 0 152px;
+  min-width: 0;
+  box-sizing: border-box;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
-.project-navigation { flex: 1 1 auto; }
-.topbar-tools { flex: none; min-width: 0; }
-.mode-badge {
-  margin-inline-end: 0;
-}
-.project-switch { width: 160px; flex: none; }
-.online-toggle { max-width: 170px; }
-.online-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.online-icon { display: none; }
-.topbar-more { display: none; }
-.topbar-more-menu {
-  display: flex;
-  flex-direction: column;
-  min-width: 190px;
-  padding: 4px;
-  border-radius: 6px;
-  background: var(--panel);
-  box-shadow: 0 3px 12px rgb(0 0 0 / 18%);
-}
-.topbar-more-menu > button {
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
+.workspace-full-name {
+  display: none;
+  position: fixed;
+  z-index: 1100;
+  inset: max(46px, env(titlebar-area-height, 0px)) auto auto calc(40px + env(titlebar-area-x, 0px));
+  width: max-content;
+  max-width: calc(100vw - 50px);
+  max-height: calc(100vh - max(46px, env(titlebar-area-height, 0px)) - 8px);
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius, 6px);
+  background: var(--bg);
   color: var(--text);
-  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.workspace-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.workspace-name:focus-visible .workspace-full-name { display: block; }
+.project-navigation { flex: 1 1 auto; }
+.topbar-tools { display: flex; align-items: center; gap: 4px; flex: none; app-region: no-drag; -webkit-app-region: no-drag; }
+.topbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
 }
-.topbar-more-menu > button:hover { background: var(--active-weak); }
-.topbar-more-menu > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.more-theme { padding: 6px 8px; border-top: 1px solid var(--border); }
-.more-theme :deep(.toggles) { flex-wrap: wrap; }
-/* 退出在线确认的受影响签清单（ConfirmDialog 默认插槽内容） */
-.exit-impact-list {
-  margin: 4px 0 0;
-  padding-inline-start: 18px;
+.topbar-button:hover { background: var(--active-weak); }
+.topbar-button:focus-visible { outline-offset: -2px; }
+.workspace-problems { color: var(--fail); }
+.problem-list { padding-inline-start: 18px; overflow-wrap: anywhere; }
+.problem-list li + li { margin-top: 8px; }
+@media (max-width: 1023px) { .workspace-name { flex-basis: 112px; } }
+@media (max-width: 759px) {
+  .topbar { gap: 5px; }
+  .workspace-name { flex-basis: 88px; }
 }
-
-@media (max-width: 900px) {
-  .workspace-name { max-width: 86px; }
-  .project-switch { width: 120px; }
-}
-
-@media (max-width: 680px) {
-  .workspace-name { display: none; }
-  .project-switch { display: none; }
-  .topbar-theme { display: none; }
-  .topbar-more { display: inline-flex; }
-  .topbar-tools :deep([data-testid="online-migrate"]),
-  .topbar-tools :deep([data-testid="online-exit"]) { display: none; }
-  .online-toggle { width: 32px; min-width: 32px; padding-inline: 0; }
-  .online-label { display: none; }
-  .online-icon { display: inline; }
-}
+@media (forced-colors: active) { .topbar-button { border-color: ButtonText; } }
 </style>

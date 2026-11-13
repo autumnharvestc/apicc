@@ -11,6 +11,7 @@ import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "..
 import { createStressPreloadApi } from "./stressBridge.js";
 import { EvidenceInvocationSchema } from "../shared/testing.js";
 import { AiProgressDtoSchema } from '../shared/ai/contract.js';
+import { WindowChromeChannel } from "../shared/window-chrome.js";
 
 function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcInputArgsMap[Channel]): Promise<IpcResultMap[Channel]> {
   return ipcRenderer.invoke(channel, ...args).then((result: unknown) => result as IpcResultMap[Channel]);
@@ -19,6 +20,7 @@ function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcIn
 const stressApi = createStressPreloadApi(ipcRenderer);
 
 const api: ApiccApi = {
+  windowsTitleBarOverlay: process.platform === "win32",
   onlineExecution: async (input) => OnlineExecutionResultSchema.parse(await invoke(IpcChannel.OnlineExecution, input)),
   onlineCollaboration: async input => CollaborationResultSchema.parse(await invoke(IpcChannel.OnlineCollaboration, CollaborationInputSchema.parse(input))),
   synchronization: async input => parseSynchronizationResult(input, await invoke(IpcChannel.Synchronization, SynchronizationInputSchema.parse(input))),
@@ -173,6 +175,8 @@ const api: ApiccApi = {
     return () => { ipcRenderer.removeListener(IpcEvent.AiProgress, receive); };
   },
   pluginsList: () => invoke(IpcChannel.PluginsList),
+  setWindowChromeTheme: (theme) => ipcRenderer.invoke(WindowChromeChannel.SetTheme, theme),
+  showApplicationMenu: () => ipcRenderer.invoke(WindowChromeChannel.ShowApplicationMenu),
   onDirtyCheck: (handler) => {
     ipcRenderer.on(IpcEvent.AppDirtyCheck, () => ipcRenderer.send(IpcEvent.AppDirtyCheckReply, handler()));
   },

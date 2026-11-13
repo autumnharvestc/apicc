@@ -1,6 +1,6 @@
 import { createPinia, defineStore } from "pinia";
 import { watch } from "vue";
-import type { ApiccApi } from "../../../shared/types.js";
+import type { ApiccApi, DebugCancelResult } from "../../../shared/types.js";
 import type { ApiRequest, DebugFieldState, DebugInvocation, DebugResult, RequestSettingsOverride } from "@apicc/core";
 import { ApiRequestSchema } from "@apicc/core/schema";
 import type { DebugHistoryRestoreResult } from "../../../shared/types.js";
@@ -43,10 +43,11 @@ export interface RequestTabDebugState {
   sending: boolean;
   starting: boolean;
   activeRunId: string | null;
+  cancelRunId: string | null;
   requestPanel: string;
   responsePanel: string;
   requestScrollTop: number;
-  responseScrollTop: number;
+  responseScrollByPanel: Record<string, number>;
 }
 
 function restoreStateKey(sessionKey: string, generation: number): string {
@@ -97,11 +98,33 @@ export function useDebugStore(
   getContext: () => LocalWorkspaceContext = () => ({ root: "", readOnly: false }),
   requestTabs?: RequestTabsStore,
 ) {
+  const pendingCancellation = new Map<string, Promise<DebugCancelResult>>();
+  function cancelActiveRun(owner: { activeRunId: string | null; cancelRunId: string | null }): Promise<DebugCancelResult> {
+    const runId = owner.activeRunId;
+    if (!runId) return Promise.resolve({ status: "no-active" });
+    const pending = pendingCancellation.get(runId);
+    if (pending) return pending;
+    if (owner.cancelRunId === runId) return Promise.resolve({ status: "cancelled" });
+    owner.cancelRunId = runId;
+    const operation = Promise.resolve().then(() => api.debugCancel({ runId }))
+      .then((result) => {
+        if (result.status !== "cancelled" && owner.cancelRunId === runId) owner.cancelRunId = null;
+        return result;
+      })
+      .catch((error: unknown) => {
+        if (owner.cancelRunId === runId) owner.cancelRunId = null;
+        throw error;
+      })
+      .finally(() => { pendingCancellation.delete(runId); });
+    pendingCancellation.set(runId, operation);
+    return operation;
+  }
   const store = defineStore("debug", {
     state: () => ({
       sending: false,
       starting: false,
       activeRunId: null as string | null,
+      cancelRunId: null as string | null,
       activeResultKey: null as string | null,
       results: {} as Record<string, DebugResult>,
       lastResultKey: null as string | null,
@@ -223,10 +246,11 @@ export function useDebugStore(
           sending: false,
           starting: false,
           activeRunId: null,
+          cancelRunId: null,
           requestPanel: "path",
           responsePanel: "body",
           requestScrollTop: 0,
-          responseScrollTop: 0,
+          responseScrollByPanel: {},
         };
         value.draftSnapshot = requestTabDraftSnapshot(value);
         this.requestTabs[tab.tabId] = value;
@@ -361,6 +385,7 @@ export function useDebugStore(
         state.starting = true;
         state.sending = true;
         state.activeRunId = null;
+        state.cancelRunId = null;
         state.error = null;
         try {
           let result: DebugResult;
@@ -382,7 +407,10 @@ export function useDebugStore(
             }
             result = await api.debugWait({ runId: started.runId });
           } else throw new Error("缺少调试调用信息");
-          if (ownerIsCurrent()) state.result = result;
+          if (ownerIsCurrent()) {
+            state.result = result;
+            state.responseScrollByPanel = {};
+          }
         } catch (error) {
           if (ownerIsCurrent()) state.error = error instanceof Error ? error.message : String(error);
         } finally {
@@ -390,6 +418,7 @@ export function useDebugStore(
             state.sending = false;
             state.starting = false;
             state.activeRunId = null;
+            state.cancelRunId = null;
           }
         }
       },
@@ -405,6 +434,10 @@ export function useDebugStore(
           const key = apiSessionKey(tab.root, tab.source.locator);
           const session = key ? editorValue.sessions[key] : undefined;
           if (!session || session.root !== tab.root || !sameLocator(session.locator, tab.source.locator)) return;
+          if (state.selectedEnvironmentId && !session.envs.some((env) => env.id === state.selectedEnvironmentId)) {
+            state.error = "debug-environment-unavailable";
+            return;
+          }
           if (state.restoreEditorGeneration !== null && state.restoreEditorGeneration !== session.generation) {
             state.restoreEditorGeneration = null;
             state.fields = [];
@@ -431,6 +464,10 @@ export function useDebugStore(
           const session = editorValue.freeSessions[tab.tabId];
           if (!session || session.root !== tab.root || session.draftId !== tab.source.draftId
             || !sameProject(session.project, tab.source.project)) return;
+          if (state.selectedEnvironmentId && !session.envs.some((env) => env.id === state.selectedEnvironmentId)) {
+            state.error = "debug-environment-unavailable";
+            return;
+          }
           if (session.request.protocol === "http") {
             try {
               const parsed = new URL(requestUrl(session.request));
@@ -460,8 +497,7 @@ export function useDebugStore(
       },
       async cancelRequestTab(tabId: string) {
         const state = this.requestTabs[tabId];
-        if (!state?.activeRunId) return { status: "no-active" as const };
-        return api.debugCancel({ runId: state.activeRunId });
+        return state ? cancelActiveRun(state) : { status: "no-active" as const };
       },
       applyRestore(invocation: Extract<DebugInvocation, { mode: "request" }>, sourceAvailable: boolean, editorValue: Editor) {
         const copied = JSON.parse(JSON.stringify(invocation)) as RequestDebugInvocation;
@@ -689,6 +725,10 @@ export function useDebugStore(
         }
         const fixedLocator = copyLocator(session.locator);
         const env = session.envs.find((item) => item.name === this.selectedEnvName);
+        if (this.selectedEnvName && !env) {
+          this.error = "debug-environment-unavailable";
+          return;
+        }
         const request = JSON.parse(JSON.stringify(session.api.contract.request)) as typeof session.api.contract.request;
         const invocation: DebugInvocation = {
           mode: "request",
@@ -722,9 +762,7 @@ export function useDebugStore(
         } else await this.runInvocation(targetEditor, undefined, undefined, target, startReplay);
       },
       async cancel() {
-        const runId = this.activeRunId;
-        if (!runId) return { status: "no-active" as const };
-        return api.debugCancel({ runId });
+        return cancelActiveRun(this);
       },
       async runInvocation(targetEditor: Editor, invocation: DebugInvocation | undefined, runFn?: RunFn, target?: ResultTarget, startFn?: StartFn) {
         const activeKey = targetEditor.activeKey;
@@ -750,6 +788,8 @@ export function useDebugStore(
         };
         this.sending = true;
         this.starting = true;
+        this.activeRunId = null;
+        this.cancelRunId = null;
         this.error = null;
         this.activeResultKey = resultKey;
         try {
@@ -788,6 +828,7 @@ export function useDebugStore(
             this.sending = false;
             this.starting = false;
             this.activeRunId = null;
+          this.cancelRunId = null;
           }
         }
       },

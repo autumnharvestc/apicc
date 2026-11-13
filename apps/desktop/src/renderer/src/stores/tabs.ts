@@ -7,12 +7,15 @@ import type { LocalProjectTreeNodeDTO, LocalRootTreeNodeDTO } from "../../../sha
 import type { ProjectLocator } from "../../../shared/locations.js";
 import type { RequestTabsStore } from "./requestTabs.js";
 import { ProjectLocatorSchema } from "../../../shared/locations.js";
+import { OnlineBaseUrlSchema } from "../../../shared/online/contract.js";
+import { normalizeOnlineBaseUrl } from "../onlineWorkspaceActions.js";
 
 /**
  * 工作区引用（计划 C 任务 3）：签归属的工作区身份——本地目录或在线工作区。
  * 持久化（不变量 5）只记签结构，本形状即落盘形状（草稿绝不落盘）。
  */
-export type WorkspaceRef = { kind: "local"; dir: string } | { kind: "online"; workspaceId: string; name: string };
+export type OnlineWorkspaceRef = { kind: "online"; workspaceId: string; name: string; baseUrl?: string };
+export type WorkspaceRef = { kind: "local"; dir: string } | OnlineWorkspaceRef;
 
 /** 项目页签：顶栏页签栏的最小结构（渲染层 tabs store，计划 C 任务 3）。 */
 interface ProjectTabBase {
@@ -50,9 +53,11 @@ export interface PersistedProjectTabs {
 }
 
 /** workspaceRef 相等（去重键的一半）：同 kind 同身份即同一工作区。 */
-function sameRef(a: WorkspaceRef, b: WorkspaceRef): boolean {
+export function sameWorkspaceRef(a: WorkspaceRef, b: WorkspaceRef): boolean {
   if (a.kind === "local" && b.kind === "local") return a.dir === b.dir;
-  if (a.kind === "online" && b.kind === "online") return a.workspaceId === b.workspaceId;
+  if (a.kind === "online" && b.kind === "online") {
+    return a.workspaceId === b.workspaceId && normalizeOnlineBaseUrl(a.baseUrl) === normalizeOnlineBaseUrl(b.baseUrl);
+  }
   return false;
 }
 
@@ -61,7 +66,7 @@ function sameProjectLocator(a: ProjectLocator, b: ProjectLocator): boolean {
 }
 
 function sameTabIdentity(a: ProjectTabRecord, b: ProjectTabRecord): boolean {
-  if (!sameRef(a.workspaceRef, b.workspaceRef)) return false;
+  if (!sameWorkspaceRef(a.workspaceRef, b.workspaceRef)) return false;
   if (hasProjectLocator(a) && hasProjectLocator(b)) return sameProjectLocator(a.projectLocator, b.projectLocator);
   return hasOnlineProjectId(a) && hasOnlineProjectId(b) && a.projectId === b.projectId;
 }
@@ -72,7 +77,11 @@ function parseWorkspaceRef(value: unknown): WorkspaceRef | null {
   const v = value as Record<string, unknown>;
   if (v.kind === "local" && typeof v.dir === "string") return { kind: "local", dir: v.dir };
   if (v.kind === "online" && typeof v.workspaceId === "string" && typeof v.name === "string") {
-    return { kind: "online", workspaceId: v.workspaceId, name: v.name };
+    if (v.baseUrl === undefined) return { kind: "online", workspaceId: v.workspaceId, name: v.name };
+    if (typeof v.baseUrl !== "string") return null;
+    const baseUrl = normalizeOnlineBaseUrl(v.baseUrl);
+    if (!OnlineBaseUrlSchema.safeParse(baseUrl).success) return null;
+    return { kind: "online", workspaceId: v.workspaceId, name: v.name, baseUrl };
   }
   return null;
 }
@@ -137,7 +146,7 @@ export interface TabsStoreDeps {
   /** 本地项目选中传正式树 DTO，保留 workspace/group/project 全身份。 */
   tree: { select: (node: LocalProjectTreeNodeDTO) => void };
   /** 在线 store：会话表存在性（分歧防御）+ 显式激活 + 在线树项目选中 + 缓冲表（关签 dirty 判定）。 */
-  online: Pick<OnlineStore, "sessions" | "activeWorkspaceId" | "error" | "activateWorkspace" | "selectNode">;
+  online: Pick<OnlineStore, "sessions" | "activeWorkspaceId" | "error" | "activateWorkspace" | "selectNode"> & Partial<Pick<OnlineStore, "activeBaseUrl" | "profiles">>;
   /**
    * 本地编辑器会话表（任务 5 关签 dirty 判定聚合源之一，审查重要 1 改元数据驱动）：按槽
    * 元数据 projectId 过滤后任一脏槽即需确认。App 组合根注入；未注入（store 单测省略）
@@ -187,6 +196,17 @@ export interface TabsStoreDeps {
 export function createTabsStore(deps: TabsStoreDeps) {
   const storage = deps.storage ?? localStorage;
   const closingTabs = new Set<string>();
+  function onlineWorkspaceError(ref: OnlineWorkspaceRef): string | null {
+    const session = deps.online.sessions[ref.workspaceId];
+    const activeBaseUrl = normalizeOnlineBaseUrl(deps.online.activeBaseUrl);
+    const sessionBaseUrl = normalizeOnlineBaseUrl(session?.baseUrl);
+    if (ref.baseUrl && (ref.baseUrl !== activeBaseUrl || (session && ref.baseUrl !== sessionBaseUrl))) {
+      return "online-tab-server-mismatch";
+    }
+    if (!ref.baseUrl && (deps.online.profiles?.length ?? 0) > 1) return "online-tab-server-unknown";
+    if (sessionBaseUrl && sessionBaseUrl !== activeBaseUrl) return "online-tab-server-mismatch";
+    return session ? null : "online-workspace-session-missing";
+  }
   return defineStore("projectTabs", {
     state: () => ({
       /** 签注册表（栏上顺序即数组序）。 */
@@ -251,8 +271,9 @@ export function createTabsStore(deps: TabsStoreDeps) {
       async ensureWorkspaceContext(tab: ProjectTab, isCurrent: () => boolean = () => true): Promise<boolean> {
         const ref = tab.workspaceRef;
         if (ref.kind === "online") {
-          if (!deps.online.sessions[ref.workspaceId]) {
-            this.markOffline(tab.tabId, "online-workspace-session-missing");
+          const error = onlineWorkspaceError(ref);
+          if (error) {
+            this.markOffline(tab.tabId, error);
             return false;
           }
           if (deps.online.activeWorkspaceId !== ref.workspaceId) {
@@ -263,6 +284,11 @@ export function createTabsStore(deps: TabsStoreDeps) {
               this.markOffline(tab.tabId, deps.online.error ?? `在线工作区激活失败: ${ref.name}`);
               return false;
             }
+          }
+          const currentError = onlineWorkspaceError(ref);
+          if (currentError) {
+            this.markOffline(tab.tabId, currentError);
+            return false;
           }
           return true;
         }
@@ -303,12 +329,24 @@ export function createTabsStore(deps: TabsStoreDeps) {
           identity = { workspaceRef: ref, projectLocator: { ...project.locator }, projectName: project.name };
         } else {
           if (!("id" in project)) throw new Error("在线项目签必须提供在线 project id");
-          identity = { workspaceRef: ref, projectId: project.id, projectName: project.name };
+          const baseUrl = normalizeOnlineBaseUrl(ref.baseUrl ?? deps.online.sessions[ref.workspaceId]?.baseUrl);
+          identity = { workspaceRef: { ...ref, ...(baseUrl ? { baseUrl } : {}) }, projectId: project.id, projectName: project.name };
         }
         const existing = this.tabs.find((t) => sameTabIdentity(t, identity));
         if (existing) {
           if (this.activeTabId !== existing.tabId) await this.activateTab(existing.tabId);
           return;
+        }
+        if (hasOnlineProjectId(identity) && identity.workspaceRef.baseUrl && !onlineWorkspaceError(identity.workspaceRef)) {
+          const legacy = this.tabs.find((tab): tab is OnlineProjectTab => hasOnlineProjectId(tab)
+            && !tab.workspaceRef.baseUrl && tab.workspaceRef.workspaceId === identity.workspaceRef.workspaceId && tab.projectId === identity.projectId);
+          if (legacy) {
+            legacy.workspaceRef = identity.workspaceRef;
+            legacy.projectName = identity.projectName;
+            this.persist();
+            await this.activateTab(legacy.tabId);
+            return;
+          }
         }
         const tab: ProjectTab = {
           tabId: `tab-${++this.seq}`,
@@ -336,6 +374,13 @@ export function createTabsStore(deps: TabsStoreDeps) {
         if (!tab) return;
         const epoch = ++this.activationEpoch;
         const isCurrent = () => this.activationEpoch === epoch && this.tabs.some((entry) => entry.tabId === tabId);
+        if (hasOnlineProjectId(tab)) {
+          const error = onlineWorkspaceError(tab.workspaceRef);
+          if (error) {
+            this.markOffline(tabId, error);
+            return;
+          }
+        }
         if (this.selectedPage.kind === "project" && this.selectedPage.tabId === tabId
           && !deps.workspace.hasPendingOpen?.()) return;
         const retainedContextReady = this.contextTabId === tabId && (hasOnlineProjectId(tab)
@@ -352,7 +397,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           // 主页切回仍驻留的项目上下文：保留原树选中、编辑器与草稿，不重跑恢复钩子。
         } else if (hasOnlineProjectId(tab)) {
           await deps.online.selectNode("project", tab.projectId);
-          if (!isCurrent() || deps.online.activeWorkspaceId !== tab.workspaceRef.workspaceId) return;
+          if (!isCurrent() || deps.online.activeWorkspaceId !== tab.workspaceRef.workspaceId || onlineWorkspaceError(tab.workspaceRef)) return;
         }
         else if (hasProjectLocator(tab)) {
           if (deps.workspace.root !== tab.workspaceRef.dir) return;
@@ -364,6 +409,10 @@ export function createTabsStore(deps: TabsStoreDeps) {
           deps.tree.select(node);
         } else return;
         if (!isCurrent()) return;
+        if (hasOnlineProjectId(tab) && !tab.workspaceRef.baseUrl) {
+          const baseUrl = normalizeOnlineBaseUrl(deps.online.sessions[tab.workspaceRef.workspaceId]?.baseUrl);
+          if (baseUrl) tab.workspaceRef.baseUrl = baseUrl;
+        }
         this.contextTabId = tabId;
         this.selectedPage = { kind: "project", tabId };
         this.offlineTabIds = this.offlineTabIds.filter((id) => id !== tabId);
@@ -409,7 +458,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           && sameProjectLocator(tab.projectLocator, wf.locator)) return true;
         if (hasOnlineProjectId(tab)) {
           const session = deps.online.sessions[tab.workspaceRef.workspaceId];
-          if (!session) return false;
+          if (!session || tab.workspaceRef.baseUrl !== normalizeOnlineBaseUrl(session.baseUrl)) return false;
           const prefix = `${tab.projectId}/`;
           for (const path of Object.keys(session.buffers)) {
             if (!path.startsWith(prefix)) continue;
@@ -428,7 +477,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
        * 项目会话（复用 closeTab 的驱逐与相邻激活编排），其他工作区签不受影响。
        */
       async closeWorkspaceTabs(ref: WorkspaceRef): Promise<void> {
-        for (const tab of this.tabs.filter((t) => sameRef(t.workspaceRef, ref))) {
+        for (const tab of this.tabs.filter((t) => sameWorkspaceRef(t.workspaceRef, ref))) {
           await this.closeTab(tab.tabId);
         }
       },
@@ -523,11 +572,19 @@ export function createTabsStore(deps: TabsStoreDeps) {
           this.seq = 0;
           this.tabs = persisted.tabs.map((row) => ({ tabId: `tab-${++this.seq}`, ...row }));
           const rebuiltTabIds = this.tabs.map((tab) => tab.tabId);
+          let boundLegacyWorkspace = false;
           for (const tab of this.tabs) {
             if (!isCurrent()) return;
             // 逐签重建工作区上下文（非活跃签不选项目——选中留给激活时）
             await this.ensureWorkspaceContext(tab, isCurrent);
             if (!isCurrent()) return;
+            if (hasOnlineProjectId(tab) && !tab.workspaceRef.baseUrl && !this.isTabOffline(tab.tabId)) {
+              const baseUrl = normalizeOnlineBaseUrl(deps.online.sessions[tab.workspaceRef.workspaceId]?.baseUrl);
+              if (baseUrl) {
+                tab.workspaceRef = { ...tab.workspaceRef, baseUrl };
+                boundLegacyWorkspace = true;
+              }
+            }
           }
           const activeId = persisted.activeIndex !== null ? rebuiltTabIds[persisted.activeIndex] : undefined;
           if (activeId !== undefined && !this.offlineTabIds.includes(activeId)) {
@@ -536,6 +593,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
             return;
           }
           this.selectedPage = { kind: "home" }; // 活跃签离线/无活跃记录 → 留在主页
+          if (boundLegacyWorkspace) this.persist();
         } finally {
           if (isCurrent()) this.restoring = false;
         }
@@ -551,7 +609,7 @@ export interface EvictProjectSessionsDeps {
   /** 本地编辑器 store：按槽元数据 projectId 驱逐该项目的编辑会话槽（任务 5 审查重要 1）。 */
   editor: Pick<ReturnType<typeof useEditorStore>, "evictProject">;
   /** 在线 store：按 `<projectId>/` 前缀驱逐驻留工作区缓冲槽。 */
-  online: Pick<OnlineStore, "evictProjectBuffers">;
+  online: Pick<OnlineStore, "evictProjectBuffers"> & Partial<Pick<OnlineStore, "sessions">>;
   /** 本地工作流草稿：只卸载其 root 与项目均归属于被关闭签的会话。 */
   workflowDesign?: Pick<ReturnType<typeof useWorkflowDesignStore>, "root" | "locator" | "unload">;
   /** Request tab lifecycle is closed before the owning project sessions are evicted. */
@@ -585,6 +643,9 @@ export function createEvictProjectSessions(
   return (tab) => {
     try {
       if (hasOnlineProjectId(tab)) {
+        const baseUrl = tab.workspaceRef.baseUrl;
+        const session = deps.online.sessions?.[tab.workspaceRef.workspaceId];
+        if (baseUrl !== normalizeOnlineBaseUrl(session?.baseUrl)) return;
         deps.online.evictProjectBuffers(tab.workspaceRef.workspaceId, tab.projectId);
         return;
       }

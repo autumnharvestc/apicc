@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Modal as AModal, Select as ASelect, Tag as ATag } from "ant-design-vue";
+import { DownOutlined } from "@ant-design/icons-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
@@ -16,6 +17,9 @@ import ConfirmDialog from "./ConfirmDialog.vue";
 import ConnectionPanel from "./ConnectionPanel.vue";
 import ProjectCard from "./ProjectCard.vue";
 import ImportWizard from "./ImportWizard.vue";
+import ActionMenu from "./ActionMenu.vue";
+import { onlineSessionErrorKey } from "../i18n/index.js";
+import type { OnlineWorkspaceAction, OnlineWorkspaceActionTarget } from "../onlineWorkspaceActions.js";
 
 /**
  * 主页（M9-C/M10；轨三左右栏重构）：内部左栏（落点选择）+ 右栏（内容视图）。
@@ -48,7 +52,10 @@ const props = defineProps<{
   activeProjectLocator?: ProjectLocator | null;
   /** 活跃在线项目 id（终审 Important 1 ②）：活跃签为在线签时的 projectId——卡片高亮。 */
   activeOnlineProjectId?: string | null;
+  activeOnlineWorkspaceTarget?: OnlineWorkspaceActionTarget | null;
+  retainedOnlineWorkspaceTarget?: OnlineWorkspaceActionTarget | null;
 }>();
+const emit = defineEmits<{ "online-workspace-action": [action: OnlineWorkspaceAction, target: OnlineWorkspaceActionTarget] }>();
 const { t } = useI18n();
 
 // —— 左栏选中态：本地全部 / 某分组 / 某服务器 / 连接管理 ——
@@ -58,6 +65,12 @@ type Selection =
   | { kind: "server"; baseUrl: string }
   | { kind: "connections" };
 const selection = ref<Selection>({ kind: "local" });
+const projectFilter = ref("");
+const projectSearch = ref<{ focus(): void }>();
+function clearProjectFilter() {
+  projectFilter.value = "";
+  void nextTick(() => projectSearch.value?.focus());
+}
 
 interface GroupView {
   id: string;
@@ -77,22 +90,31 @@ const groups = computed<GroupView[]>(() =>
 );
 const defaultGroupLocator = computed(() => groups.value.find((g) => g.name === "默认分组")?.locator ?? groups.value[0]?.locator ?? null);
 
-/** 右栏可见项目：选 local → 全部；选 group → 该分组。 */
+/** 在分组浏览中输入名称，也能查找本地工作区的所有项目。 */
 const visibleProjects = computed(() => {
+  const query = projectFilter.value.trim().toLocaleLowerCase();
+  if (query) {
+    return groups.value.flatMap((group) => group.projects
+      .filter((project) => project.name.toLocaleLowerCase().includes(query))
+      .map((project) => ({ ...project, groupName: group.name })));
+  }
   const sel = selection.value;
   if (sel.kind === "group") {
-    return groups.value.find((g) => JSON.stringify(g.locator) === JSON.stringify(sel.locator))?.projects ?? [];
+    return (groups.value.find((g) => JSON.stringify(g.locator) === JSON.stringify(sel.locator))?.projects ?? [])
+      .map((project) => ({ ...project, groupName: "" }));
   }
-  return groups.value.flatMap((g) => g.projects);
+  return groups.value.flatMap((group) => group.projects.map((project) => ({ ...project, groupName: group.name })));
 });
 
 const selectedGroupId = computed(() => (selection.value.kind === "group" ? selection.value.locator.groupId : ""));
 const selectedBaseUrl = computed(() => (selection.value.kind === "server" ? selection.value.baseUrl : ""));
 
 function selectLocal() {
+  projectFilter.value = "";
   selection.value = { kind: "local" };
 }
 function selectGroup(locator: GroupLocator) {
+  projectFilter.value = "";
   selection.value = { kind: "group", locator: { ...locator } };
 }
 function selectServer(baseUrl: string) {
@@ -302,7 +324,38 @@ function openImportProject() {
 }
 
 // —— 远程服务器 ——
-const remoteProfiles = computed(() => props.online.profiles);
+const remoteProfiles = computed(() => {
+  const profiles = props.online.profiles;
+  const baseUrl = props.retainedOnlineWorkspaceTarget?.baseUrl;
+  return baseUrl && !profiles.some((profile) => profile.baseUrl === baseUrl) ? [...profiles, { baseUrl, name: "" }] : profiles;
+});
+const serverConnected = computed(() => props.online.loggedIn && props.online.activeBaseUrl === selectedBaseUrl.value);
+const serverError = computed(() => {
+  if (props.online.activeBaseUrl !== selectedBaseUrl.value || !props.online.error) return null;
+  const key = onlineSessionErrorKey(props.online.error);
+  return key ? t(key) : props.online.error;
+});
+const serverNeedsReconnect = computed(() => props.online.activeBaseUrl === selectedBaseUrl.value
+  && onlineSessionErrorKey(props.online.error) === "online.sessionErrors.online-not-signed-in");
+const canBrowseServer = computed(() => serverConnected.value && !serverNeedsReconnect.value);
+const retainedWorkspace = computed(() => {
+  const target = props.retainedOnlineWorkspaceTarget;
+  return target?.baseUrl === selectedBaseUrl.value ? props.online.sessions[target.workspaceId]?.workspace ?? null : null;
+});
+const showRetainedWorkspace = computed(() => retainedWorkspace.value
+  && (!canBrowseServer.value || !props.online.workspaces.some((workspace) => workspace.id === retainedWorkspace.value?.id)));
+const workspaceExit = computed(() => ({ key: "exit", label: t("online.exitOnline"), testId: "online-exit", disabled: props.online.migrating }));
+const workspaceActions = computed(() => [
+  { key: "migrate", label: t("online.migrate"), testId: "online-migrate", disabled: props.online.migrating },
+  workspaceExit.value,
+]);
+
+function requestWorkspaceAction(action: string, workspaceId: string) {
+  const target = action === "migrate" ? props.activeOnlineWorkspaceTarget : props.retainedOnlineWorkspaceTarget;
+  if ((action === "migrate" || action === "exit") && target?.baseUrl === selectedBaseUrl.value && target.workspaceId === workspaceId) {
+    emit("online-workspace-action", action, target);
+  }
+}
 
 async function refreshOnline() {
   try {
@@ -316,11 +369,6 @@ async function refreshOnline() {
  * （视图态在组合根手里），失败由组合根上屏错误通道；组件内零 store 写、零工厂调用。 */
 function openRemote(ws: OnlineWorkspaceSummary) {
   props.openOnlineWorkspace(ws);
-}
-
-function loginServer(baseUrl: string) {
-  props.online.setActive(baseUrl);
-  props.online.dialogOpen = true;
 }
 
 // —— 本地目录 打开/新建（计划 C 任务 2：裁定 E 互斥退役——本地打开不退在线，并存驻留） ——
@@ -363,16 +411,18 @@ async function onCreateWsConfirm(name: string | null) {
   <section class="home-view" data-testid="home-view">
     <!-- 左栏：落点选择 -->
     <aside class="home-side" data-testid="home-sidebar">
-      <div class="side-section" data-testid="home-side-local">
-        <div
+      <div class="side-section">
+        <button
+          type="button"
           class="side-item top"
           :class="{ active: selection.kind === 'local' }"
+          :aria-current="selection.kind === 'local' ? 'page' : undefined"
           data-testid="home-side-local"
           @click="selectLocal"
         >
           {{ t("home.myTeams") }}
           <span v-if="workspace.opened" class="side-sub">{{ workspace.name }}</span>
-        </div>
+        </button>
         <template v-if="workspace.opened">
           <div
             v-for="g in groups"
@@ -380,9 +430,8 @@ async function onCreateWsConfirm(name: string | null) {
             class="side-item child"
           :class="{ active: selection.kind === 'group' && JSON.stringify(selection.locator) === JSON.stringify(g.locator) }"
             data-testid="home-side-group"
-            @click="selectGroup(g.locator)"
           >
-            <span class="side-name" :title="g.name">{{ g.name }}</span>
+            <button type="button" class="side-name group-select" :title="g.name" :aria-current="selection.kind === 'group' && JSON.stringify(selection.locator) === JSON.stringify(g.locator) ? 'page' : undefined" @click="selectGroup(g.locator)">{{ g.name }}</button>
             <span class="side-actions" @click.stop>
               <a-button size="small" type="text" data-testid="home-rename-group" :disabled="workspace.readOnly" @click="openRenameGroup(g)">{{ t("tree.rename") }}</a-button>
               <a-button
@@ -420,22 +469,24 @@ async function onCreateWsConfirm(name: string | null) {
 
       <div class="side-section" data-testid="home-side-servers">
         <div class="side-title">{{ t("home.servers") }}</div>
-        <div
+        <button
+          type="button"
           v-for="s in remoteProfiles"
           :key="s.baseUrl"
           class="side-item"
           :class="{ active: selection.kind === 'server' && selectedBaseUrl === s.baseUrl }"
+          :aria-current="selection.kind === 'server' && selectedBaseUrl === s.baseUrl ? 'page' : undefined"
           :data-testid="`home-side-server-${s.baseUrl}`"
           @click="selectServer(s.baseUrl)"
         >
           <span class="side-name" :title="s.name || s.baseUrl">{{ s.name || s.baseUrl }}</span>
           <a-tag v-if="online.loggedIn && online.activeBaseUrl === s.baseUrl" color="blue" class="side-tag">{{ t("home.active") }}</a-tag>
-        </div>
+        </button>
         <div v-if="remoteProfiles.length === 0" class="side-empty" data-testid="home-servers-empty">{{ t("home.noServers") }}</div>
       </div>
 
       <div class="side-bottom">
-        <a-button block data-testid="home-manage-connections" @click="selectConnections">
+        <a-button block data-testid="home-manage-connections" :aria-current="selection.kind === 'connections' ? 'page' : undefined" @click="selectConnections">
           {{ t("home.connections") }}
         </a-button>
       </div>
@@ -456,9 +507,24 @@ async function onCreateWsConfirm(name: string | null) {
           <span class="content-title" data-testid="home-server-title">
             {{ remoteProfiles.find((s) => s.baseUrl === selectedBaseUrl)?.name || selectedBaseUrl }}
           </span>
-          <a-tag v-if="online.loggedIn && online.activeBaseUrl === selectedBaseUrl" color="blue">{{ t("home.active") }}</a-tag>
+          <a-tag v-if="serverConnected" color="blue">{{ t("home.active") }}</a-tag>
+          <a-button v-if="serverConnected && !serverNeedsReconnect" size="small" data-testid="home-server-account" @click="online.openConnectionAccount(selectedBaseUrl)">
+            {{ t("home.connectionAccount") }}
+          </a-button>
         </div>
-        <template v-if="online.loggedIn && online.activeBaseUrl === selectedBaseUrl">
+        <p v-if="serverError" class="error server-error" role="alert">{{ serverError }}</p>
+        <div v-if="showRetainedWorkspace && retainedWorkspace" class="ws-row" data-testid="retained-online-workspace">
+          <span class="ws-name retained-ws-name" tabindex="0" :title="retainedWorkspace.name">{{ retainedWorkspace.name }}</span>
+          <ActionMenu
+            test-id="workspace-actions"
+            :label="t('home.workspaceActions')"
+            :items="[workspaceExit]"
+            @select="requestWorkspaceAction($event, retainedWorkspace.id)"
+          >
+            {{ t("home.workspaceActions") }} <DownOutlined />
+          </ActionMenu>
+        </div>
+        <template v-if="canBrowseServer">
           <div class="content-toolbar">
             <span class="muted">{{ t("home.serverWorkspaces") }}</span>
             <span class="spacer"></span>
@@ -466,18 +532,24 @@ async function onCreateWsConfirm(name: string | null) {
           </div>
           <div class="ws-list" data-testid="home-ws-list">
             <template v-for="w in online.workspaces" :key="w.id">
-              <button
-                type="button"
-                class="ws-row"
-                :data-testid="`home-ws-${w.id}`"
-                @click="openRemote(w)"
-              >
-                {{ w.name }}
-              </button>
+              <div class="ws-row">
+                <button type="button" class="ws-name" :title="w.name" :data-testid="`home-ws-${w.id}`" @click="openRemote(w)">
+                  {{ w.name }}
+                </button>
+                <ActionMenu
+                  v-if="activeOnlineWorkspaceTarget?.baseUrl === selectedBaseUrl && activeOnlineWorkspaceTarget.workspaceId === w.id"
+                  test-id="workspace-actions"
+                  :label="t('home.workspaceActions')"
+                  :items="workspaceActions"
+                  @select="requestWorkspaceAction($event, w.id)"
+                >
+                  {{ t("home.workspaceActions") }} <DownOutlined />
+                </ActionMenu>
+              </div>
               <!-- 终审 Important 1 ②：活跃工作区下列出其项目卡片（online.projects 随活跃会话），
                    点卡片经组合根回调直达成签——纯在线用户在主页即可进入项目，不经工作区行中转 -->
               <div
-                v-if="online.activeWorkspace?.id === w.id && online.projects.length > 0"
+                v-if="activeOnlineWorkspaceTarget?.baseUrl === selectedBaseUrl && activeOnlineWorkspaceTarget.workspaceId === w.id && online.projects.length > 0"
                 class="ws-projects"
                 :data-testid="`home-ws-projects-${w.id}`"
               >
@@ -496,8 +568,8 @@ async function onCreateWsConfirm(name: string | null) {
           </div>
         </template>
         <EmptyState v-else :text="t('home.loginToBrowse')" />
-        <div class="login-row" v-if="!(online.loggedIn && online.activeBaseUrl === selectedBaseUrl)">
-          <a-button size="small" type="primary" data-testid="home-server-login" @click="loginServer(selection.baseUrl)">
+        <div class="login-row" v-if="!canBrowseServer && online.profiles.some((profile) => profile.baseUrl === selectedBaseUrl)">
+          <a-button size="small" type="primary" data-testid="home-server-login" @click="online.openConnectionAccount(selection.baseUrl)">
             {{ t("home.connectionLogin") }}
           </a-button>
         </div>
@@ -517,7 +589,15 @@ async function onCreateWsConfirm(name: string | null) {
             {{ t("home.newProject") }}
           </a-button>
         </div>
+        <label v-if="workspace.opened" class="project-filter">
+          <span>{{ t("home.findProject") }}</span>
+          <a-input ref="projectSearch" v-model:value="projectFilter" allow-clear data-testid="home-project-search" :placeholder="t('home.findProjectHint')" />
+        </label>
         <EmptyState v-if="!workspace.opened" :text="t('home.localEmpty')" />
+        <div v-else-if="projectFilter.trim() && visibleProjects.length === 0" class="project-filter-empty">
+          <p>{{ t("home.noMatchingProjects") }}</p>
+          <a-button size="small" data-testid="home-clear-project-search" @click="clearProjectFilter">{{ t("home.clearProjectSearch") }}</a-button>
+        </div>
         <EmptyState v-else-if="visibleProjects.length === 0" :text="t('home.noProjects')" />
         <div v-else class="project-grid" data-testid="home-project-grid">
           <ProjectCard
@@ -532,7 +612,9 @@ async function onCreateWsConfirm(name: string | null) {
             @clone="cloneProject(p)"
             @move="openMoveProject(p)"
             @remove="openDeleteProject(p)"
-          />
+          >
+            <template v-if="p.groupName" #tags><span class="project-group" :title="p.groupName">{{ p.groupName }}</span></template>
+          </ProjectCard>
         </div>
       </template>
     </div>
@@ -687,6 +769,15 @@ async function onCreateWsConfirm(name: string | null) {
   box-sizing: border-box;
   flex: none;
 }
+button.side-item, .group-select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.group-select { padding: 0; }
 .side-item:hover {
   background: var(--active-weak);
 }
@@ -716,6 +807,10 @@ async function onCreateWsConfirm(name: string | null) {
   font-weight: 400;
   font-size: 11px;
   color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .side-actions {
   display: inline-flex;
@@ -788,19 +883,43 @@ async function onCreateWsConfirm(name: string | null) {
   gap: 6px;
 }
 .ws-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   border-radius: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
+  padding: 2px 6px;
   font-size: 13px;
   text-align: left;
 }
-.ws-row:hover {
+.ws-row:focus-within, .ws-row:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
+.ws-name {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.retained-ws-name { cursor: default; }
+.project-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.project-filter :deep(.ant-input-affix-wrapper) { width: min(280px, 100%); }
+.project-filter-empty { padding: 12px 0; color: var(--text-muted); }
+.project-group { display: block; overflow-wrap: anywhere; color: var(--text-muted); }
+.server-error { margin: 0; overflow-wrap: anywhere; }
 /* 活跃工作区的项目卡片行（终审 Important 1 ②）：缩进排布于工作区行下 */
 .ws-projects {
   display: flex;
@@ -839,5 +958,14 @@ async function onCreateWsConfirm(name: string | null) {
 .muted {
   color: var(--text-muted);
   font-size: 12px;
+}
+@media (max-width: 759px) {
+  .home-view { padding: 8px; gap: 8px; }
+  .home-side { width: clamp(104px, 32vw, 208px); padding: 8px 4px; }
+  .home-main { padding: 10px; }
+  .side-item.child { padding-left: 6px; }
+  .side-item.top { flex-wrap: wrap; }
+  .side-bottom :deep(.ant-btn) { white-space: normal; height: auto; padding-inline: 4px; }
+  .ws-row { flex-wrap: wrap; }
 }
 </style>

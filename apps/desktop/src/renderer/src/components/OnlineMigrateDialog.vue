@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Alert as AAlert, Button as AButton, Modal as AModal, Typography as ATypography } from "ant-design-vue";
 import type { ApiccApi } from "../../../shared/types.js";
@@ -21,8 +21,15 @@ const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
   api: ApiccApi;
   reportError: (e: unknown) => void;
+  canMigrate?: () => boolean;
 }>();
 const { t } = useI18n();
+const choosingDirectory = ref(false);
+let migrationAttempt = 0;
+watch(() => [props.online.migrateDialogOpen, props.online.activeBaseUrl, props.online.activeWorkspaceId] as const, () => {
+  migrationAttempt++;
+  choosingDirectory.value = false;
+}, { flush: "sync" });
 
 const result = computed(() => props.online.migrationResult);
 
@@ -40,14 +47,20 @@ function actionText(action: MigrationFileAction): string {
 }
 
 async function runMigrate(direction: "pull" | "push") {
+  if (choosingDirectory.value || (props.canMigrate && !props.canMigrate())) return;
+  const attempt = ++migrationAttempt;
+  choosingDirectory.value = true;
   let dir: string;
   try {
     dir = await props.api.wsPickDirectory();
   } catch (e) {
-    props.reportError(e);
+    if (attempt === migrationAttempt) props.reportError(e);
     return;
+  } finally {
+    if (attempt === migrationAttempt) choosingDirectory.value = false;
   }
-  if (!dir) return; // 用户取消目录选择
+  if (!dir || attempt !== migrationAttempt) return;
+  if (props.canMigrate && !props.canMigrate()) return;
   try {
     if (direction === "pull") await props.online.migratePull(dir);
     else await props.online.migratePush(dir);
@@ -75,7 +88,7 @@ async function runMigrate(direction: "pull" | "push") {
         <a-button
           type="primary"
           data-testid="migrate-pull-btn"
-          :disabled="online.migrating"
+          :disabled="online.migrating || choosingDirectory"
           @click="runMigrate('pull')"
         >
           {{ t("online.migratePick") }}
@@ -88,7 +101,7 @@ async function runMigrate(direction: "pull" | "push") {
         <a-typography-paragraph class="desc">{{ t("online.migratePushDesc") }}</a-typography-paragraph>
         <a-button
           data-testid="migrate-push-btn"
-          :disabled="online.migrating"
+          :disabled="online.migrating || choosingDirectory"
           @click="runMigrate('push')"
         >
           {{ t("online.migratePick") }}

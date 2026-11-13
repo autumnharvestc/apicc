@@ -25,11 +25,11 @@ const rule = reactive<SyncSource['schedule']['rule']>({ kind: 'cron', expression
 watch(() => props.store.settings, value => { if (value) { Object.assign(policyDraft, value.policy); redirects.value = value.maxRedirects; } }, { immediate: true });
 watch(() => props.store.schedule, value => { if (value) Object.assign(rule, value.rule); }, { immediate: true });
 watch(locale, value => { props.store.locale = value === 'en' ? 'en' : 'zh-CN'; }, { immediate: true });
-watch(() => props.store.scope, () => { actionEpoch++; editing.value = ''; search.value = ''; if (props.store.visible) void props.store.load(); });
+watch(() => props.store.scope, () => { actionEpoch++; editing.value = ''; search.value = ''; if (props.store.visible) void props.store.load(); }, { flush: 'sync' });
 watch(() => props.store.sourceId, () => { actionEpoch++; editing.value = ''; });
 watch(editing, () => { actionEpoch++; });
 onMounted(() => { props.store.setVisible(true); if (props.store.scope) void props.store.load(); });
-onBeforeUnmount(() => props.store.setVisible(false));
+onBeforeUnmount(() => { actionEpoch++; props.store.setVisible(false); });
 const sources = computed(() => props.store.sources.filter(s => !search.value || [s.id, s.kind, s.kind === 'url' ? s.url : s.repositoryUrl].join(' ').toLowerCase().includes(search.value.toLowerCase())));
 const can = (capability: string) => props.store.scope?.kind === 'local' ? !props.readOnly : !!props.store.capabilities?.includes(capability);
 const reason = (code: string) => readableReason(code, t, te);
@@ -39,7 +39,7 @@ async function saveSource(source: SyncSource, revision: string) { if (await acti
 const fieldValue = (value: number | undefined, unit: string) => value === undefined ? t('sync.inherited') : `${value.toLocaleString(locale.value)} ${t('sync.' + unit)}${unit === 'bytes' ? ` (${Number((value / 1048576).toFixed(3))} MiB)` : ''}`;
 </script>
 <template>
-  <section class="sync-panel" data-testid="sync-panel" role="region" :aria-label="t('sync.title')">
+  <section class="sync-panel" data-testid="sync-panel" role="region" tabindex="-1" :aria-label="t('sync.title')">
     <header class="sync-fixed"><div class="sync-heading"><h2>{{ t('sync.title') }}</h2><button @click="emit('close')">{{ t('sync.close') }}</button></div>
       <div class="sync-context"><p><strong>{{ t('sync.location') }}: {{ t(store.scope?.kind === 'online' ? 'sync.online' : 'sync.local') }}</strong></p><p>{{ t(store.scope?.kind === 'online' ? 'sync.onlineNote' : 'sync.localNote') }}</p><p v-if="store.scope?.kind === 'local'">{{ t('sync.approvalScope') }}</p></div>
       <div class="sync-toolbar"><input ref="searchInput" v-model="search" data-testid="sync-search" :aria-label="t('sync.search')" :placeholder="t('sync.search')" /><button data-testid="sync-clear" @click="clear">{{ t('sync.clear') }}</button><button data-testid="sync-refresh" :disabled="store.busy" @click="store.refresh()">{{ t('sync.refresh') }}</button></div>

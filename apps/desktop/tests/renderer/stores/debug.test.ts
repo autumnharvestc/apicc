@@ -415,21 +415,21 @@ describe("debug store", () => {
     stateA.requestPanel = "query";
     stateA.responsePanel = "headers";
     stateA.requestScrollTop = 81;
-    stateA.responseScrollTop = 135;
+    stateA.responseScrollByPanel.headers = 135;
     const stateB = debug.requestTabState(tabB);
     stateB.settings = { totalTimeoutMs: 9876 };
     stateB.requestPanel = "auth";
     stateB.responsePanel = "body";
     stateB.requestScrollTop = 17;
-    stateB.responseScrollTop = 29;
+    stateB.responseScrollByPanel.body = 29;
     tabs.activate(tabBId);
     tabs.activate(tabAId);
     expect(debug.requestTabState(tabA)).toMatchObject({
       settings: { totalTimeoutMs: 5432 }, selectedEnvironmentId: environment.id,
-      requestPanel: "query", responsePanel: "headers", requestScrollTop: 81, responseScrollTop: 135,
+      requestPanel: "query", responsePanel: "headers", requestScrollTop: 81, responseScrollByPanel: { headers: 135 },
     });
     expect(debug.requestTabState(tabB)).toMatchObject({
-      settings: { totalTimeoutMs: 9876 }, requestPanel: "auth", responsePanel: "body", requestScrollTop: 17, responseScrollTop: 29,
+      settings: { totalTimeoutMs: 9876 }, requestPanel: "auth", responsePanel: "body", requestScrollTop: 17, responseScrollByPanel: { body: 29 },
     });
 
     let finishCase!: (result: DebugResult) => void;

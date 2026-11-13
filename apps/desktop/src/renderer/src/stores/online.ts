@@ -121,6 +121,7 @@ async function projectAssetProblems(api: ApiccApi, workspaceId: string, projectI
  *  项目角色清单 + 编辑缓冲表（key = editorPath 实体路径；活跃指针 activeEditorPath）。 */
 export interface OnlineSession {
   workspace: { id: string; name: string; myRole: OnlineRole };
+  baseUrl?: string;
   tree: TreeNodeDTO | null;
   projects: OnlineTreeProject[];
   buffers: Record<string, OnlineEditorBuffer>;
@@ -128,12 +129,13 @@ export interface OnlineSession {
 }
 
 /** 活跃驻留会话定位（getter/action 共用的表语义中枢）；无活跃指针 → null。 */
-function activeSessionOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null }): OnlineSession | null {
-  return state.activeWorkspaceId !== null ? state.sessions[state.activeWorkspaceId] ?? null : null;
+function activeSessionOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null; activeBaseUrl: string | null }): OnlineSession | null {
+  const session = state.activeWorkspaceId !== null ? state.sessions[state.activeWorkspaceId] : undefined;
+  return session && (!session.baseUrl || session.baseUrl === state.activeBaseUrl) ? session : null;
 }
 
 /** 活跃编辑缓冲定位（任务 4 表语义中枢）：活跃会话的活跃路径槽；无会话/无活跃路径 → null。 */
-function activeBufferOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null }): OnlineEditorBuffer | null {
+function activeBufferOf(state: { sessions: Record<string, OnlineSession>; activeWorkspaceId: string | null; activeBaseUrl: string | null }): OnlineEditorBuffer | null {
   const session = activeSessionOf(state);
   if (!session || session.activeEditorPath === null) return null;
   return session.buffers[session.activeEditorPath] ?? null;
@@ -157,6 +159,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
   watch(() => [execution.context, execution.visible] as const, ([context, visible]) => schedules.activate(context, visible), { flush: 'sync' });
   // Renderer results belong to the authentication attempt that selected their target.
   let authenticationGeneration = 0;
+  function captureMigration(store: { activeWorkspaceId: string | null; activeBaseUrl: string | null; sessions: Record<string, OnlineSession> }) {
+    const { activeWorkspaceId: workspaceId, activeBaseUrl } = store;
+    if (workspaceId === null) return null;
+    const generation = authenticationGeneration;
+    const session = store.sessions[workspaceId];
+    const isCurrent = () => authenticationGeneration === generation && store.activeBaseUrl === activeBaseUrl
+      && store.activeWorkspaceId === workspaceId && store.sessions[workspaceId] === session;
+    return { workspaceId, isCurrent };
+  }
   return defineStore("online", {
     state: () => ({
       /** 服务器档案（url + 昵称，多档案并存）。 */
@@ -419,6 +430,19 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         void this.resume(baseUrl);
       },
 
+      openConnectionAccount(baseUrl: string): void {
+        if (!this.profiles.some((profile) => profile.baseUrl === baseUrl)) return;
+        if (this.activeBaseUrl !== baseUrl) {
+          this.setActive(baseUrl);
+        } else if (this.loggedIn && /(?:^|Error: )online-not-signed-in(?:['"])?$/.test(this.error ?? "")) {
+          this.clearLoginState();
+          void this.resume(baseUrl);
+        } else if (!this.loggedIn && !this.restoring && !this.submitting) {
+          void this.resume(baseUrl);
+        }
+        this.dialogOpen = true;
+      },
+
       /** 登录（目标 = 激活档案）：成功 → 登录态上屏；失败 → error 且不清旧态。 */
       async login(username: string, password: string): Promise<void> {
         const baseUrl = this.activeBaseUrl;
@@ -522,21 +546,30 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        */
       async openWorkspace(ws: OnlineWorkspaceSummary): Promise<void> {
         this.error = null;
+        const generation = authenticationGeneration;
+        const baseUrl = this.activeBaseUrl;
+        const existing = this.sessions[ws.id];
+        if (existing?.baseUrl && existing.baseUrl !== baseUrl) {
+          this.error = "online-workspace-server-conflict";
+          return;
+        }
         const previousActiveId = this.activeWorkspaceId;
         try {
           const view = await api.onlineWorkspaceOpen({ workspaceId: ws.id, name: ws.name, myRole: ws.myRole });
-          const existing = this.sessions[ws.id];
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.sessions[ws.id] = {
             workspace: { id: ws.id, name: ws.name, myRole: ws.myRole },
+            baseUrl: baseUrl ?? undefined,
             tree: view.tree,
             projects: view.projects,
-            buffers: existing?.buffers ?? {},
-            activeEditorPath: existing?.activeEditorPath ?? null,
+            buffers: this.sessions[ws.id]?.buffers ?? {},
+            activeEditorPath: this.sessions[ws.id]?.activeEditorPath ?? null,
           };
           this.activeWorkspaceId = ws.id;
           this.conflict = null;
           this.migrationResult = null;
         } catch (e) {
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.error = e instanceof Error ? e.message : String(e);
           if (previousActiveId !== null && previousActiveId !== ws.id) {
             await api.onlineWorkspaceActivate(previousActiveId).catch(() => undefined);
@@ -551,11 +584,20 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        */
       async activateWorkspace(workspaceId: string): Promise<void> {
         this.error = null;
+        const generation = authenticationGeneration;
+        const baseUrl = this.activeBaseUrl;
+        const owner = this.sessions[workspaceId]?.baseUrl;
+        if (owner && owner !== baseUrl) {
+          this.error = "online-workspace-server-conflict";
+          return;
+        }
         try {
           await api.onlineWorkspaceActivate(workspaceId);
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.activeWorkspaceId = workspaceId;
           this.conflict = null; // 编辑上下文换挡：跨工作区冲突态不残留
         } catch (e) {
+          if (generation !== authenticationGeneration || this.activeBaseUrl !== baseUrl) return;
           this.error = e instanceof Error ? e.message : String(e);
         }
       },
@@ -567,13 +609,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 仅关的是活跃工作区时复位冲突/迁移展示态（非活跃出表不抢全局 UI 态）。
        */
       async closeWorkspace(workspaceId?: string): Promise<void> {
+        const target = workspaceId ?? this.activeWorkspaceId;
+        if (target === null) return;
+        const session = this.sessions[target];
         try {
-          await api.onlineWorkspaceClose(workspaceId !== undefined ? { workspaceId } : undefined);
+          await api.onlineWorkspaceClose({ workspaceId: target });
         } catch {
           // main 侧已无会话（或在线未配置）——本地照常清理，不阻断退出
         }
-        const target = workspaceId ?? this.activeWorkspaceId;
-        if (target === null) return;
+        if (this.sessions[target] !== session) return;
         delete this.sessions[target];
         if (this.activeWorkspaceId === target) {
           this.activeWorkspaceId = null;
@@ -781,18 +825,20 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 调用直接返回。
        */
       async migratePull(dir: string): Promise<void> {
-        if (this.migrating || this.activeWorkspaceId === null) return;
+        const target = captureMigration(this);
+        if (this.migrating || !target) return;
+        const { workspaceId, isCurrent } = target;
         this.migrating = true;
         this.migrationResult = null;
         this.migrationProgress = "";
         this.error = null;
         try {
-          const workspaceId = this.activeWorkspaceId;
           const [scan, tree, groups] = await Promise.all([
             api.onlineMigrateScan(dir),
             api.onlineTreeGet(workspaceId),
             api.onlineGroupsList(workspaceId),
           ]);
+          if (!isCurrent()) return;
           // 实体路径 → 本地名称路径还原（项目名=tree.projects、组名=groups 清单；双向对照表
           // 同时服务取数（本地→实体）与取回内容落盘行（实体→本地）的路径换算）。
           // 同名碰撞行（conflict，后行者）不进任何对照表与取数清单——否则对照表后行覆盖先行，
@@ -811,12 +857,14 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           let done = 0;
           for (const batch of chunk(plan.toFetch, 200)) {
             const result = await api.onlineFilesGet({ workspaceId, paths: batch.map((p) => entityByLocal.get(p) ?? p) });
+            if (!isCurrent()) return;
             for (const file of result.files) contents.push({ path: localByEntity.get(file.path) ?? file.path, content: file.content });
             this.migrationProgress = `${(done += batch.length)}/${plan.toFetch.length}`;
           }
           const written: string[] = [];
           for (const batch of chunk(contents, 200)) {
             written.push(...(await api.onlineMigrateWrite({ dir, files: batch })).written);
+            if (!isCurrent()) return;
           }
           // 取数批内 missing（权限恰变/文件刚删）按 failed 计，不入落盘清单；
           // 孤儿退化行（按实体路径原样落盘）在明细注记
@@ -844,7 +892,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             details,
           };
         } catch (e) {
-          this.error = e instanceof Error ? e.message : String(e);
+          if (isCurrent()) this.error = e instanceof Error ? e.message : String(e);
         } finally {
           this.migrating = false;
           this.migrationProgress = "";
@@ -862,14 +910,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        * 目录重复迁移映射到同一实体（幂等由服务端同 (组,项目) 解析保证）。
        */
       async migratePush(dir: string): Promise<void> {
-        if (this.migrating || this.activeWorkspaceId === null) return;
+        const target = captureMigration(this);
+        if (this.migrating || !target) return;
+        const { workspaceId, isCurrent } = target;
         this.migrating = true;
         this.migrationResult = null;
         this.migrationProgress = "";
         this.error = null;
         try {
-          const workspaceId = this.activeWorkspaceId;
           const [scan, tree] = await Promise.all([api.onlineMigrateScan(dir), api.onlineTreeGet(workspaceId)]);
+          if (!isCurrent()) return;
           // 1. 去重项目目录清单（扫描产物 projectDir；根级文件不参与映射）→ 映射桥（≤200/批）
           const dirs = new Map<string, ProjectDirRef>();
           for (const file of scan.files) {
@@ -879,6 +929,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           for (const batch of chunk([...dirs.values()], 200)) {
             const entries = batch.map((d) => ({ group: d.group, project: d.project, createIfMissing: true }));
             const result = await api.onlineProjectMapping({ workspaceId, entries });
+            if (!isCurrent()) return;
             // 行按**条目位置**关联（服务端 ProjectMappingService 按 entries 顺序逐行产出，任务 1
             // 已核实），映射表 key 取本地目录原名（entries 即 scan 产物）——不按服务端回显名回查：
             // 服务端对名称 trim() 后回显（审查重要 1），本地目录名带首尾空格时按名回查恒 miss →
@@ -918,6 +969,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           let done = 0;
           for (const batch of chunk(plan.entries, 200)) {
             const result = await api.onlineFilesBatch({ workspaceId, files: batch });
+            if (!isCurrent()) return;
             for (const item of result.results) {
               const path = localByEntity.get(item.path) ?? item.path;
               if (item.status === "pushed") {
@@ -945,7 +997,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           };
           await this.refreshTreeView();
         } catch (e) {
-          this.error = e instanceof Error ? e.message : String(e);
+          if (isCurrent()) this.error = e instanceof Error ? e.message : String(e);
         } finally {
           this.migrating = false;
           this.migrationProgress = "";

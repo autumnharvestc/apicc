@@ -402,16 +402,16 @@ describe("ProjectTabs 离线签（禁用态可再激活）", () => {
 });
 
 describe("ProjectTabs 溢出滚动箭头（仅溢出时显示）", () => {
-  it("不溢出无箭头；桩化 scrollWidth/clientWidth 后出现两侧低对比箭头，点箭头横向滚动", async () => {
+  it("不溢出无箭头；项目签超过可用宽度后出现滚动箭头", async () => {
     const { deps } = makeDeps();
     const { wrapper, tabs } = await mountTabs(deps);
     await tabs.openProjectTab(LOCAL_REF, P1);
     await flushPromises();
     expect(wrapper.find('[data-testid="tabs-arrow-left"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="tabs-arrow-right"]').exists()).toBe(false);
-    // jsdom 无布局：桩化滚动容器的宽度读数后触发 resize 重判溢出
+    // jsdom 无布局：用实际布局消费者读取的签宽和滚动区宽重现溢出。
     const scrollerEl = wrapper.find('[data-testid="project-tabs-scroll"]').element as HTMLElement;
-    Object.defineProperty(scrollerEl, "scrollWidth", { value: 600, configurable: true });
+    Object.defineProperty(scrollerEl.firstElementChild, "offsetWidth", { value: 400, configurable: true });
     Object.defineProperty(scrollerEl, "clientWidth", { value: 300, configurable: true });
     window.dispatchEvent(new Event("resize"));
     await flushPromises();
@@ -423,5 +423,31 @@ describe("ProjectTabs 溢出滚动箭头（仅溢出时显示）", () => {
     expect(scroller.scrollLeft).toBeGreaterThan(0);
     await wrapper.find('[data-testid="tabs-arrow-left"]').trigger("click");
     expect(scroller.scrollLeft).toBe(0);
+  });
+
+  it("极窄项目列表可激活及关闭横向滚动区之外的项目签", async () => {
+    const { deps } = makeDeps();
+    const { wrapper, tabs } = await mountTabs(deps);
+    await tabs.openProjectTab(LOCAL_REF, P1);
+    await tabs.openProjectTab(LOCAL_REF, P2);
+    await flushPromises();
+    const scroller = wrapper.get('[data-testid="project-tabs-scroll"]').element;
+    for (const entry of scroller.children) Object.defineProperty(entry, "offsetWidth", { value: 120, configurable: true });
+    Object.defineProperty(scroller, "clientWidth", { value: 100, configurable: true });
+    vi.stubGlobal("innerWidth", 640);
+    try {
+      window.dispatchEvent(new Event("resize"));
+      await flushPromises();
+      const trigger = wrapper.get('[data-testid="project-tabs-list"]');
+      await trigger.trigger("click");
+      const menu = new DOMWrapper(document.body).get('[role="menu"]');
+      await menu.get('[role="menuitemradio"]').trigger("click");
+      await flushPromises();
+      expect(tabs.activeTabId).toBe(tabs.tabs[0]?.tabId);
+      await trigger.trigger("click");
+      await menu.findAll('[role="menuitem"]')[1]!.trigger("click");
+      await flushPromises();
+      expect(tabs.tabs.map(projectIdOf)).toEqual([PROJECT_1.projectId]);
+    } finally { vi.unstubAllGlobals(); }
   });
 });

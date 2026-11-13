@@ -249,9 +249,13 @@ describe("退出标志收尾（审查次要 2：darwin Cmd+Q 僵留）", () => {
 // before-quit 标志经 app.quit 补刀」。 ——
 const electronState = vi.hoisted(() => ({
   windows: [] as Array<{
+    options: Electron.BrowserWindowConstructorOptions;
     closeListeners: Array<(event: { preventDefault(): void }) => void>;
     replyFromRenderer(dirty: unknown): void;
     destroy: () => void;
+    webContents: { on: ReturnType<typeof vi.fn>; mainFrame: object };
+    setTitleBarOverlay: ReturnType<typeof vi.fn>;
+    windowMessages: Map<number, () => void>;
   }>,
   destroyCalls: 0,
   messageBoxCalls: 0,
@@ -259,6 +263,7 @@ const electronState = vi.hoisted(() => ({
   beforeQuitListeners: [] as Array<(event: { preventDefault(): void }) => void>,
   ipcHandlers: new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>(),
   quitCalls: 0,
+  popup: vi.fn((options: Electron.PopupOptions) => options.callback?.()),
 }));
 
 vi.mock("electron", () => {
@@ -266,6 +271,8 @@ vi.mock("electron", () => {
     closeListeners: Array<(event: { preventDefault(): void }) => void> = [];
     ipcListeners = new Map<string, Array<(...args: unknown[]) => void>>();
     webContents = {
+      on: vi.fn(),
+      mainFrame: {},
       send: vi.fn(),
       ipc: {
         on: (channel: string, listener: (...args: unknown[]) => void) => {
@@ -282,8 +289,15 @@ vi.mock("electron", () => {
         },
       },
     };
-    constructor() {
+    setTitleBarOverlay = vi.fn();
+    windowMessages = new Map<number, () => void>();
+    hookWindowMessage(message: number, handler: () => void) { this.windowMessages.set(message, handler); }
+    getContentBounds() { return { x: 50, y: 60 }; }
+    constructor(public options: Electron.BrowserWindowConstructorOptions) {
       electronState.windows.push(this);
+    }
+    static fromWebContents(sender: unknown) {
+      return electronState.windows.find((win) => win.webContents === sender);
     }
     /** 按真实事件形态派发渲染层应答（webContents.ipc 面）。 */
     replyFromRenderer(dirty: unknown): void {
@@ -311,6 +325,8 @@ vi.mock("electron", () => {
       },
     },
     BrowserWindow,
+    Menu: { getApplicationMenu: () => ({ popup: electronState.popup }) },
+    nativeTheme: { shouldUseDarkColors: false, shouldUseHighContrastColors: false },
     dialog: {
       showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
       showSaveDialog: async () => ({ canceled: true }),
@@ -339,6 +355,33 @@ describe("main.ts 退出拦截接线（electron mock 冒烟）", () => {
       await settle();
     }
     win = electronState.windows[0]!;
+  });
+
+  it("Windows uses native controls and opens the same native menu on standalone Alt or a renderer request", async () => {
+    if (process.platform !== "win32") {
+      expect(win.options.titleBarOverlay).toBeUndefined();
+      return;
+    }
+    expect(win.options).toMatchObject({ titleBarStyle: "hidden", titleBarOverlay: { height: 46 }, autoHideMenuBar: true });
+    const beforeInput = win.webContents.on.mock.calls.find(([event]) => event === "before-input-event")?.[1];
+    const event = { preventDefault: vi.fn() };
+    beforeInput(event, { type: "keyDown", key: "Alt" });
+    win.windowMessages.get(0x0116)!();
+    beforeInput(event, { type: "keyUp", key: "Alt" });
+    expect(electronState.popup).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    beforeInput(event, { type: "keyDown", key: "Alt" });
+    beforeInput(event, { type: "keyUp", key: "Alt" });
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(electronState.popup).toHaveBeenLastCalledWith(expect.objectContaining({ window: win, x: 62, y: 106 }));
+    const sender = { sender: win.webContents, senderFrame: win.webContents.mainFrame };
+    await electronState.ipcHandlers.get("window-chrome:show-application-menu")!(sender);
+    expect(electronState.popup).toHaveBeenCalledTimes(2);
+    const update = electronState.ipcHandlers.get("window-chrome:set-theme")!;
+    await update(sender, "dark");
+    await update(sender, "#123456");
+    await update({ ...sender, senderFrame: {} }, "light");
+    expect(win.setTitleBarOverlay).toHaveBeenCalledExactlyOnceWith({ color: "#141b27", symbolColor: "#e6edf8", height: 46 });
   });
 
   it("无 dirty：close 先 preventDefault，应答 false → 直接销毁（不经 showMessageBox）", async () => {

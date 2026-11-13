@@ -18,6 +18,7 @@ import { stressV2Report } from "../helpers/stressV2.js";
 import { Button as AButton } from "ant-design-vue";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { initI18n } from "../../src/renderer/src/i18n/bridge";
+import { savePreference } from "../../src/renderer/src/theme.js";
 import { createMemoryApi } from "../../src/renderer/src/api/memory.js";
 import HomeView from "../../src/renderer/src/components/HomeView.vue";
 import DebugHistory from "../../src/renderer/src/components/DebugHistory.vue";
@@ -141,13 +142,13 @@ function langOption(locale: string): DOMWrapper<Element> {
 }
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
-async function mountApp() {
+async function mountApp(attachTo?: HTMLElement) {
   // M11 启动恢复会读持久化键——测试间清理保证互不影响。
   // 计划 C 任务 5：apicc.lastWorkspace 单槽退役，不再读写也无须清理；签表键 apicc.projectTabs
   // 为启动恢复的数据源（恢复用例自行播种后由 mountApp 清理隔离）。
   for (const k of ["apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
-  const wrapper = mount(App, { global: { plugins: [initI18n().i18n], components: { AButton } } });
+  const wrapper = mount(App, { attachTo, global: { plugins: [initI18n().i18n], components: { AButton } } });
   await flushPromises();
   return wrapper;
 }
@@ -169,11 +170,17 @@ async function expandAllCollapsedTreeContainers(wrapper: VueWrapper): Promise<vo
 
 /** Create an API through the current container More menu, matching the visible SideTree path. */
 async function openNewApiFromContainer(wrapper: VueWrapper, label: string): Promise<void> {
+  if (!wrapper.get('[data-testid="sidebar-api"]').isVisible()) {
+    await wrapper.get('[data-testid="rail-api"]').trigger("click");
+    const directory = wrapper.find('[data-testid="rail-directory"]');
+    if (directory.exists() && !wrapper.get('[data-testid="sidebar-api"]').isVisible()) await directory.trigger("click");
+  }
+  expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(true);
   const row = wrapper.findAll(".node").find((candidate) =>
     candidate.find(".label").exists() && candidate.find(".label").text() === label);
   if (!row) throw new Error(`Expected the ${label} container row to be rendered`);
   await row.get('[data-testid="tree-more"]').trigger("click");
-  await row.get('[data-testid="new-api"]').trigger("click");
+  await expectBody("new-api").trigger("click");
 }
 
 /** Open the real workspace, await its store action, then open the named seed project tab. */
@@ -273,10 +280,140 @@ async function openWorkflowDesigner(wrapper: VueWrapper): Promise<ReturnType<typ
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
   it('T12 opens the one synchronization entry for the selected local project and clears it on home', async () => {
     const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);
-    expect(wrapper.find('[data-testid="sync-entry"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="sync-entry"]')).toHaveLength(1);
     await wrapper.get('[data-testid="sync-entry"]').trigger('click'); await flushPromises();
     expect(wrapper.get('[data-testid="sync-panel"]').text()).toContain('当前电脑');
     await wrapper.get('[data-testid="topbar-home"]').trigger('click'); await flushPromises(); expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(false);
+  });
+
+  it("R7 项目工具随目录布局迁移，A 到 B 时同步面板关闭并清旧作用域", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const root = await failingApi.treeGet();
+    const group = root.children?.find((node) => node.kind === "group");
+    if (!group || group.kind !== "group") throw new Error("Expected a workspace group");
+    const second = await realNodeCreate({ kind: "project", parent: group.locator, name: "R7 同步 B" });
+    if (second.kind !== "project") throw new Error("Expected the second project");
+    const workspace = wrapper.getComponent(TopBar).props("workspace");
+    const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+    try {
+      await workspace.refresh();
+      const tools = () => wrapper.get('[data-testid="project-tools"]');
+      expect(wrapper.get('[data-testid="sidebar-api"]').find('[data-testid="sync-entry"]').exists()).toBe(true);
+      await wrapper.get('[data-testid="sync-entry"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(true);
+      await tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: second.locator, name: second.label });
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(false);
+      expect(wrapper.findAll('[data-testid="sync-entry"]')).toHaveLength(1);
+      vi.stubGlobal("innerWidth", 640);
+      window.dispatchEvent(new Event("resize"));
+      await flushPromises();
+      expect(wrapper.get('[data-testid="module-rail"]').find('[data-testid="project-tools"]').exists()).toBe(true);
+      expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(false);
+      await wrapper.get('[data-testid="rail-directory"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="rail-directory"]').attributes("aria-expanded")).toBe("true");
+      expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(true);
+      await wrapper.get('[data-testid="tree-search"]').setValue("remember me");
+      await wrapper.get('[data-testid="directory-create"]').trigger("click");
+      const staleCreate = expectBody("new-collection");
+      await wrapper.get('[data-testid="rail-directory"]').trigger("click");
+      await flushPromises();
+      expect(bodyFind("new-collection")).toBeNull();
+      await staleCreate.trigger("click");
+      expect(bodyFind("dialog-input")).toBeNull();
+      await wrapper.get('[data-testid="rail-directory"]').trigger("click");
+      await wrapper.get('[data-testid="sidebar-api"]').trigger("keydown", { key: "Escape" });
+      expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(false);
+      await wrapper.get('[data-testid="rail-directory"]').trigger("click");
+      expect((wrapper.get('[data-testid="tree-search"]').element as HTMLInputElement).value).toBe("remember me");
+      await tools().trigger("click");
+      await expectBody("sync-entry").trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(true);
+      await wrapper.get(".sync-workbench").trigger("keydown", { key: "Escape" });
+      expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(false);
+      expect(document.activeElement).toBe(tools().element);
+    } finally {
+      vi.unstubAllGlobals();
+      await failingApi.nodeDelete({ kind: "project", locator: second.locator });
+    }
+  });
+
+  it("R7 左栏与请求栏共享请求签环境，切换请求后旧菜单不能选到另一签", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const env = await failingApi.envCreate({ locator: project.locator, name: "R7 调试环境" });
+    const locator = { ...project.locator, environmentId: env.id };
+    try {
+      await clickApiAndWait(wrapper);
+      const requestEditor = wrapper.getComponent(RequestEditor);
+      const debug = requestEditor.props("debug") as ReturnType<typeof useDebugStore>;
+      const asset = requestEditor.props("requestTab") as RequestTab;
+      const rail = wrapper.get('[data-testid="rail-envs"]');
+      const request = () => wrapper.get('[data-testid="debug-env-select"]');
+      await rail.trigger("click");
+      await expectBody(`debug-env-option-${env.id}`).trigger("click");
+      expect(request().text()).toBe("R7 调试环境");
+      expect(debug.requestTabState(asset).selectedEnvironmentId).toBe(env.id);
+      await request().trigger("click");
+      await expectBody("debug-env-option-none").trigger("click");
+      expect(rail.text()).toBe("无环境");
+      await rail.trigger("click");
+      const stale = expectBody(`debug-env-option-${env.id}`);
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      const free = wrapper.getComponent(RequestEditor).props("requestTab") as RequestTab;
+      expect(free.source.kind).toBe("free");
+      expect(bodyFind(`debug-env-option-${env.id}`)).toBeNull();
+      await stale.trigger("click");
+      expect(debug.requestTabState(free).selectedEnvironmentId).toBeNull();
+      expect(debug.requestTabState(asset).selectedEnvironmentId).toBeNull();
+      await request().trigger("click");
+      await expectBody(`debug-env-option-${env.id}`).trigger("click");
+      expect(debug.requestTabState(free).selectedEnvironmentId).toBe(env.id);
+      expect(wrapper.get('[data-testid="rail-envs"]').text()).toBe("R7 调试环境");
+      await wrapper.get(`[data-testid="request-tab-${asset.tabId}"]`).trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="rail-envs"]').text()).toBe("无环境");
+    } finally {
+      await failingApi.nodeDelete({ kind: "environment", locator });
+    }
+  });
+
+  it("R7 在线项目工具保留账户、迁移和退出，且不开放本地调试环境", async () => {
+    await seedOnlineLogin();
+    try {
+      const wrapper = await mountApp();
+      await gotoServerWorkspaces(wrapper);
+      await wrapper.get('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="project-card-300"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="rail-envs"]').attributes("disabled")).toBeDefined();
+      const tools = wrapper.get('[data-testid="project-tools"]');
+      await tools.trigger("click");
+      expect(bodyFind("project-online-migrate")).not.toBeNull();
+      expect(bodyFind("project-online-exit")).not.toBeNull();
+      await expectBody("project-connection-account").trigger("click");
+      await flushPromises();
+      expect(expectBody("online-user").text()).toContain("示例用户");
+      const online = wrapper.getComponent(OnlineLoginDialog).props("online");
+      expect(online.activeBaseUrl).toBe(ONLINE_SERVER);
+      online.dialogOpen = false;
+      await flushPromises();
+      await tools.trigger("click");
+      await expectBody("project-online-exit").trigger("click");
+      await flushPromises();
+      expect(expectBody("online-exit-impact").text()).toContain(ONLINE_SERVER);
+      await expectBody("dialog-cancel").trigger("click");
+      expect(online.activeWorkspace?.id).toBe("ws-online-1");
+    } finally {
+      await cleanupOnlineLogin();
+    }
   });
 
   // Catches leaf entries receiving no shared AI store from the actual composition root.
@@ -291,8 +428,15 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
 
   // Catches online-shaped fixtures passing unit tests while App still captures its local editor/context.
   it('T9 shortcut from the local request editor opens selected-history sharing without requiring online state or blocking Send', async () => {
-    const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper); expect(wrapper.get('[data-testid="send-btn"]').attributes('disabled')).toBeUndefined();
-    await wrapper.get('[data-testid="collaboration-open-history"]').trigger('click'); await flushPromises(); expect(wrapper.findComponent(DebugHistory).props('open')).toBe(true); expect(wrapper.get('[data-testid="send-btn"]').attributes('disabled')).toBeUndefined();
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    expect(wrapper.get('[data-testid="request-send-slot"]').attributes('aria-disabled')).toBe('false');
+    await wrapper.get('[data-testid="request-more"]').trigger('click');
+    await expectBody('collaboration-open-history').trigger('click');
+    await flushPromises();
+    expect(wrapper.findComponent(DebugHistory).props('open')).toBe(true);
+    expect(wrapper.get('[data-testid="request-send-slot"]').attributes('aria-disabled')).toBe('false');
   });
   it('T9 shortcut selects one attributable private debug history descriptor without any renderer artifact', async () => {
     const api = createMemoryApi(), project = { workspaceId: '00000000-0000-4000-8000-000000000001', groupId: '00000000-0000-4000-8000-000000000002', projectId: '00000000-0000-4000-8000-000000000003' }, editor = useEditorStore(api, () => ({ root: 'memory-root', readOnly: false })), debug = useDebugStore(api, editor), history = useDebugHistoryStore(api);
@@ -419,10 +563,101 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(wrapper.find('[data-testid="api-head"]').exists()).toBe(true);
     const split = wrapper.find('[data-testid="main-split"]');
     expect(split.exists()).toBe(true);
-    // 调试子视图四段：接口头 / 上编辑器 / 可拖拽分割条 / 下响应
-    expect(split.element.children.length).toBe(4);
-    const ids = Array.from(split.element.children).map((el) => el.getAttribute("data-testid"));
-    expect(ids).toEqual(["api-head", "editor-pane", "split-divider", "viewer-pane"]);
+    expect(Array.from(split.element.children).map((el) => el.getAttribute("data-testid"))).toEqual(["api-head", "debug-split"]);
+    const debugSplit = split.get('[data-testid="debug-split"]');
+    expect(Array.from(debugSplit.element.children).map((el) => el.getAttribute("data-testid"))).toEqual(["editor-pane", "split-divider", "viewer-pane"]);
+    const separator = debugSplit.get('[role="separator"]');
+    expect(separator.attributes("aria-valuenow")).toBe("54");
+    await separator.trigger("keydown", { key: "ArrowUp" });
+    expect(separator.attributes("aria-valuenow")).toBe("59");
+    await separator.trigger("keydown", { key: "End" });
+    expect(separator.attributes("aria-valuenow")).toBe("70");
+    await separator.trigger("keydown", { key: "Enter" });
+    expect(separator.attributes("aria-valuenow")).toBe("54");
+  });
+
+  it("R7 固定发送槽按请求签取消，离开和返回同一次运行也不会重复取消", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    const editorComponent = wrapper.getComponent(RequestEditor);
+    const debug = editorComponent.props("debug") as ReturnType<typeof useDebugStore>;
+    const tabA = editorComponent.props("requestTab") as RequestTab;
+    const stateA = debug.requestTabState(tabA);
+    let resolveCancellation!: (result: Awaited<ReturnType<typeof failingApi.debugCancel>>) => void;
+    const cancelReply = new Promise<Awaited<ReturnType<typeof failingApi.debugCancel>>>((resolve) => { resolveCancellation = resolve; });
+    const cancel = vi.spyOn(failingApi, "debugCancel").mockReturnValue(cancelReply);
+    try {
+      debug.activeRunId = "legacy-other-request";
+      debug.sending = true;
+      stateA.sending = true;
+      await flushPromises();
+      const slot = wrapper.get<HTMLButtonElement>('[data-testid="request-send-slot"]');
+      slot.element.focus();
+      expect(slot.attributes("aria-disabled")).toBe("true");
+      expect(slot.find('[data-testid="debug-cancel"]').exists()).toBe(false);
+      await slot.trigger("click");
+      expect(cancel).not.toHaveBeenCalled();
+
+      stateA.activeRunId = "asset-run";
+      await flushPromises();
+      expect(wrapper.get('[data-testid="request-send-slot"]').element).toBe(slot.element);
+      expect(document.activeElement).toBe(slot.element);
+      await slot.get('[data-testid="debug-cancel"]').trigger("click");
+      expect(cancel).toHaveBeenCalledExactlyOnceWith({ runId: "asset-run" });
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.get('[data-testid="request-send-slot"]').attributes("aria-disabled")).toBe("false");
+      await wrapper.get(`[data-testid="request-tab-${tabA.tabId}"]`).trigger("click");
+      await flushPromises();
+      const returnedSlot = wrapper.get('[data-testid="request-send-slot"]');
+      expect(returnedSlot.attributes("aria-disabled")).toBe("true");
+      await returnedSlot.trigger("click");
+      resolveCancellation({ status: "cancelled" });
+      await flushPromises();
+      expect(returnedSlot.attributes("aria-disabled")).toBe("true");
+      await returnedSlot.trigger("click");
+      expect(cancel).toHaveBeenCalledTimes(1);
+      stateA.sending = false;
+      stateA.activeRunId = null;
+      await flushPromises();
+      expect(wrapper.find('[data-testid="send-btn"]').exists()).toBe(true);
+    } finally {
+      resolveCancellation({ status: "no-active" });
+      cancel.mockRestore();
+    }
+  });
+
+  it("R7 切换请求签收回协议菜单和保存反馈，旧操作不改变当前请求", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    const editorComponent = wrapper.getComponent(RequestEditor);
+    const editor = editorComponent.props("editor") as ReturnType<typeof useEditorStore>;
+    const tabA = editorComponent.props("requestTab") as RequestTab;
+    let rejectSave!: (reason: Error) => void;
+    const saveReply = new Promise<Awaited<ReturnType<typeof editor.save>>>((_resolve, reject) => { rejectSave = reject; });
+    const save = vi.spyOn(editor, "save").mockReturnValue(saveReply);
+    try {
+      await wrapper.get('[data-testid="save-btn"]').trigger("click");
+      expect(save).toHaveBeenCalledOnce();
+      await wrapper.get('[data-testid="editor-protocol"]').trigger("click");
+      const staleSoap = expectBody("request-protocol-soap");
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await flushPromises();
+      expect(bodyFind("request-protocol-soap")).toBeNull();
+      await staleSoap.trigger("click");
+      expect(editor.activeFreeSession?.request.protocol).toBe("http");
+      rejectSave(new Error("asset A late save"));
+      await flushPromises();
+      expect(wrapper.find('[data-testid="save-error"]').exists()).toBe(false);
+      await wrapper.get(`[data-testid="request-tab-${tabA.tabId}"]`).trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-testid="save-error"]').exists()).toBe(false);
+      expect(editor.api?.contract.request.protocol).toBe("http");
+    } finally {
+      save.mockRestore();
+    }
   });
 
   it("当前项目可打开 free 请求签并用完整 URL 保留重复 query 顺序发送", async () => {
@@ -546,6 +781,10 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       const freeDebugState = debug.requestTabs[session.tabId]!;
       freeDebugState.settings = { totalTimeoutMs: 4321 };
       freeDebugState.parameters = { retainedParameter: "kept" };
+      const freeScroll = wrapper.get<HTMLElement>('[data-testid="request-editor-scroll"]');
+      freeScroll.element.scrollTop = 77;
+      await freeScroll.trigger("scroll");
+      expect(freeDebugState.requestScrollTop).toBe(77);
 
       await wrapper.get('[data-testid="save-free-btn"]').trigger("click");
       await flushPromises();
@@ -597,7 +836,14 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
         result: { mode: "free" },
         settings: { totalTimeoutMs: 4321 },
         parameters: { retainedParameter: "kept" },
+        requestScrollTop: 77,
       });
+      const assetScroll = wrapper.get<HTMLElement>('[data-testid="request-editor-scroll"]');
+      expect(assetScroll.element).not.toBe(freeScroll.element);
+      expect(assetScroll.element.scrollTop).toBe(77);
+      freeScroll.element.scrollTop = 123;
+      await freeScroll.trigger("scroll");
+      expect(freeDebugState.requestScrollTop).toBe(77);
       expect(convertedRequestEditor.find('[data-testid="save-btn"]').exists()).toBe(true);
       expect(convertedRequestEditor.find('[data-testid="save-feedback"]').text()).toContain("目标模块继承");
       expect(convertedRequestEditor.find('[data-testid="send-btn"]').exists()).toBe(true);
@@ -1165,6 +1411,7 @@ describe("App 视图切换装配（M8 模块化）", () => {
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
     // 环境模块
     await wrapper.find('[data-testid="rail-envs"]').trigger("click");
+    await expectBody("manage-environments").trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="env-panel"]').exists()).toBe(true);
     // 运行模块（RunView 内含运行历史抽屉）
@@ -1507,14 +1754,17 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
       } finally {
         tree.createNode = originalCreate;
       }
+      await wrapper.get('[data-testid="rail-wf"]').trigger("click");
+      await flushPromises();
 
       // watch 源含 workspace.tree：refresh 即重建索引，新接口进入 apiIds/名称表
+      const currentDesigner = wrapper.getComponent(WfDesigner);
       await vi.waitFor(() => {
-        const after = designer.props("bindIndex") as WfBindIndex | null;
+        const after = currentDesigner.props("bindIndex") as WfBindIndex | null;
         expect(after?.apiIds.size).toBe(2);
         expect([...after!.apiNames.values()]).toContain("联动新接口");
       });
-      const after = designer.props("bindIndex") as WfBindIndex | null;
+      const after = currentDesigner.props("bindIndex") as WfBindIndex | null;
       expect(after!.apiIds.size).toBe(2); // 修复前索引陈旧仍为 1
       expect([...after!.apiNames.values()]).toContain("联动新接口");
     } finally {
@@ -1663,12 +1913,9 @@ describe("App 侧树工作流入口", () => {
 
 // —— M3-B 任务 2：在线登录与服务器配置装配（入口在 TopBar，对话框由组合根渲染） ——
 describe("App 在线模式装配（M3-B 任务 2）", () => {
-  it("顶栏在线入口：主页管理连接新增档案 + 行内登录打开对话框 → 登录成功显示身份；登出后回未登录文案", async () => {
+  it("主页管理连接新增档案并登录：账户显示登录身份，退出登录后档案保留", async () => {
     try {
       const wrapper = await mountApp();
-      // 顶栏入口按钮（未登录文案）
-      expect(wrapper.find('[data-testid="online-toggle"]').exists()).toBe(true);
-      expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
       // 主页 → 管理连接面板：新增连接（url + 昵称；轨三档案管理唯一入口）
       await wrapper.find('[data-testid="home-manage-connections"]').trigger("click");
       await flushPromises();
@@ -1681,30 +1928,32 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
       await wrapper.find('[data-testid="connection-login"]').trigger("click");
       await flushPromises();
       expect(bodyFind("online-body")).not.toBeNull();
-      // 登录（memory 替身接受任意登录）→ 对话框切已登录区 + 顶栏入口显登录身份
+      // 登录（memory 替身接受任意登录）→ 对话框切已登录区，连接行同步登录身份
       await expectBody("online-username").setValue("alice");
       await expectBody("online-password").setValue("password8");
       await expectBody("online-login-submit").trigger("click");
       await flushPromises();
       expect(expectBody("online-user").text()).toContain("示例用户");
-      expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");
-      // 退出登录：回登录表单，档案保留；顶栏入口回未登录文案
+      expect(wrapper.get('[data-testid="connection-logged-in"]').text()).toContain("示例用户");
       await expectBody("online-logout").trigger("click");
       await flushPromises();
       expect(bodyFind("online-login-form")).not.toBeNull();
-      expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
+      expect(wrapper.find('[data-testid="connection-logged-in"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="connection-login"]').text()).toBe("登录");
     } finally {
       // 清理：本用例写入的档案持久化不污染同文件后续用例
       localStorage.removeItem("apicc.onlineServers");
     }
   });
 
-  it("LOGIN-001 topbar with no connection opens Home connection management without credential inputs", async () => {
+  it("LOGIN-001 零连接从主页进入连接管理，显示新增入口", async () => {
     localStorage.removeItem("apicc.onlineServers");
     const wrapper = await mountApp();
-    await wrapper.find('[data-testid="online-toggle"]').trigger("click");
+    await wrapper.get('[data-testid="home-manage-connections"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="connections-panel"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="connections-empty"]').text()).toContain("服务器");
+    expect(wrapper.get('[data-testid="connections-add"]').text()).toContain("新增");
     expect(bodyFind("online-username")).toBeNull();
     expect(bodyFind("online-password")).toBeNull();
   });
@@ -1756,7 +2005,7 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
     } finally { locale.setLocale("zh-CN"); }
   });
 
-  it("App 挂载即尝试恢复登录态（init→resume）：替身已登录时入口直接显示身份", async () => {
+  it("App 挂载即尝试恢复登录态（init→resume）：连接管理显示已登录身份", async () => {
     // 预置：替身登录 + 档案存储含激活服务器（模拟上次会话）→ App init 恢复
     await failingApi.onlineLogin({ baseUrl: "http://127.0.0.1:8080", username: "alice", password: "password8" });
     localStorage.setItem("apicc.onlineServers", JSON.stringify({
@@ -1766,10 +2015,172 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
     try {
       const wrapper = await mountApp();
       await flushPromises();
-      expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");
+      await wrapper.get('[data-testid="home-manage-connections"]').trigger("click");
+      expect(wrapper.get('[data-testid="connection-logged-in"]').text()).toContain("示例用户");
     } finally {
       localStorage.removeItem("apicc.onlineServers");
       await failingApi.onlineLogout();
+    }
+  });
+
+  it("R7 主页工作区菜单锁定退出目标，支持取消和确认，保留其他工作区", async () => {
+    const server = "http://127.0.0.1:8080";
+    localStorage.removeItem("apicc.onlineServers");
+    const workspaceClose = vi.spyOn(failingApi, "onlineWorkspaceClose");
+    const wrapper = await mountApp();
+    const online = wrapper.getComponent(OnlineLoginDialog).props("online");
+    const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+    try {
+      online.addProfile(server, "团队服务器");
+      await flushPromises();
+      await online.login("alice", "password8");
+      await online.refreshWorkspaces();
+      const first = online.workspaces[0]!;
+      await wrapper.get(`[data-testid="home-side-server-${server}"]`).trigger("click");
+      await wrapper.get(`[data-testid="home-ws-${first.id}"]`).trigger("click");
+      await flushPromises();
+      const project = online.projects[0]!;
+      await wrapper.get(`[data-testid="project-card-${project.id}"]`).trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await wrapper.get(`[data-testid="home-side-server-${server}"]`).trigger("click");
+      await flushPromises();
+
+      const openAction = async (name: "online-migrate" | "online-exit") => {
+        await wrapper.get('[data-testid="workspace-actions"]').trigger("click");
+        await expectBody(name).trigger("click");
+        await flushPromises();
+      };
+      await openAction("online-migrate");
+      expect(expectBody("migrate-body").text()).toContain("拉取");
+      online.migrateDialogOpen = false;
+      await flushPromises();
+
+      const dirtyPath = `${project.id}/collections/c/apis/a/api.yaml`;
+      online.sessions[first.id]!.buffers[dirtyPath] = {
+        path: dirtyPath, kind: "api", api: {} as never, raw: "", problems: [], version: 1, snapshot: "", loading: false,
+      };
+      await openAction("online-exit");
+      expect(expectBody("online-exit-impact").text()).toContain(first.name);
+      expect(expectBody("online-exit-tab-0").text()).toContain(project.name);
+      expect(expectBody("online-exit-draft").text()).toContain("草稿");
+      await expectBody("dialog-cancel").trigger("click");
+      expect(workspaceClose).not.toHaveBeenCalled();
+      expect(tabs.tabs).toHaveLength(1);
+
+      await openAction("online-exit");
+      online.sessions["another-workspace"] = {
+        workspace: { id: "another-workspace", name: "另一工作区", myRole: "OWNER" },
+        baseUrl: server, tree: null, projects: [], buffers: {}, activeEditorPath: null,
+      };
+      online.activeWorkspaceId = "another-workspace";
+      await flushPromises();
+      expect(expectBody("dialog-error").text()).toContain("已更改");
+      await expectBody("dialog-confirm").trigger("click");
+      expect(workspaceClose).not.toHaveBeenCalled();
+      expect(tabs.tabs).toHaveLength(1);
+
+      online.activeWorkspaceId = first.id;
+      online.workspaces = [];
+      await flushPromises();
+      expect(wrapper.get('[data-testid="retained-online-workspace"]').text()).toContain(first.name);
+      await wrapper.get('[data-testid="workspace-actions"]').trigger("click");
+      expect(bodyFind("online-migrate")).toBeNull();
+      await expectBody("online-exit").trigger("click");
+      await flushPromises();
+      await expectBody("dialog-cancel").trigger("click");
+      online.loggedIn = false;
+      online.user = null;
+      await flushPromises();
+      expect(wrapper.get('[data-testid="retained-online-workspace"]').text()).toContain(first.name);
+      expect(wrapper.get('[data-testid="home-server-login"]').text().replace(/\s/g, "")).toBe("登录");
+      await openAction("online-exit");
+      await expectBody("dialog-confirm").trigger("click");
+      await flushPromises();
+      expect(workspaceClose).toHaveBeenCalledExactlyOnceWith({ workspaceId: first.id });
+      expect(tabs.tabs).toHaveLength(0);
+      expect(online.sessions[first.id]).toBeUndefined();
+      expect(online.sessions["another-workspace"]).toBeDefined();
+      expect(online.loggedIn).toBe(false);
+    } finally {
+      workspaceClose.mockRestore();
+      localStorage.removeItem("apicc.onlineServers");
+      await failingApi.onlineLogout();
+    }
+  });
+
+  it("R7 从分组搜索全工作区，同名结果按分组打开完整项目定位", async () => {
+    const originalTreeGet = failingApi.treeGet.bind(failingApi);
+    const tree = await originalTreeGet();
+    if (tree.kind !== "root") throw new Error("Fixture has no workspace tree");
+    const originalGroup = tree.children.find((node) => node.kind === "group")!;
+    const project = projectByLabel(tree, "示例项目");
+    const otherGroupId = "00000000-0000-4000-8000-000000000733";
+    const otherLocator = { ...project.locator, groupId: otherGroupId };
+    const firstGroupName = "r7 分组甲";
+    const secondGroupName = "r7 分组乙";
+    const sameNameTree = { ...tree, children: [
+      { ...originalGroup, label: firstGroupName, children: [project] },
+      { ...originalGroup, id: otherGroupId, key: otherGroupId, label: secondGroupName, locator: { ...originalGroup.locator, groupId: otherGroupId }, children: [
+        { ...project, key: `r7-${project.key}`, locator: otherLocator, children: [] },
+      ] },
+    ] };
+    failingApi.treeGet = async () => sameNameTree;
+    try {
+      const wrapper = await mountApp();
+      const workspace = wrapper.getComponent(HomeView).props("workspace");
+      await workspace.open("/tmp/r7-project-search");
+      await flushPromises();
+      await wrapper.get(".group-select").trigger("click");
+      const search = wrapper.get<HTMLInputElement>('input[data-testid="home-project-search"]');
+      await search.setValue("no-such-project");
+      expect(wrapper.text()).toContain("没有匹配的项目");
+      await wrapper.get('[data-testid="home-clear-project-search"]').trigger("click");
+      expect(search.element.value).toBe("");
+      await search.setValue("示例");
+      const cards = wrapper.findAll(`[data-testid="project-card-${project.id}"]`);
+      expect(cards).toHaveLength(2);
+      expect(cards.map((card) => card.get(".project-group").text())).toEqual([firstGroupName, secondGroupName]);
+      const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+      expect(tabs.tabs).toHaveLength(0);
+      await cards[1]!.get(".card-name").trigger("click");
+      await flushPromises();
+      expect(tabs.activeTab).toMatchObject({ projectLocator: otherLocator });
+    } finally {
+      failingApi.treeGet = originalTreeGet;
+    }
+  });
+
+  it("R7 跟随系统主题实时切换渲染与原生窗控，固定主题忽略系统变化", async () => {
+    const dark = new EventTarget();
+    Object.assign(dark, { matches: false });
+    const changeSystemTheme = (matches: boolean) => dark.dispatchEvent(Object.assign(new Event("change"), { matches }));
+    const matchMedia = window.matchMedia;
+    const setWindowChromeTheme = vi.fn(async () => {});
+    window.matchMedia = (query) => query === "(prefers-color-scheme: dark)" ? dark as MediaQueryList : matchMedia(query);
+    failingApi.setWindowChromeTheme = setWindowChromeTheme;
+    savePreference("system");
+    try {
+      const wrapper = await mountApp();
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(setWindowChromeTheme).toHaveBeenLastCalledWith("light");
+      changeSystemTheme(true);
+      await flushPromises();
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(setWindowChromeTheme).toHaveBeenLastCalledWith("dark");
+      await wrapper.get('[data-testid="theme-toggle"]').trigger("click");
+      await expectBody("theme-option-light").trigger("click");
+      expect(document.documentElement.dataset.theme).toBe("light");
+      const callCount = setWindowChromeTheme.mock.calls.length;
+      changeSystemTheme(false);
+      changeSystemTheme(true);
+      await flushPromises();
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(setWindowChromeTheme).toHaveBeenCalledTimes(callCount);
+    } finally {
+      window.matchMedia = matchMedia;
+      delete failingApi.setWindowChromeTheme;
+      savePreference("system");
     }
   });
 });
@@ -1785,6 +2196,124 @@ async function mountAppKeepingStorage() {
 }
 
 describe("App 启动按签恢复（计划 C 任务 5：签表驱动）", () => {
+  it("R7 在线项目签只在保存的连接恢复，另一服务器同编号项目需单独打开", async () => {
+    const serverA = "http://127.0.0.1:8080";
+    const serverB = "http://127.0.0.1:8081";
+    const workspaceId = "ws-online-1";
+    const selector = '[data-testid="project-card-300"]';
+    const persistServers = (active: string) => localStorage.setItem("apicc.onlineServers", JSON.stringify({
+      active, servers: [{ baseUrl: `${serverA}/`, name: "服务器 A" }, { baseUrl: serverB, name: "服务器 B" }],
+    }));
+    const open = vi.spyOn(failingApi, "onlineWorkspaceOpen");
+    const login = async (baseUrl: string) => failingApi.onlineLogin({ baseUrl, username: "alice", password: "password8" });
+    try {
+      await login(`${serverA}/`);
+      persistServers(`${serverA}/`);
+      const first = await mountApp();
+      await first.get(`[data-testid="home-side-server-${serverA}/"]`).trigger("click");
+      await first.get(`[data-testid="home-ws-${workspaceId}"]`).trigger("click");
+      await flushPromises();
+      await first.get(selector).trigger("click");
+      await flushPromises();
+      const savedA = JSON.parse(localStorage.getItem("apicc.projectTabs")!);
+      expect(savedA.tabs[0].workspaceRef.baseUrl).toBe(serverA);
+      expect(savedA.activeIndex).toBe(0);
+      first.unmount();
+
+      open.mockClear();
+      await login(serverB);
+      persistServers(serverB);
+      const second = await mountAppKeepingStorage();
+      expect(open).not.toHaveBeenCalled();
+      expect(second.get('[data-testid="project-tab-0"]').attributes("data-offline")).toBe("true");
+      await second.get(`[data-testid="home-side-server-${serverB}"]`).trigger("click");
+      await second.get(`[data-testid="home-ws-${workspaceId}"]`).trigger("click");
+      await flushPromises();
+      await second.get('[data-testid="project-tab-0"]').trigger("click");
+      expect(second.get('[data-testid="topbar-home"]').attributes("aria-selected")).toBe("true");
+      await second.get(selector).trigger("click");
+      await flushPromises();
+      const tabs = second.getComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+      expect(tabs.tabs.map((tab) => tab.workspaceRef)).toMatchObject([{ baseUrl: serverA }, { baseUrl: serverB }]);
+      expect(tabs.activeTab?.workspaceRef).toMatchObject({ baseUrl: serverB });
+      const online = second.getComponent(OnlineLoginDialog).props("online");
+      const path = "300/collections/c/apis/a/api.yaml";
+      const session = online.sessions[workspaceId]!;
+      session.buffers[path] = { path, kind: "api", api: {} as never, raw: "", problems: [], version: 1, snapshot: "", loading: false };
+      expect(tabs.projectHasDrafts(tabs.tabs[0]!.tabId)).toBe(false);
+      expect(tabs.projectHasDrafts(tabs.tabs[1]!.tabId)).toBe(true);
+      await second.get('[data-testid="topbar-home"]').trigger("click");
+      await second.get(`[data-testid="home-side-server-${serverB}"]`).trigger("click");
+      await flushPromises();
+      await second.get('[data-testid="workspace-actions"]').trigger("click");
+      await expectBody("online-exit").trigger("click");
+      await flushPromises();
+      expect(expectBody("online-exit-draft").text()).toContain("草稿");
+      expect(bodyFind("online-exit-tab-1")).toBeNull();
+      await expectBody("dialog-cancel").trigger("click");
+      second.unmount();
+
+      await login(`${serverA}/`);
+      persistServers(`${serverA}/`);
+      const third = await mountAppKeepingStorage();
+      await third.get('[data-testid="project-tab-0"]').trigger("click");
+      await flushPromises();
+      expect(third.getComponent(ProjectTabs).props("tabs").activeTab?.workspaceRef).toMatchObject({ baseUrl: serverA });
+      expect(third.get('[data-testid="project-tab-1"]').attributes("data-offline")).toBe("true");
+    } finally {
+      open.mockRestore();
+      localStorage.removeItem("apicc.projectTabs");
+      localStorage.removeItem("apicc.onlineServers");
+      await failingApi.onlineLogout();
+    }
+  });
+
+  it("R7 旧在线签仍可从唯一连接恢复，多个连接时从主页显式绑定", async () => {
+    const server = "http://127.0.0.1:8080";
+    const legacy = { tabs: [{ workspaceRef: { kind: "online", workspaceId: "ws-online-1", name: "旧工作区" }, projectId: "300", projectName: "旧项目" }], activeIndex: 0 };
+    await failingApi.onlineLogin({ baseUrl: server, username: "alice", password: "password8" });
+    const servers = [{ baseUrl: server, name: "团队服务器" }];
+    localStorage.setItem("apicc.onlineServers", JSON.stringify({ active: server, servers }));
+    localStorage.setItem("apicc.projectTabs", JSON.stringify(legacy));
+    try {
+      const single = await mountAppKeepingStorage();
+      expect(single.getComponent(ProjectTabs).props("tabs").activeTab?.workspaceRef).toMatchObject({ baseUrl: server });
+      single.unmount();
+
+      localStorage.setItem("apicc.onlineServers", JSON.stringify({ active: server, servers: [...servers, { baseUrl: "http://127.0.0.1:8081", name: "另一服务器" }] }));
+      localStorage.setItem("apicc.projectTabs", JSON.stringify(legacy));
+      const multiple = await mountAppKeepingStorage();
+      expect(multiple.get('[data-testid="project-tab-0"]').attributes("data-offline")).toBe("true");
+      await multiple.get(`[data-testid="home-side-server-${server}"]`).trigger("click");
+      await multiple.get('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      const online = multiple.getComponent(OnlineLoginDialog).props("online");
+      const path = "300/collections/c/apis/a/api.yaml";
+      const session = online.sessions["ws-online-1"]!;
+      session.buffers[path] = { path, kind: "api", api: {} as never, raw: "", problems: [], version: 1, snapshot: "", loading: false };
+      const tabs = multiple.getComponent(ProjectTabs).props("tabs");
+      expect(tabs.projectHasDrafts(tabs.tabs[0]!.tabId)).toBe(false);
+      await multiple.get('[data-testid="tab-close-0"]').trigger("click");
+      await flushPromises();
+      expect(session.buffers[path]).toBeDefined();
+      multiple.unmount();
+
+      localStorage.setItem("apicc.projectTabs", JSON.stringify(legacy));
+      const rebound = await mountAppKeepingStorage();
+      await rebound.get(`[data-testid="home-side-server-${server}"]`).trigger("click");
+      await rebound.get('[data-testid="home-ws-ws-online-1"]').trigger("click");
+      await flushPromises();
+      await rebound.get('[data-testid="project-card-300"]').trigger("click");
+      await flushPromises();
+      const reboundTabs = rebound.getComponent(ProjectTabs).props("tabs");
+      expect(reboundTabs.tabs).toHaveLength(1);
+      expect(reboundTabs.activeTab?.workspaceRef).toMatchObject({ baseUrl: server });
+    } finally {
+      localStorage.removeItem("apicc.projectTabs");
+      localStorage.removeItem("apicc.onlineServers");
+      await failingApi.onlineLogout();
+    }
+  });
   it("持久化本地签 → 挂载重开目录并激活该签（视图离开主页）；正式 moduleMemory locator 按项目恢复", async () => {
     const treeDto = await failingApi.treeGet();
     const project = projectByLabel(treeDto, "示例项目");
@@ -2064,7 +2593,10 @@ describe("App 测试模块装配（M9-D）", () => {
       } finally { treeStore.createNode = originalCreate; }
       await flushPromises();
       // 新接口在测试模块：进入压测上下文前报告已清空
-      const newApiBtn = wrapper.findAll('[data-testid^="test-api-"]').at(-1)!;
+      await wrapper.get('[data-testid="rail-test"]').trigger("click");
+      await flushPromises();
+      const newApiBtn = wrapper.findAll('[data-testid^="test-api-"]').find((button) => button.text().includes("第二接口"));
+      if (!newApiBtn) throw new Error("The new API did not appear in the test sidebar");
       const caseEditor = wrapper.findComponent(CasePanel).props("editor") as ReturnType<typeof import("../../src/renderer/src/stores/editor.js").useEditorStore>;
       const originalLoad = caseEditor.load.bind(caseEditor);
       let clickedLoad: ReturnType<typeof originalLoad> | null = null;
@@ -2143,6 +2675,7 @@ describe("App 环境联动（M9-A1）", () => {
     expect(editorOf().envs).toEqual([]);
     // 环境模块新建环境
     await wrapper.find('[data-testid="rail-envs"]').trigger("click");
+    await expectBody("manage-environments").trigger("click");
     await flushPromises();
     await wrapper.find('[data-testid="env-new"]').trigger("click");
     await flushPromises();
@@ -2310,6 +2843,7 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       expect(wrapper.find('[data-testid="tree-api"]').exists()).toBe(true);
       await clickApiAndWait(wrapper);
       await flushPromises();
+      await wrapper.get('[data-testid="asset-metadata-toggle"]').trigger("click");
       const nameInput = wrapper.find('[data-testid="asset-metadata-name"]');
       expect(nameInput.exists()).toBe(true);
       await nameInput.setValue("串显回归草稿");
@@ -2321,6 +2855,7 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       const tabA = await tabFor(wrapper, "示例项目");
       await tabA.trigger("click");
       await flushPromises();
+      await wrapper.get('[data-testid="asset-metadata-toggle"]').trigger("click");
       const back = wrapper.find('[data-testid="asset-metadata-name"]');
       expect(back.exists()).toBe(true);
       expect((back.element as HTMLInputElement).value).toBe("串显回归草稿");

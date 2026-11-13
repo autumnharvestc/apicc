@@ -1256,6 +1256,8 @@
     "exitOnline": "Leave online workspace",
     "exitConfirmDesc": "The {count} project tab(s) of this workspace will be closed; unsaved drafts in them will be discarded.",
     "exitNoTabs": "No project tabs are open in this workspace.",
+    "workspaceActionChanged": "The active online workspace changed. Reopen this action from the intended workspace.",
+    "workspaceExitImpactChanged": "The affected project tabs or drafts changed. Review the list and confirm again.",
     "exitHasDraft": "unsaved draft",
     "migrate": "Migrate",
     "treeEmpty": "Nothing visible in this online workspace",
@@ -1266,6 +1268,9 @@
     "editorEmpty": "Select an API on the left to view/edit its definition",
     "pullGuide": "Valid contract-files-v1 projects support debugging, suites and workflows on this computer or an authorized agent. Select a project and execution location. Legacy-format content remains available for browsing and migration (pull); it cannot execute directly.",
     "sessionErrors": {
+    "online-workspace-server-conflict": "A workspace with the same ID is open on another server. Switch back to that connection and exit its workspace, then open this workspace.",
+    "online-tab-server-mismatch": "This project tab belongs to another connection. Switch to that connection, open the workspace, and try again.",
+    "online-tab-server-unknown": "This older project tab has no saved connection. Select the correct server on Home and open the project from its workspace.",
     "online-workspace-session-missing": "The online workspace session is unavailable (you may have signed out). The project tab is offline. Sign in again and retry.", "online-not-signed-in":"Sign in to the online server first.", "online-workspace-not-open":"Open this online workspace first.", "online-session-changed":"The online session changed. Reopen the project and try again." },
     "problemsTitle": "API definition failed schema validation (raw text shown; pushing is disabled)",
     "baseUrl": "Base URL",
@@ -1455,20 +1460,88 @@
     "connectionSave": "Save",
     "connectionDelete": "Delete",
     "connectionLogin": "Sign in",
-    "connectionAccount": "Account sign-in",
+    "connectionAccount": "Connection and account",
     "connectionBrowse": "Browse",
     "connectionEmpty": "No remote servers yet",
     "loggedInAs": "Signed in",
-    "notLoggedIn": "Not signed in"
+    "notLoggedIn": "Not signed in",
+    "workspaceActions": "Workspace actions",
+    "findProject": "Find project",
+    "findProjectHint": "Search the local workspace by project name",
+    "noMatchingProjects": "No matching projects",
+    "clearProjectSearch": "Clear search"
   },
   "tabs": {
     "closeConfirm": "This project has unsaved drafts. Closing the tab will discard unsaved changes. Close anyway?",
     "scrollLeft": "Scroll left",
-    "scrollRight": "Scroll right"
+    "scrollRight": "Scroll right",
+    "openProjects": "Open projects",
+    "offline": "Offline",
+    "draft": "Unsaved drafts"
+  },
+  "workbench": {
+    "moduleNavigation": "Workbench modules",
+    "directory": "Directory",
+    "openDirectory": "Open API directory",
+    "closeDirectory": "Close API directory",
+    "createIn": "Create in {name}",
+    "toggleNode": "Expand or collapse {name}",
+    "projectTools": "Project tools"
+  },
+  "requestWorkbench": {
+    "title": "Request",
+    "details": "API details",
+    "protocol": "Protocol",
+    "method": "HTTP method",
+    "more": "More request actions",
+    "saveRequestOnly": "Save request only",
+    "cancelUnconfirmed": "Cancellation was unconfirmed. Waiting for the run to finish.",
+    "case": "Case",
+    "apiTools": "API tools",
+    "enabled": "On",
+    "field": "Field",
+    "value": "Value",
+    "actions": "Actions",
+    "parameterDetails": "Parameter details",
+    "componentReference": "Component reference",
+    "responseContract": "Response contract",
+    "projectAssets": "Project assets",
+    "mock": "Mock",
+    "credentials": "Credentials and OAuth"
+  },
+  "responseWorkbench": {
+    "title": "Response",
+    "previous": "Sending · Previous response",
+    "noHttpStatus": "No HTTP status received",
+    "size": "Body size",
+    "details": "View details",
+    "format": "Body format",
+    "matches": "{count} matches",
+    "clear": "Clear",
+    "more": "More response actions",
+    "evidence": "Run evidence",
+    "goToResponse": "Go to response",
+    "backToRequest": "Back to request",
+    "splitter": "Use Up and Down to resize the response",
+    "responsePercent": "Response occupies {percent}%",
+    "yes": "Yes",
+    "no": "No",
+    "failure": { "transport": "Transport failure", "http": "HTTP failure", "script": "Script failure", "assertion": "Assertion failure", "extraction": "Extraction failure", "config": "Configuration error", "aborted": "Cancelled" },
+    "transport": { "prepared": "Prepared", "entered": "Started", "headers-received": "Headers received", "responded": "Responded", "failed": "Failed" },
+    "observation": { "http-hop": "HTTP exchange", "legacy-text": "Legacy text" },
+    "stage": { "request": "Request", "response": "Response", "connect": "Connection", "headers": "Response headers", "body": "Body", "prepare": "Preparation" }
+  },
+  "environmentShortcut": {
+    "manage": "Manage environments",
+    "loading": "Loading environments…",
+    "unavailable": "Environment unavailable. Select another environment.",
+    "selectRequest": "Select a debug request to change its environment"
   },
   "topbar": {
-    "projectPlaceholder": "Open or find project",
-    "more": "More"
+    "more": "Global tools",
+    "applicationMenu": "Application menu",
+    "noWorkspace": "No workspace open",
+    "workspaceProblemCount": "Workspace problems ({count})"
   },
   "settings": {
     "title": "Settings"

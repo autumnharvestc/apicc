@@ -8,12 +8,12 @@ const electron = vi.hoisted(() => ({ handlers: new Map<string, (event: unknown, 
   confirm: undefined as undefined | ((options: Record<string, unknown>) => Promise<{ response: number; checkboxChecked?: boolean }>) }));
 vi.mock("electron", () => {
   class BrowserWindow {
-    webContents = { send() {}, ipc: { on() {}, removeListener() {} } };
-    loadURL() {} loadFile() {} on() { return this; } destroy() {}
+    webContents = { on() {}, send() {}, ipc: { on() {}, removeListener() {} } };
+    loadURL() {} loadFile() {} hookWindowMessage() {} on() { return this; } destroy() {}
     static getAllWindows() { return []; }
     static fromWebContents() { return {}; }
   }
-  return { app: { whenReady: () => Promise.resolve(), on() {}, getPath: () => electron.userData, quit() {} }, BrowserWindow,
+  return { app: { whenReady: () => Promise.resolve(), on() {}, getPath: () => electron.userData, quit() {} }, BrowserWindow, nativeTheme: {},
     ipcMain: { handle(channel: string, handler: (event: unknown, ...args: unknown[]) => Promise<unknown>) { electron.handlers.set(channel, handler); } },
     dialog: { showOpenDialog: async () => ({ canceled: true }), showSaveDialog: async () => ({ canceled: true }), showMessageBox: async (_parent: unknown, options: Record<string, unknown>) => electron.confirm?.(options) ?? { response: 0 } },
     safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => "gnome_libsecret", encryptString: (v: string) => Buffer.from(Buffer.from(v).toString("base64")), decryptString: (v: Buffer) => { electron.decrypts++; return Buffer.from(v.toString(), "base64").toString(); } }, shell: { openExternal: async () => {} },

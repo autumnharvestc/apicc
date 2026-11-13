@@ -5,7 +5,8 @@
 // M8 布局层级改造：九平铺视图收敛为「图标导航栏（ModuleRail）→ 树面板（带模块标题
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
+import { EllipsisOutlined, SyncOutlined } from "@ant-design/icons-vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -35,6 +36,8 @@ import HomeView from "./components/HomeView.vue";
 import TestView from "./components/TestView.vue";
 import TestSidebar from "./components/TestSidebar.vue";
 import ModuleRail from "./components/ModuleRail.vue";
+import ActionMenu from "./components/ActionMenu.vue";
+import { debugEnvironmentSelection } from "./debugEnvironment.js";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
@@ -77,7 +80,8 @@ import { useDesignStore } from "./stores/design.js";
 import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
 import { createStressStore } from "./stores/stress.js";
-import { createOnlineStore } from "./stores/online.js";
+import { createOnlineStore, type OnlineSession } from "./stores/online.js";
+import { normalizeOnlineBaseUrl, type OnlineWorkspaceAction, type OnlineWorkspaceActionTarget } from "./onlineWorkspaceActions.js";
 import { createAiStore } from "./stores/ai.js";
 import { createPluginsStore } from "./stores/plugins.js";
 import { createRequestTabsStore, type RequestTab, type RequestCloseState } from "./stores/requestTabs.js";
@@ -86,6 +90,8 @@ import {
   createEvictProjectSessions,
   findProjectNode,
   readPersistedTabs,
+  sameWorkspaceRef,
+  type OnlineWorkspaceRef,
   type ProjectTab,
 } from "./stores/tabs.js";
 import { useModuleMemoryStore } from "./stores/moduleMemory.js";
@@ -100,7 +106,8 @@ import {
   type ApiSubView,
 } from "./viewSwitch.js";
 import { currentLocale } from "./i18n/bridge.js";
-import { themePreference, resolveTheme } from "./theme.js";
+import { onlineSessionErrorKey } from "./i18n/index.js";
+import { themePreference, resolveTheme, applyTheme } from "./theme.js";
 import { localTreeNodeKey, type LocalTreeIdentity } from "../../shared/tree-dto.js";
 
 const ARadioGroup = ARadio.Group;
@@ -109,6 +116,28 @@ const ARadioButton = ARadio.Button;
 // —— antd ConfigProvider 联动（i18n / 主题算法）——
 // locale 源 = bridge 单例当前语言；algorithm 源 = theme.ts 响应式偏好 + 系统偏好解析。
 const antdLocale = computed(() => (currentLocale() === "zh-CN" ? zhCN : enUS));
+const systemColorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+const highContrast = window.matchMedia("(forced-colors: active)");
+const systemDark = ref(systemColorScheme.matches);
+const resolvedTheme = computed(() => resolveTheme(themePreference.value, systemDark.value));
+function syncWindowChrome() {
+  void window.apicc?.setWindowChromeTheme?.(resolvedTheme.value).catch(reportError);
+}
+function onSystemThemeChange(event: MediaQueryListEvent) {
+  systemDark.value = event.matches;
+}
+watch(resolvedTheme, () => {
+  applyTheme(themePreference.value, systemDark.value);
+  syncWindowChrome();
+}, { immediate: true });
+onMounted(() => {
+  systemColorScheme.addEventListener?.("change", onSystemThemeChange);
+  highContrast.addEventListener?.("change", syncWindowChrome);
+});
+onBeforeUnmount(() => {
+  systemColorScheme.removeEventListener?.("change", onSystemThemeChange);
+  highContrast.removeEventListener?.("change", syncWindowChrome);
+});
 const antdThemeConfig = computed(() => ({
   token: {
     colorPrimary: "#315fe9",
@@ -118,7 +147,7 @@ const antdThemeConfig = computed(() => ({
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
   },
   algorithm:
-    resolveTheme(themePreference.value, window.matchMedia("(prefers-color-scheme: dark)").matches) === "dark"
+    resolvedTheme.value === "dark"
       ? antdTheme.darkAlgorithm
       : antdTheme.defaultAlgorithm,
 }));
@@ -134,6 +163,12 @@ let debugInstance: ReturnType<typeof useDebugStore> | null = null;
 let requestTabsRef: ReturnType<typeof createRequestTabsStore> | null = null;
 let requestContextRoot = "";
 let requestProjectContext: ProjectLocator | null = null;
+function requestHasDrafts(tabId: string) {
+  const tab = requestTabsRef?.tabs[tabId];
+  const session = tab?.source.kind === "asset" ? editor.sessions[apiSessionKey(tab.root, tab.source.locator)] : undefined;
+  return !!tab && (editor.isRequestDirty(tab) || debugInstance?.isRequestTabDirty(tabId) === true
+    || (session ? design.hasControlDrafts(session) : false));
+}
 const requestCloseConfirmOpen = ref(false);
 let requestCloseResolve: ((accepted: boolean) => void) | null = null;
 function confirmRequestTabClose(_tabId: string, _state: RequestCloseState): Promise<boolean> {
@@ -148,15 +183,7 @@ function finishRequestTabClose(accepted: boolean) {
 }
 const requestTabs = createRequestTabsStore({
   getContext: () => ({ root: workspace.root, project: requestContextRoot === workspace.root ? requestProjectContext : null }),
-  isDirty: (tabId) => {
-    const tab = requestTabsRef?.tabs[tabId];
-    const session = tab?.source.kind === "asset"
-      ? editor.sessions[apiSessionKey(tab.root, tab.source.locator)]
-      : undefined;
-    return !!tab && (editor.isRequestDirty(tab)
-      || debugInstance?.isRequestTabDirty(tabId) === true
-      || (session ? design.hasControlDrafts(session) : false));
-  },
+  isDirty: requestHasDrafts,
   isRunning: (tabId) => debugInstance?.isRequestTabRunning(tabId) ?? false,
   confirmClose: confirmRequestTabClose,
   confirmCloseMany: (_tabs: RequestTab[], state: RequestCloseState) => confirmRequestTabClose("multiple", state),
@@ -193,7 +220,7 @@ const stress = createStressStore({
 });
 // —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
-// TopBar 的在线入口按钮只置 online.dialogOpen。 ——
+// 连接管理和服务器行共用在线 store 的账户入口。 ——
 const online = createOnlineStore({ api: apicc });
 const homeView = ref<InstanceType<typeof HomeView> | null>(null);
 async function manageConnections() {
@@ -370,14 +397,19 @@ async function restoreLastApiForTab(tab: ProjectTab, isCurrent: () => boolean = 
  * 已驻留的工作区跳过；refreshWorkspaces/openWorkspace 内部消化错误，全程不抛。
  */
 async function reopenOnlineWorkspaces(): Promise<void> {
-  if (!online.loggedIn) return;
+  const baseUrl = online.activeBaseUrl;
+  if (!online.loggedIn || !baseUrl) return;
+  const normalized = normalizeOnlineBaseUrl(baseUrl);
   const workspaceIds = new Set<string>();
+  const allowLegacy = online.profiles.length === 1;
   for (const row of readPersistedTabs(localStorage).tabs) {
-    if (row.workspaceRef.kind === "online") workspaceIds.add(row.workspaceRef.workspaceId);
+    const ref = row.workspaceRef;
+    if (ref.kind === "online" && (ref.baseUrl ? ref.baseUrl === normalized : allowLegacy)) workspaceIds.add(ref.workspaceId);
   }
   if (workspaceIds.size === 0) return;
   await online.refreshWorkspaces();
   for (const workspaceId of workspaceIds) {
+    if (!online.loggedIn || online.activeBaseUrl !== baseUrl) return;
     if (online.sessions[workspaceId]) continue;
     const target = online.workspaces.find((w) => w.id === workspaceId);
     if (target) await online.openWorkspace(target);
@@ -407,6 +439,45 @@ const SUB_VIEWS: ApiSubView[] = API_SUB_VIEWS;
 // 项目模块保持原状态；主页/项目页面选择只由 tabs.selectedPage 控制。
 const view = ref<SwitchView>("api");
 const apiSubView = ref<ApiSubView>("debug");
+const workbenchBody = ref<HTMLElement>();
+const workbenchWidth = ref(window.innerWidth);
+const workbenchHeight = ref(window.innerHeight - 46);
+const directoryOpen = ref(false);
+const apiDirectory = computed(() => !isHome.value && (onlineMode.value || view.value === "api"));
+const compactDirectory = computed(() => workbenchWidth.value < 1024);
+const directoryOverlay = computed(() => apiDirectory.value && (workbenchWidth.value < 900
+  || workbenchWidth.value - (compactDirectory.value ? 264 : 312) < 600));
+const directoryVisible = computed(() => apiDirectory.value && (!directoryOverlay.value || directoryOpen.value));
+const useDirectoryTools = computed(() => apiDirectory.value && !directoryOverlay.value && workbenchHeight.value >= 300);
+const treeSearch = ref<{ focus(): void }>();
+const projectToolsMenu = ref<InstanceType<typeof ActionMenu>>();
+function setWorkbenchBody(component: Element | ComponentPublicInstance | null) {
+  workbenchBody.value = component instanceof HTMLElement ? component : undefined;
+}
+let workbenchResize: ResizeObserver | undefined;
+function updateWorkbenchSize() {
+  workbenchWidth.value = workbenchBody.value?.clientWidth || window.innerWidth;
+  workbenchHeight.value = workbenchBody.value?.clientHeight || window.innerHeight - 46;
+}
+onMounted(() => {
+  updateWorkbenchSize();
+  window.addEventListener("resize", updateWorkbenchSize);
+  if (typeof ResizeObserver === "function" && workbenchBody.value) {
+    workbenchResize = new ResizeObserver(updateWorkbenchSize);
+    workbenchResize.observe(workbenchBody.value);
+  }
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", updateWorkbenchSize);
+  workbenchResize?.disconnect();
+});
+function toggleDirectory() {
+  directoryOpen.value = !directoryOpen.value;
+  void nextTick(() => {
+    if (directoryOpen.value) treeSearch.value?.focus();
+    else document.querySelector<HTMLElement>('[data-testid="rail-directory"]')?.focus({ preventScroll: true });
+  });
+}
 // —— 内容上下文由活跃签驱动（计划 C 任务 5）：活跃签是本地签 → 本地内容；活跃签是在线签
 // （或无签但有活跃在线工作区——主页打开在线工作区尚未成签的过渡态）→ 在线内容。切到本地
 // 签不退在线会话（驻留，不变量 4：工作区级关闭唯一入口=退出在线工作区按钮）。
@@ -417,7 +488,137 @@ function isLocalProjectTab(tab: ProjectTab | null): tab is Extract<ProjectTab, {
 const activeLocalProjectTab = computed(() => isLocalProjectTab(tabs.activeTab) ? tabs.activeTab : null);
 const retainedLocalProjectTab = computed(() => isLocalProjectTab(tabs.contextTab) ? tabs.contextTab : null);
 const isHome = computed(() => tabs.selectedPage.kind === "home");
-const onlineMode = computed(() => online.activeWorkspace !== null && activeLocalProjectTab.value === null);
+const activeOnlineProjectTab = computed(() => {
+  const tab = tabs.activeTab;
+  return tab && "projectId" in tab ? tab : null;
+});
+const onlineMode = computed(() => activeLocalProjectTab.value === null
+  && (activeOnlineProjectTab.value !== null || online.activeWorkspace !== null));
+watch(directoryOverlay, (overlay) => { if (!overlay) directoryOpen.value = false; });
+watch(directoryVisible, (visible) => {
+  const focused = document.activeElement;
+  if (visible || !(focused instanceof HTMLElement)
+      || !focused.closest('#workbench-directory, [data-menu-owner="directory-create"], [data-menu-owner="tree-more"]')) return;
+  void nextTick(() => {
+    if (document.activeElement !== focused && document.activeElement !== document.body) return;
+    const target = document.querySelector<HTMLElement>('[data-testid="rail-directory"]')
+      ?? document.querySelector<HTMLElement>('[data-testid="rail-api"]:not(:disabled)')
+      ?? document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
+    target?.focus({ preventScroll: true });
+  });
+}, { flush: "sync" });
+const onlineProjectContextAvailable = computed(() => {
+  const workspace = online.activeWorkspace;
+  const tab = activeOnlineProjectTab.value;
+  return !!workspace && (!tab || (tab.workspaceRef.workspaceId === workspace.id
+    && (!tab.workspaceRef.baseUrl || tab.workspaceRef.baseUrl === normalizeOnlineBaseUrl(online.activeBaseUrl))));
+});
+const activeOnlineWorkspaceTarget = computed<OnlineWorkspaceActionTarget | null>(() => {
+  const { activeWorkspaceId: workspaceId, activeBaseUrl: baseUrl } = online;
+  if (!online.loggedIn || onlineSessionErrorKey(online.error) === "online.sessionErrors.online-not-signed-in"
+      || !workspaceId || !baseUrl || online.sessions[workspaceId]?.baseUrl !== baseUrl) return null;
+  return { baseUrl, workspaceId };
+});
+const retainedOnlineWorkspaceTarget = computed<OnlineWorkspaceActionTarget | null>(() => {
+  const workspaceId = online.activeWorkspaceId;
+  const baseUrl = workspaceId ? online.sessions[workspaceId]?.baseUrl : undefined;
+  return workspaceId && baseUrl ? { baseUrl, workspaceId } : null;
+});
+
+interface WorkspaceExitImpact {
+  tabId: string;
+  projectName: string;
+  hasDrafts: boolean;
+}
+interface WorkspaceActionSelection {
+  target: OnlineWorkspaceActionTarget;
+  session: OnlineSession;
+}
+const exitWorkspace = ref<(WorkspaceActionSelection & { impact: WorkspaceExitImpact[] }) | null>(null);
+const migrateWorkspace = ref<WorkspaceActionSelection | null>(null);
+const workspaceActionError = ref<"online.workspaceActionChanged" | "online.workspaceExitImpactChanged" | null>(null);
+const workspaceExitBusy = ref(false);
+let workspaceActionOrigin: HTMLElement | null = null;
+
+function isCurrentWorkspaceAction(selection: WorkspaceActionSelection, action: OnlineWorkspaceAction) {
+  const active = action === "migrate" ? activeOnlineWorkspaceTarget.value : retainedOnlineWorkspaceTarget.value;
+  const { baseUrl, workspaceId } = selection.target;
+  return active?.baseUrl === baseUrl && active.workspaceId === workspaceId && online.sessions[workspaceId] === selection.session;
+}
+
+function affectedWorkspaceTabs(ref: OnlineWorkspaceRef): WorkspaceExitImpact[] {
+  return tabs.tabs.filter((tab) => sameWorkspaceRef(tab.workspaceRef, ref))
+    .map((tab) => ({ tabId: tab.tabId, projectName: tab.projectName, hasDrafts: tabs.projectHasDrafts(tab.tabId) }));
+}
+
+function requestOnlineWorkspaceAction(action: OnlineWorkspaceAction, target: OnlineWorkspaceActionTarget) {
+  const session = online.sessions[target.workspaceId];
+  if (!session || !isCurrentWorkspaceAction({ target, session }, action) || workspaceExitBusy.value || online.migrating) return;
+  workspaceActionOrigin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  workspaceActionError.value = null;
+  if (action === "migrate") {
+    migrateWorkspace.value = { target, session };
+    online.migrateDialogOpen = true;
+  } else {
+    exitWorkspace.value = { target, session, impact: affectedWorkspaceTabs({ kind: "online", ...target, name: session.workspace.name }) };
+  }
+}
+
+function restoreWorkspaceActionFocus() {
+  const origin = workspaceActionOrigin;
+  workspaceActionOrigin = null;
+  void nextTick(() => {
+    const focus = origin?.isConnected ? origin : document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
+    focus?.focus({ preventScroll: true });
+  });
+}
+
+function cancelWorkspaceExit() {
+  exitWorkspace.value = null;
+  restoreWorkspaceActionFocus();
+}
+
+async function confirmWorkspaceExit() {
+  const pending = exitWorkspace.value;
+  if (!pending || workspaceExitBusy.value) return;
+  if (workspaceActionError.value === "online.workspaceActionChanged" || !isCurrentWorkspaceAction(pending, "exit")) {
+    cancelWorkspaceExit();
+    return;
+  }
+  const ref = { kind: "online", ...pending.target, name: pending.session.workspace.name } as const;
+  const impact = affectedWorkspaceTabs(ref);
+  if (JSON.stringify(impact) !== JSON.stringify(pending.impact)) {
+    pending.impact = impact;
+    workspaceActionError.value = "online.workspaceExitImpactChanged";
+    return;
+  }
+  workspaceExitBusy.value = true;
+  exitWorkspace.value = null;
+  try {
+    await tabs.closeWorkspaceTabs(ref);
+    if (online.sessions[ref.workspaceId] === pending.session) await online.closeWorkspace(ref.workspaceId);
+  } catch (error) {
+    reportError(error);
+  } finally {
+    workspaceExitBusy.value = false;
+    restoreWorkspaceActionFocus();
+  }
+}
+
+watch([retainedOnlineWorkspaceTarget, activeOnlineWorkspaceTarget], () => {
+  if (exitWorkspace.value && !isCurrentWorkspaceAction(exitWorkspace.value, "exit")) workspaceActionError.value = "online.workspaceActionChanged";
+  if (migrateWorkspace.value && !isCurrentWorkspaceAction(migrateWorkspace.value, "migrate")) online.migrateDialogOpen = false;
+}, { flush: "sync" });
+watch(() => online.migrateDialogOpen, (open) => {
+  if (!open && migrateWorkspace.value) {
+    migrateWorkspace.value = null;
+    restoreWorkspaceActionFocus();
+  }
+});
+
+function canMigrateWorkspace() {
+  return !!migrateWorkspace.value && isCurrentWorkspaceAction(migrateWorkspace.value, "migrate");
+}
 const railGate = computed(() => ({
   workspaceOpened: workspace.opened,
   onlineActive: onlineMode.value,
@@ -429,7 +630,7 @@ const homeActiveProjectId = computed(() => activeLocalProjectTab.value?.projectL
 // 主页在线项目卡片高亮（终审 Important 1 ②）：活跃签为在线签时的 projectId
 const homeActiveOnlineProjectId = computed(() => {
   const tab = tabs.activeTab;
-  return tab && !isLocalProjectTab(tab) ? tab.projectId : null;
+  return tab && !isLocalProjectTab(tab) && onlineProjectContextAvailable.value ? tab.projectId : null;
 });
 watch(() => JSON.stringify([isHome.value, onlineMode.value, homeActiveOnlineProjectId.value, online.activeBaseUrl, online.user?.id]), async () => {
   const context = online.executionContext(homeActiveOnlineProjectId.value);
@@ -465,18 +666,13 @@ const treeFilter = computed({
 });
 // 导入向导（M10 归接口模块）：显隐状态
 const importOpen = ref(false);
-const siderTitle = computed(() => t(`nav.${view.value}`));
 
-// —— 环境清单联动（M9-A1）：调试选择器读 editor.envs（选中接口时快照），环境管理里
-// 新建/删除环境后必须重拉，否则选择器看不到新环境（用户实测 bug）。环境增删只发生在
-// 环境模块（envs store 的 load/create/remove 必改 envs 数量），以其长度为触发源重拉；
-// saveVars 不改数量且不改名，无需触发。envs 指向别项目时重拉依旧按当前接口取数，无害。
-watch(
-  () => envs.envs.length,
-  () => {
-    void editor.reloadEnvs().catch(reportError);
-  },
-);
+watch(() => envs.envs, (environments) => {
+  if (envs.root && envs.projectLocator) {
+    editor.refreshProjectEnvironments(envs.root, envs.projectLocator,
+      environments.map(({ id, name, locator }) => ({ id, name, locator })));
+  }
+});
 
 // —— 最小错误反馈通道（宽审查 I1）——
 // SideTree/TopBar/各面板链路的 Promise 拒绝统一转报到这里，集中展示、可手动关闭，
@@ -488,7 +684,8 @@ const errorMessage = ref("");
 const presentedError = computed(() => {
   if (errorMessage.value === "design-invalid-json") return t("design.fixInvalidJson");
   if (errorMessage.value === "online-workspace-session-missing") return t("online.sessionErrors.online-workspace-session-missing");
-  return errorMessage.value;
+  const onlineError = onlineSessionErrorKey(errorMessage.value);
+  return onlineError ? t(onlineError) : errorMessage.value;
 });
 
 function reportError(e: unknown) {
@@ -746,7 +943,69 @@ const synchronization = createSynchronizationStore(apicc, async () => {
   else await workspace.refresh();
 });
 const syncModules = computed(() => syncScope.value?.kind === 'online' ? (online.execution.project?.collections ?? []).map(collection => ({ id: collection.id, name: collection.name })) : syncScope.value?.kind === 'local' ? (workspace.findProject(syncScope.value.locator)?.children ?? []).flatMap(node => node.kind === 'collection' ? [{ id: node.locator.collectionId, name: node.label }] : []) : []);
-watch(() => JSON.stringify(syncScope.value), () => { synchronization.activate(syncScope.value); if (!syncScope.value) syncOpen.value = false; }, { immediate: true, flush: 'sync' });
+const syncScopeKey = computed(() => JSON.stringify(syncScope.value));
+const projectOnlineTarget = computed(() => {
+  const tab = activeOnlineProjectTab.value;
+  const target = retainedOnlineWorkspaceTarget.value;
+  if (!tab || !target || tab.workspaceRef.workspaceId !== target.workspaceId
+      || normalizeOnlineBaseUrl(tab.workspaceRef.baseUrl) !== normalizeOnlineBaseUrl(target.baseUrl)) return null;
+  return target;
+});
+const projectToolsKey = computed(() => JSON.stringify([tabs.activeTabId, syncScopeKey.value, projectOnlineTarget.value]));
+const projectToolItems = computed(() => [
+  ...(syncScope.value ? [{ key: "sync", label: t("sync.title"), testId: "sync-entry" }] : []),
+  ...(projectOnlineTarget.value ? [
+    ...(online.profiles.some((profile) => profile.baseUrl === projectOnlineTarget.value?.baseUrl) ? [
+      { key: "account", label: t("home.connectionAccount"), testId: "project-connection-account" },
+    ] : []),
+    ...(activeOnlineWorkspaceTarget.value?.baseUrl === projectOnlineTarget.value.baseUrl
+      && activeOnlineWorkspaceTarget.value?.workspaceId === projectOnlineTarget.value.workspaceId ? [
+      { key: "migrate", label: t("online.migrate"), disabled: online.migrating, testId: "project-online-migrate" },
+    ] : []),
+    { key: "exit", label: t("online.exitOnline"), disabled: online.migrating, testId: "project-online-exit" },
+  ] : []),
+]);
+const directDirectorySync = computed(() => useDirectoryTools.value && projectToolItems.value.length === 1
+  && projectToolItems.value[0]?.key === "sync");
+function openSyncPanel() {
+  if (!syncScope.value) return;
+  syncOpen.value = true;
+  void nextTick(() => document.querySelector<HTMLElement>('[data-testid="sync-panel"]')?.focus({ preventScroll: true }));
+}
+const openedProjectToolsKey = ref<string | null>(null);
+function selectProjectTool(action: string) {
+  if (openedProjectToolsKey.value !== projectToolsKey.value || !projectToolItems.value.some((item) => item.key === action)) return;
+  if (action === "sync") openSyncPanel();
+  const target = projectOnlineTarget.value;
+  if (!target) return;
+  if (action === "account") online.openConnectionAccount(target.baseUrl);
+  if (action === "migrate" || action === "exit") requestOnlineWorkspaceAction(action, target);
+}
+function closeSyncPanel(restoreToProject = false) {
+  if (!syncOpen.value) return;
+  syncOpen.value = false;
+  synchronization.setVisible(false);
+  void nextTick(() => {
+    const trigger = restoreToProject ? null : document.querySelector<HTMLElement>('[data-testid="project-tools"], .directory-project-tools [data-testid="sync-entry"]');
+    const selected = document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
+    (trigger ?? selected)?.focus({ preventScroll: true });
+  });
+}
+watch(syncScopeKey, () => {
+  closeSyncPanel(true);
+  synchronization.activate(syncScope.value);
+}, { immediate: true, flush: "sync" });
+watch(projectToolsKey, () => {
+  const restoreFocus = projectToolsMenu.value?.hasFocus();
+  projectToolsMenu.value?.close(false);
+  directoryOpen.value = false;
+  if (restoreFocus) void nextTick(() => document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]')?.focus());
+});
+watch(useDirectoryTools, () => {
+  const restoreFocus = projectToolsMenu.value?.hasFocus();
+  projectToolsMenu.value?.close(false);
+  if (restoreFocus) void nextTick(() => document.querySelector<HTMLElement>('[data-testid="project-tools"], .directory-project-tools [data-testid="sync-entry"]')?.focus());
+});
 watch(() => online.execution.view?.assets.version, version => { synchronization.assetVersion = version ?? '0'; }, { immediate: true });
 onBeforeUnmount(() => { synchronization.setVisible(false); synchronization.activate(null); });
 
@@ -769,6 +1028,29 @@ const activeRequestTab = computed(() => {
   const tab = requestTabs.activeTab;
   const context = selectedProjectContext.value;
   return tab && context && tab.root === context.root && sameProjectLocator(tab.project, context.locator) ? tab : null;
+});
+const requestPath = computed(() => {
+  const tab = activeRequestTab.value;
+  const locator = tab?.source.kind === "asset" ? tab.source.locator : !tab ? editor.locator : null;
+  if (!locator) return "";
+  const project = workspace.findProject(locator);
+  if (!project) return "";
+  const module = project.children.find((node) => node.kind === "collection" && node.locator.collectionId === locator.collectionId);
+  const path = [project.label];
+  if (module) path.push(module.label);
+  let parent: LocalTreeNodeDTO | undefined = module;
+  for (const folderId of locator.folderIds) {
+    parent = parent?.children?.find((node) => node.kind === "folder" && node.id === folderId);
+    if (parent) path.push(parent.label);
+  }
+  return path.join(" / ");
+});
+const showDebugEnvironment = computed(() => !isHome.value && !onlineMode.value && view.value === "api" && apiSubView.value === "debug");
+const environmentSelection = computed(() => {
+  if (!showDebugEnvironment.value || !selectedProjectContext.value || selectedProjectContext.value.root !== workspace.root) return null;
+  const locator = editor.locator;
+  if (!activeRequestTab.value && (!locator || !sameProjectLocator(locator, selectedProjectContext.value.locator))) return null;
+  return debugEnvironmentSelection(editor, debug, activeRequestTab.value);
 });
 const historyNavigationGeneration = ref(0);
 watch(
@@ -819,7 +1101,7 @@ async function saveFreeRequestAsApi(
   name: string,
   request: ApiRequest,
   fields: DebugFieldState[],
-): Promise<void> {
+): Promise<{ tabId: string; generation: number } | undefined> {
   if (tab.source.kind !== "free") throw new Error("当前请求签不是 Free 请求。");
   const root = tab.root;
   const sourceProject = { ...tab.source.project };
@@ -893,6 +1175,7 @@ async function saveFreeRequestAsApi(
   view.value = "api";
   apiSubView.value = "debug";
   await activateRequestTab(tab.tabId, true);
+  return { tabId: tab.tabId, generation: converted.generation };
 }
 
 function historyProjectIsCurrent(root: string, project: ProjectLocator): boolean {
@@ -1034,7 +1317,7 @@ function openProjectFromHome(locator: ProjectLocator) {
  */
 async function openOnlineWorkspaceFromHome(ws: OnlineWorkspaceSummary) {
   await online.openWorkspace(ws);
-  if (online.activeWorkspace?.id !== ws.id && online.error) reportError(new Error(online.error));
+  if (online.error) reportError(new Error(online.error));
 }
 
 /**
@@ -1181,77 +1464,141 @@ watch(
   },
 );
 
-// —— 调试子视图可拖拽分割（M8）：pointer 拖拽调整响应区高度占比（20%–70% 夹取），
-// 双击复位默认 40%。纯前端布局态，不入 store、不持久化；拖拽监听挂分割条自身并
-// 以 setPointerCapture 捕获，指针移出条外仍持续生效，pointerup 解绑。
-const viewerPct = ref(40);
-
-function onDividerDown(e: PointerEvent) {
-  const divider = e.currentTarget as HTMLElement;
-  const container = divider.parentElement;
-  if (!container) return;
-  const height = container.clientHeight;
-  const startY = e.clientY;
-  const startPct = viewerPct.value;
-  divider.setPointerCapture(e.pointerId);
-  const onMove = (ev: PointerEvent) => {
-    if (height <= 0) return;
-    const pct = startPct + ((startY - ev.clientY) / height) * 100;
-    viewerPct.value = Math.min(70, Math.max(20, pct));
-  };
-  const onUp = (ev: PointerEvent) => {
-    divider.releasePointerCapture(ev.pointerId);
-    divider.removeEventListener("pointermove", onMove);
-    divider.removeEventListener("pointerup", onUp);
-  };
-  divider.addEventListener("pointermove", onMove);
-  divider.addEventListener("pointerup", onUp);
+const viewerPreference = ref<number | null>(null);
+const debugSplit = ref<HTMLElement>();
+const debugHeight = ref(0);
+const debugWidth = ref(window.innerWidth);
+const shortDebug = computed(() => debugHeight.value > 0 && debugHeight.value < 400);
+const splitHeight = computed(() => Math.max(0, debugHeight.value - 10));
+const defaultResponsePercent = computed(() => debugHeight.value > 0 && debugHeight.value < 550 ? 50 : 54);
+const minResponsePercent = computed(() => splitHeight.value ? Math.max(20, 192 / splitHeight.value * 100) : 20);
+const maxResponsePercent = computed(() => splitHeight.value ? Math.min(70, 100 - 184 / splitHeight.value * 100) : 70);
+const clampResponsePercent = (value: number) => Math.min(maxResponsePercent.value, Math.max(minResponsePercent.value, value));
+const viewerPct = computed(() => clampResponsePercent(viewerPreference.value ?? defaultResponsePercent.value));
+const responseHeight = computed(() => splitHeight.value ? `${splitHeight.value * viewerPct.value / 100}px` : `${viewerPct.value}%`);
+const compactApiTools = computed(() => debugWidth.value < 680);
+const apiHead = ref<HTMLElement>();
+const apiHeadMenu = ref<InstanceType<typeof ActionMenu>>();
+const requestSection = ref<HTMLElement>();
+const responseSection = ref<HTMLElement>();
+const splitDrag = ref<{ id: number; y: number; percent: number; divider: HTMLElement }>();
+const apiTools = computed(() => [
+  { key: "history", label: t("debugLoop.historyTitle"), testId: "debug-history-open" },
+  { key: "import", label: t("api.import"), testId: "api-import-btn" },
+  { key: "suggest", label: t("ai.suggestBtn"), disabled: !editor.apiId || ai.suggestLoading, testId: "ai-suggest-btn" },
+  { key: "models", label: t("aiSettings.manageModels"), testId: "ai-manage-models" },
+]);
+function selectApiTool(key: string) {
+  if (key === "history") historyOpen.value = true;
+  else if (key === "import") importOpen.value = true;
+  else if (key === "suggest") void onAiSuggest();
+  else if (key === "models") ai.configDialogOpen = true;
 }
+function measureDebugLayout() {
+  const split = debugSplit.value;
+  const padding = split ? Number.parseFloat(getComputedStyle(split).paddingBottom) || 0 : 0;
+  debugHeight.value = Math.max(0, (split?.clientHeight ?? 0) - padding);
+  debugWidth.value = apiHead.value?.clientWidth || window.innerWidth;
+}
+let debugResize: ResizeObserver | undefined;
+watch([debugSplit, apiHead], ([split, head]) => {
+  debugResize?.disconnect();
+  measureDebugLayout();
+  if (typeof ResizeObserver !== "function") return;
+  debugResize = new ResizeObserver(measureDebugLayout);
+  if (split) debugResize.observe(split);
+  if (head) debugResize.observe(head);
+}, { flush: "post" });
+watch(compactApiTools, () => {
+  if (!apiHeadMenu.value?.hasFocus()) return;
+  apiHeadMenu.value.close(false);
+  void nextTick(() => apiHead.value?.querySelector<HTMLElement>('[data-testid="debug-history-open"]')?.focus());
+});
+onMounted(() => {
+  window.addEventListener("resize", measureDebugLayout);
+  window.addEventListener("blur", endSplitDrag);
+});
+onBeforeUnmount(() => {
+  debugResize?.disconnect();
+  window.removeEventListener("resize", measureDebugLayout);
+  window.removeEventListener("blur", endSplitDrag);
+  endSplitDrag();
+});
+watch([debugSplit, shortDebug, () => activeRequestTab.value?.tabId], endSplitDrag);
 
-function onDividerDblClick() {
-  viewerPct.value = 40;
+function onDividerDown(event: PointerEvent) {
+  if (event.button !== 0 || shortDebug.value || !splitHeight.value) return;
+  const divider = event.currentTarget as HTMLElement;
+  splitDrag.value = { id: event.pointerId, y: event.clientY, percent: viewerPct.value, divider };
+  divider.setPointerCapture?.(event.pointerId);
+}
+function onDividerMove(event: PointerEvent) {
+  const drag = splitDrag.value;
+  if (drag?.id !== event.pointerId || !splitHeight.value) return;
+  viewerPreference.value = clampResponsePercent(drag.percent + (drag.y - event.clientY) / splitHeight.value * 100);
+}
+function endSplitDrag() {
+  const drag = splitDrag.value;
+  splitDrag.value = undefined;
+  if (drag?.divider.hasPointerCapture?.(drag.id)) drag.divider.releasePointerCapture(drag.id);
+}
+function onDividerKey(event: KeyboardEvent) {
+  const values: Record<string, number> = { ArrowUp: viewerPct.value + 5, ArrowDown: viewerPct.value - 5,
+    Home: minResponsePercent.value, End: maxResponsePercent.value, Enter: defaultResponsePercent.value };
+  if (!(event.key in values)) return;
+  event.preventDefault();
+  viewerPreference.value = event.key === "Enter" ? null : clampResponsePercent(values[event.key]!);
+}
+function focusDebugSection(section: HTMLElement | undefined) {
+  section?.scrollIntoView({ block: "start" });
+  section?.focus({ preventScroll: true });
 }
 </script>
 
 <template>
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
-      <TopBar :workspace="workspace" :tree="tree" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" @manage-connections="manageConnections" />
+      <TopBar :workspace="workspace" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ presentedError }}</template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
       </a-alert>
-      <div v-if="syncScope" class="sync-project-entry"><button data-testid="sync-entry" @click="syncOpen = true">{{ t('sync.title') }}</button></div>
-      <div v-if="syncOpen && syncScope" class="sync-workbench"><SyncPanel :store="synchronization" :modules="syncModules" :api="apicc" :contract-project-id="syncScope.kind === 'online' ? online.execution.project?.id : syncScope.locator.projectId" :read-only="syncScope.kind === 'local' && workspace.readOnly" @close="syncOpen = false" /></div>
-      <div class="body">
+      <div v-if="syncOpen && syncScope" class="sync-workbench" @keydown.esc.stop="closeSyncPanel()">
+        <SyncPanel :store="synchronization" :modules="syncModules" :api="apicc" :contract-project-id="syncScope.kind === 'online' ? online.execution.project?.id : syncScope.locator.projectId" :read-only="syncScope.kind === 'local' && workspace.readOnly" @close="closeSyncPanel()" />
+      </div>
+      <div :ref="setWorkbenchBody" class="body">
         <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
              在线模式全禁用 -->
         <ModuleRail
           v-if="!isHome"
           :view="view"
           :gate="railGate"
+          :environment="environmentSelection"
+          :environment-loading="showDebugEnvironment && !!activeRequestTab && !environmentSelection"
+          :directory-overlay="directoryOverlay"
+          :directory-open="directoryOpen"
           @update:view="(v: SwitchView) => (view = v)"
-        />
+          @toggle-directory="toggleDirectory"
+        >
+          <template v-if="projectToolItems.length && !useDirectoryTools" #tools>
+            <ActionMenu ref="projectToolsMenu" class="rail-project-tools" test-id="project-tools"
+              :label="t('workbench.projectTools')" :items="projectToolItems"
+              @opened="openedProjectToolsKey = projectToolsKey" @select="selectProjectTool">
+              <EllipsisOutlined />
+            </ActionMenu>
+          </template>
+        </ModuleRail>
         <!-- API 栏（M11 按模块专用）：接口=树；测试=用例/场景导航；运行/工作流/环境与主页隐藏。
              在线模式侧栏必须可见（回归修复：M11 的 !online.activeWorkspace 条件把在线树整个藏死，
              导致在线工作区无任何项目入口——在线时 treeRoot 已切在线树，侧栏跟随显示） -->
         <div
-          v-show="!isHome && (onlineMode || view === 'api')"
+          v-show="directoryVisible"
+          id="workbench-directory"
           class="sider-col-wrap"
+          :class="{ 'directory-overlay': directoryOverlay }"
           data-testid="sidebar-api"
+          @keydown.esc.stop="directoryOverlay && directoryOpen && toggleDirectory()"
         >
-          <div class="sider-head">
-            <span class="sider-title" data-testid="sider-title">{{ siderTitle }}</span>
-          </div>
-          <div class="sider-search">
-            <a-input
-              v-model:value="treeFilter"
-              size="small"
-              allow-clear
-              data-testid="tree-search"
-              :placeholder="t('tree.search')"
-            />
-          </div>
           <!-- workflow-design 注入（审查 I2）：侧树重命名命中设计器正开的流时强制卸载会话。
                在线上下文（任务 5：内容上下文由活跃签驱动）：treeRoot 切在线树视图、readonly
                只读装饰、空态文案覆写 -->
@@ -1264,12 +1611,32 @@ function onDividerDblClick() {
             :report-error="reportError"
             :module-memory="moduleMemory"
             :filter="treeFilter"
+            show-create-in-header
+            :compact="compactDirectory"
+            :hidden="!directoryVisible"
             :active-project-locator="activeProjectLocator"
-            :tree-root="onlineMode ? online.onlineTree : undefined"
+            :tree-root="onlineMode ? (onlineProjectContextAvailable ? online.onlineTree : null) : undefined"
             :readonly="onlineMode"
             :empty-text="onlineMode ? t('online.treeEmpty') : undefined"
             @select="onSelect"
-          />
+          >
+            <template #search>
+              <a-input ref="treeSearch" v-model:value="treeFilter" size="small" allow-clear data-testid="tree-search"
+                :aria-label="t('tree.search')" :placeholder="t('tree.search')" />
+            </template>
+          </SideTree>
+          <div v-if="projectToolItems.length && useDirectoryTools" class="directory-project-tools">
+            <template v-if="directDirectorySync">
+              <span class="project-tools-label">{{ t("workbench.projectTools") }}</span>
+              <button type="button" class="directory-sync" data-testid="sync-entry" @click="openSyncPanel">
+                <SyncOutlined /> {{ t("sync.title") }}
+              </button>
+            </template>
+            <ActionMenu v-else ref="projectToolsMenu" test-id="project-tools" :label="t('workbench.projectTools')" :items="projectToolItems"
+              @opened="openedProjectToolsKey = projectToolsKey" @select="selectProjectTool">
+              <EllipsisOutlined /> {{ t("workbench.projectTools") }}
+            </ActionMenu>
+          </div>
         </div>
         <!-- 测试模块侧栏（M11）：与接口树各自独立记忆 -->
         <div v-show="!isHome && view === 'test' && !onlineMode" class="sider-col-wrap" data-testid="sidebar-test">
@@ -1294,6 +1661,7 @@ function onDividerDblClick() {
             :editor="editor"
             :root="workspace.root"
             :project="selectedProjectLocator"
+            :has-drafts="requestHasDrafts"
             @new-free="openFreeRequestTab"
             @activate="(tabId) => { void activateRequestTab(tabId).catch(reportError); }"
           />
@@ -1315,13 +1683,20 @@ function onDividerDblClick() {
             :open-online-workspace="openOnlineWorkspaceFromHome"
             :open-online-project="openOnlineProjectFromHome"
             :active-online-project-id="homeActiveOnlineProjectId"
+            :active-online-workspace-target="activeOnlineWorkspaceTarget"
+            :retained-online-workspace-target="retainedOnlineWorkspaceTarget"
+            @online-workspace-action="requestOnlineWorkspaceAction"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
-          <OnlineProjectAssets v-else-if="onlineMode && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
-          <OnlineApiEditor v-else-if="onlineMode" class="panel-view" :online="online" />
+          <OnlineProjectAssets v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
+          <OnlineApiEditor v-else-if="onlineMode && onlineProjectContextAvailable" class="panel-view" :online="online" />
+          <div v-else-if="onlineMode" class="panel-view online-context-unavailable">
+            <p>{{ t("online.sessionErrors.online-workspace-session-missing") }}</p>
+            <a-button @click="tabs.activateHome()">{{ t("nav.home") }}</a-button>
+          </div>
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">
-            <div class="api-head" data-testid="api-head">
+            <div ref="apiHead" class="api-head" data-testid="api-head">
               <a-radio-group v-model:value="apiSubView" size="small" class="sub-tabs" data-testid="api-sub-tabs">
                 <a-radio-button
                   v-for="s in SUB_VIEWS"
@@ -1335,7 +1710,7 @@ function onDividerDblClick() {
               </a-radio-group>
               <span class="head-spacer"></span>
               <!-- AI 入口（M6-C 任务 1）自 debug-ai-bar 收编于接口头部：全子视图可达 -->
-              <a-space :size="8">
+              <a-space v-if="!compactApiTools" :size="6">
                 <a-button size="small" data-testid="debug-history-open" @click="historyOpen = true">{{ t("debugLoop.historyTitle") }}</a-button>
                 <a-button size="small" data-testid="api-import-btn" @click="importOpen = true">
                   {{ t("api.import") }}
@@ -1353,6 +1728,9 @@ function onDividerDblClick() {
                   {{ t("aiSettings.manageModels") }}
                 </a-button>
               </a-space>
+              <ActionMenu v-else ref="apiHeadMenu" test-id="api-tools" :label="t('requestWorkbench.apiTools')" :items="apiTools" @select="selectApiTool">
+                <EllipsisOutlined /> {{ t("requestWorkbench.apiTools") }}
+              </ActionMenu>
             </div>
             <!-- 导入向导（M10 归接口模块；轨二 module 模式）：打开时替代子视图区域——
                  产物集合并入当前项目（baseUrl 进模块变量、不造环境），无落点选择 -->
@@ -1367,9 +1745,9 @@ function onDividerDblClick() {
               :report-error="reportError"
               @close="importOpen = false"
             />
-            <!-- 调试子视图：上编辑器 / 可拖拽分割条 / 下响应（结构契约：main-split 四子元素） -->
-            <template v-else-if="apiSubView === 'debug'">
-              <div class="editor-pane" data-testid="editor-pane">
+            <div v-else-if="apiSubView === 'debug'" ref="debugSplit" class="debug-split" data-testid="debug-split" :class="{ 'short-debug': shortDebug }">
+              <div ref="requestSection" class="editor-pane" data-testid="editor-pane" tabindex="-1">
+                <button v-if="shortDebug" type="button" class="debug-jump" @click="focusDebugSection(responseSection)">{{ t("responseWorkbench.goToResponse") }}</button>
                 <RequestEditor
                   :editor="editor"
                   :debug="debug"
@@ -1377,6 +1755,10 @@ function onDividerDblClick() {
                   :assets="activeRequestTab?.source.kind === 'asset' ? assets : undefined"
                   :project-locator="activeRequestTab?.project ?? null"
                   :request-tab="activeRequestTab"
+                  :environment-selection="environmentSelection"
+                  :environment-loading="!!activeRequestTab && !environmentSelection"
+                  :request-path="requestPath"
+                  :has-drafts="activeRequestTab ? requestHasDrafts(activeRequestTab.tabId) : editor.dirty"
                   :project-node="activeRequestTab ? workspace.findProject(activeRequestTab.project) : null"
                   :create-free-module="createFreeRequestModule"
                   :save-free-request="saveFreeRequestAsApi"
@@ -1385,14 +1767,27 @@ function onDividerDblClick() {
                 />
               </div>
               <div
+                v-if="!shortDebug"
                 class="split-divider"
                 data-testid="split-divider"
                 role="separator"
-                :aria-label="t('app.splitDivider')"
+                aria-orientation="horizontal"
+                :aria-label="t('responseWorkbench.splitter')"
+                :aria-valuemin="Math.round(minResponsePercent)"
+                :aria-valuemax="Math.round(maxResponsePercent)"
+                :aria-valuenow="Math.round(viewerPct)"
+                :aria-valuetext="t('responseWorkbench.responsePercent', { percent: Math.round(viewerPct) })"
+                tabindex="0"
                 @pointerdown="onDividerDown"
-                @dblclick="onDividerDblClick"
+                @pointermove="onDividerMove"
+                @pointerup="endSplitDrag"
+                @pointercancel="endSplitDrag"
+                @lostpointercapture="endSplitDrag"
+                @keydown="onDividerKey"
+                @dblclick="viewerPreference = null"
               ></div>
-              <div class="viewer-pane" data-testid="viewer-pane" :style="{ height: `${viewerPct}%` }">
+              <div ref="responseSection" class="viewer-pane" data-testid="viewer-pane" tabindex="-1" :style="shortDebug ? undefined : { height: responseHeight }">
+                <button v-if="shortDebug" type="button" class="debug-jump" @click="focusDebugSection(requestSection)">{{ t("responseWorkbench.backToRequest") }}</button>
                 <ResponseViewer
                   :result="activeRequestTab ? debug.requestTabState(activeRequestTab).result : debug.result"
                   :sending="activeRequestTab ? debug.requestTabState(activeRequestTab).sending : debug.sending"
@@ -1401,7 +1796,7 @@ function onDividerDblClick() {
                   :api="apicc"
                 />
               </div>
-            </template>
+            </div>
             <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :workspace="workspace" :assets="assets" :report-error="reportError" :read-only="workspace.readOnly" />
           </template>
           <EnvPanel
@@ -1506,8 +1901,26 @@ function onDividerDblClick() {
     <OnlineLoginDialog :online="online" :apicc="apicc" :tabs="tabs" @manage-connections="manageConnections" />
     <!-- 在线推送冲突对话框（任务 3 裁定 C）：online.conflict 驱动 -->
     <OnlineConflictDialog :online="online" />
-    <!-- 在线工作区迁移向导（任务 3 裁定 D）：TopBar 迁移入口置 migrateDialogOpen -->
-    <OnlineMigrateDialog :online="online" :api="apicc" :report-error="reportError" />
+    <OnlineMigrateDialog :online="online" :api="apicc" :report-error="reportError" :can-migrate="canMigrateWorkspace" />
+    <ConfirmDialog
+      :open="exitWorkspace !== null"
+      :title="t('online.exitOnline')"
+      :error="workspaceActionError ? t(workspaceActionError) : undefined"
+      @confirm="confirmWorkspaceExit"
+      @cancel="cancelWorkspaceExit"
+    >
+      <div v-if="exitWorkspace" class="exit-impact" data-testid="online-exit-impact">
+        <p><strong>{{ exitWorkspace.session.workspace.name }}</strong> · {{ exitWorkspace.target.baseUrl }}</p>
+        <p>{{ t("online.exitConfirmDesc", { count: exitWorkspace.impact.length }) }}</p>
+        <ul v-if="exitWorkspace.impact.length">
+          <li v-for="(tab, index) in exitWorkspace.impact" :key="tab.tabId" :data-testid="`online-exit-tab-${index}`">
+            {{ tab.projectName }}
+            <span v-if="tab.hasDrafts" data-testid="online-exit-draft">（{{ t("online.exitHasDraft") }}）</span>
+          </li>
+        </ul>
+        <p v-else>{{ t("online.exitNoTabs") }}</p>
+      </div>
+    </ConfirmDialog>
     <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：接口头部入口按钮置显隐/拉取 -->
     <AiConfigDialog :ai="ai" />
     <AiSuggestionsDrawer :ai="ai" />
@@ -1519,43 +1932,56 @@ function onDividerDblClick() {
 </template>
 
 <style>
-.sync-project-entry{flex:none;padding:4px 14px;border-bottom:1px solid var(--border)}
-.sync-project-entry button{padding:4px 12px;background:transparent;color:inherit;border:1px solid var(--border);border-radius:4px;cursor:pointer}
-.sync-workbench{position:fixed;inset:65px 20px 20px max(20px,12vw);z-index:1040;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;min-width:0;overflow:hidden}
+.exit-impact { max-height: min(240px, 48vh); overflow: auto; overflow-wrap: anywhere; }
+.online-context-unavailable { padding: 16px; }
+.sync-workbench{position:fixed;inset:54px 12px 12px max(12px,9vw);z-index:1040;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;min-width:0;overflow:hidden}
 .collaboration-drawer{position:fixed;inset:24px 24px 24px max(24px,20vw);z-index:1050;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;padding:16px;overflow:auto;min-width:0}
 html, body, #app { height: 100%; margin: 0; }
 .app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
-.body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
-/* 树面板列（M8）：240px 定宽 + 头部（模块标题/搜索）+ 侧树；替代原 a-layout-sider */
+.body { position: relative; flex: 1; display: flex; min-height: 0; overflow: hidden; background: var(--workbench-background); }
 .sider-col-wrap {
-  width: 240px;
+  width: 248px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   border-right: 1px solid var(--border);
-  background: var(--subtle);
+  background: var(--workbench-directory);
 }
-.sider-head { padding: 14px 12px 0; }
-.sider-title { font-weight: 600; font-size: 13px; }
-.sider-search { padding: 8px 12px; }
 .side-col { flex: 1; min-height: 0; }
+.directory-project-tools { padding: 6px 8px; border-top: 1px solid var(--border); }
+.directory-project-tools > button { width: 100%; justify-content: flex-start; }
+.project-tools-label { display: block; padding: 0 6px; color: var(--text-muted); font-size: 11px; }
+.directory-sync { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.directory-sync:hover { background: var(--active-weak); }
+.directory-sync:focus-visible { outline-offset: -2px; }
+.rail-project-tools { width: 100%; }
+.directory-overlay { position: absolute; z-index: 12; left: 56px; inset-block: 0; width: min(248px, calc(100% - 56px)); box-shadow: 3px 0 12px rgb(20 35 61 / 18%); }
+@media (max-width: 1023px) { .sider-col-wrap:not(.directory-overlay) { width: 208px; } }
 .right-col-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; flex: 1; }
 .right-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; flex: 1; }
-.editor-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-/* 可拖拽分割条（M8）：5px 命中区，hover/拖拽高亮 */
+.debug-split { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 0 8px 8px; overflow: hidden; }
+.editor-pane, .viewer-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+.editor-pane { flex: 1; }
 .split-divider {
   flex: none;
-  height: 5px;
+  position: relative;
+  height: 10px;
   cursor: row-resize;
-  border-top: 1px solid var(--border);
   background: transparent;
+  touch-action: none;
 }
-.split-divider:hover { background: var(--active-weak); }
-.viewer-pane { flex: none; min-height: 0; overflow: hidden; border-top: 1px solid var(--border); box-sizing: border-box; }
-/* 接口模块头部（M8）：子视图页签 + 右侧 AI 入口 */
-.api-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.split-divider::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--border); }
+.split-divider::after { content: ""; position: absolute; left: 50%; top: 50%; width: 32px; height: 3px; border-radius: 3px; background: var(--text-muted); transform: translate(-50%, -50%); }
+.split-divider:hover, .split-divider:focus-visible { background: var(--active-weak); outline: 2px solid var(--accent); outline-offset: -2px; }
+.viewer-pane { flex: none; box-sizing: border-box; }
+.viewer-pane > .viewer { flex: 1; }
+.debug-split.short-debug { display: block; overflow-y: auto; }
+.short-debug .editor-pane { min-height: 225px; max-height: min(540px, 100vh); }
+.short-debug .viewer-pane { height: max(270px, 60vh); margin-top: 8px; }
+.debug-jump { flex: none; align-self: flex-start; margin: 5px 8px 0; padding: 3px 6px; border: 0; border-radius: 4px; background: var(--subtle); color: var(--accent); font: inherit; cursor: pointer; }
+.api-head { display: flex; flex: none; align-items: center; min-height: 34px; gap: 8px; padding: 3px 8px; }
 .api-head .head-spacer { flex: 1; }
 .panel-view { flex: 1; min-height: 0; overflow: auto; }
 /* 设计器视图：三区布局占满内容区（画布需要确定高度的容器，否则 Vue Flow 视口失真） */

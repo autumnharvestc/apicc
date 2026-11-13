@@ -6,7 +6,7 @@
 // 计划 C 任务 2（会话表化）：开/关/激活改表语义——多工作区并存驻留、activateWorkspace 显式
 // 切换、编辑缓冲按工作区隔离（切工作区草稿零丢失）、open 失败不抢活跃、closeWorkspace(id)
 // 出表、logout 全清。裁定 E 互斥退役：本地/在线并存驻留。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +83,43 @@ async function createSecondWorkspace(api: ApiccApi): Promise<OnlineWorkspaceSumm
 }
 
 describe("打开/关闭在线工作区（计划 C 任务 2：会话表语义）", () => {
+  it("R7 a second server with the same workspace ID cannot replace the resident session", async () => {
+    const { api, store } = await opened();
+    const workspace = store.workspaces[0]!;
+    const original = store.sessions[workspace.id]!;
+    const open = vi.spyOn(api, "onlineWorkspaceOpen");
+    store.addProfile("http://127.0.0.1:8081", "乙");
+    await store.login("alice", "password8");
+    await store.openWorkspace({ ...workspace, name: "另一服务器的同编号工作区" });
+    expect(open).not.toHaveBeenCalled();
+    expect(store.error).toBe("online-workspace-server-conflict");
+    expect(store.activeWorkspace).toBeNull();
+    expect(store.sessions[workspace.id]).toBe(original);
+    await store.activateWorkspace(workspace.id);
+    expect(store.activeWorkspace).toBeNull();
+    store.setActive(SERVER);
+    expect(store.activeWorkspace).toBe(original.workspace);
+    open.mockRestore();
+  });
+
+  it("R7 a pending migration scan cannot map or push files after switching server", async () => {
+    const { api, store } = await opened();
+    const scan = { files: [{ path: "group/project/project.yaml", hash: "h", content: "name: demo", projectDir: { group: "group", project: "project" } }] };
+    let finishScan!: (value: typeof scan) => void;
+    api.onlineMigrateScan = () => new Promise<typeof scan>((resolve) => { finishScan = resolve; });
+    const map = vi.spyOn(api, "onlineProjectMapping");
+    const batch = vi.spyOn(api, "onlineFilesBatch");
+    const migrating = store.migratePush("/tmp/synthetic-workspace");
+    expect(store.migrating).toBe(true);
+    store.addProfile("http://127.0.0.1:8081", "乙");
+    await store.login("alice", "password8");
+    finishScan(scan);
+    await migrating;
+    expect(map).not.toHaveBeenCalled();
+    expect(batch).not.toHaveBeenCalled();
+    expect(store.migrationResult).toBeNull();
+    expect(store.migrating).toBe(false);
+  });
   it("openWorkspace 入表：sessions[id] 驻留 + activeWorkspaceId 指向；兼容面 activeWorkspace/onlineTree/projects 转发活跃会话", async () => {
     const { store } = await setup();
     const ws = store.workspaces[0]!;

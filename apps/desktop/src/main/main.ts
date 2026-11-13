@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, shell } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IpcChannel } from "../shared/channels.js";
@@ -15,6 +15,7 @@ import { attachQuitGuard } from "./quitGuard.js";
 import { lossyExportDialog } from "./designExportDialog.js";
 import { atomicWriteFile } from "./atomicFile.js";
 import { defaultCredentialPrivateRoot, defaultNetworkPrivateRoot, defaultOAuthPrivateRoot } from "@apicc/core";
+import { WindowChromeChannel, windowChromeColors, type WindowChromeTheme } from "../shared/window-chrome.js";
 
 // package.json 为 type:module，编译产物是 ESM，须用 import.meta 推导 __dirname。
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,18 +49,73 @@ app.on("before-quit", (event) => {
   void shutdown.then(continueQuit, continueQuit);
 });
 
+const titleBarHeight = 46;
+const mainWindows = new WeakSet<BrowserWindow>();
+const applicationMenuOpen = new WeakSet<BrowserWindow>();
+
+function showApplicationMenu(win: BrowserWindow, keyboard = false): Promise<void> {
+  const menu = Menu.getApplicationMenu();
+  if (!menu || applicationMenuOpen.has(win)) return Promise.resolve();
+  applicationMenuOpen.add(win);
+  const { x, y } = win.getContentBounds();
+  return new Promise<void>((done) => {
+    menu.popup({
+      window: win,
+      ...(keyboard ? { x: x + 12, y: y + titleBarHeight } : {}),
+      callback: () => { applicationMenuOpen.delete(win); done(); },
+    });
+  }).catch((error) => {
+    applicationMenuOpen.delete(win);
+    throw error;
+  });
+}
+
+function windowOverlay(theme: WindowChromeTheme) {
+  return nativeTheme.shouldUseHighContrastColors
+    ? { color: "#000000", symbolColor: "#ffffff", height: titleBarHeight }
+    : { ...windowChromeColors[theme], height: titleBarHeight };
+}
+
 function createWindow(): BrowserWindow {
+  const windowsOverlay = process.platform === "win32";
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     show: process.env.APICC_SMOKE_HIDE_WINDOW !== "1",
+    ...(windowsOverlay ? {
+      titleBarStyle: "hidden",
+      titleBarOverlay: windowOverlay(nativeTheme.shouldUseDarkColors ? "dark" : "light"),
+      autoHideMenuBar: true,
+    } : {}),
     webPreferences: {
-            preload: join(__dirname, "../preload.cjs"),
+      preload: join(__dirname, "../preload.cjs"),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
     },
   });
+  mainWindows.add(win);
+  if (windowsOverlay) {
+    // Electron retains accelerators on hidden title bars but skips the native
+    // menu bar. Open its application menu on a standalone Alt release.
+    let standaloneAlt = false;
+    // The OS consumes Alt+Space before Chromium sees the Space key. Cancel the
+    // pending Alt when Windows starts initializing its system menu.
+    const wmInitMenu = 0x0116;
+    const wmInitMenuPopup = 0x0117;
+    win.hookWindowMessage(wmInitMenu, () => { standaloneAlt = false; });
+    win.hookWindowMessage(wmInitMenuPopup, () => { standaloneAlt = false; });
+    win.webContents.on("before-input-event", (event, input) => {
+      if (input.type === "keyDown") {
+        standaloneAlt = input.key === "Alt" && !input.control && !input.meta && !input.shift;
+      } else if (input.key === "Alt" && standaloneAlt) {
+        standaloneAlt = false;
+        event.preventDefault();
+        void showApplicationMenu(win, true).catch(console.error);
+      }
+    });
+    win.on("blur", () => { standaloneAlt = false; });
+  }
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) void win.loadURL(devUrl);
   else void win.loadFile(join(__dirname, "../../dist-renderer/index.html"));
@@ -185,6 +241,19 @@ app.whenReady().then(() => {
     // start/wait/cancel and renderer teardown to event.sender, never a renderer-supplied id.
     ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
   }
+  ipcMain.handle(WindowChromeChannel.SetTheme, (event, theme: unknown) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (process.platform === "win32" && win && mainWindows.has(win)
+        && event.senderFrame === event.sender.mainFrame && (theme === "light" || theme === "dark")) {
+      win.setTitleBarOverlay(windowOverlay(theme));
+    }
+  });
+  ipcMain.handle(WindowChromeChannel.ShowApplicationMenu, (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && mainWindows.has(win) && event.senderFrame === event.sender.mainFrame) {
+      return showApplicationMenu(win);
+    }
+  });
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

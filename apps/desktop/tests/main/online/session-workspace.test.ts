@@ -80,6 +80,20 @@ const WS2 = { workspaceId: "ws-2", name: "另一空间", myRole: "VIEWER" as con
 const treeCalls = (calls: CapturedRequest[]) => calls.filter((c) => c.url.endsWith("/tree")).length;
 
 describe("online session 工作区会话表（计划 C 任务 1）", () => {
+  it("rejects a different server reusing a resident workspace ID or cache", async () => {
+    const { session, calls } = setup();
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    session.openWorkspace(WS);
+    await session.getTreeView(WS.workspaceId);
+    await session.login({ baseUrl: "https://another.example.test", username: "alice", password: "password8" });
+    expect(() => session.openWorkspace({ ...WS, name: "Same ID, different server" })).toThrow("online-workspace-server-conflict");
+    expect(() => session.activateWorkspace(WS.workspaceId)).toThrow("online-workspace-server-conflict");
+    await expect(session.getTreeView(WS.workspaceId)).rejects.toThrow("online-workspace-server-conflict");
+    await expect(session.batchPush({ workspaceId: WS.workspaceId, files: [] })).rejects.toThrow("online-workspace-server-conflict");
+    await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });
+    expect((await session.getTreeView(WS.workspaceId)).name).toBe(WS.name);
+    expect(treeCalls(calls)).toBe(1);
+  });
   it("openWorkspace 入表并置活跃（不发网络）；getTreeView 首取服务端树并映射 DTO + 项目角色，树缓存生效（第二次不再发 /tree）", async () => {
     const { session, calls } = setup();
     await session.login({ baseUrl: SERVER, username: "alice", password: "password8" });

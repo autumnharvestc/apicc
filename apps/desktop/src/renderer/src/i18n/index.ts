@@ -8,7 +8,7 @@ const STORAGE_KEY = "apicc.locale";
 
 /** Only known session codes at the end of plain/main IPC errors are presentation keys. */
 export function onlineSessionErrorKey(message: string | null | undefined): string | null {
-  const code = message?.match(/(?:^|Error: )(online-not-signed-in|online-workspace-not-open|online-session-changed)(?:['"])?$/)?.[1];
+  const code = message?.match(/(?:^|Error: )(online-not-signed-in|online-workspace-not-open|online-session-changed|online-workspace-server-conflict|online-tab-server-mismatch|online-tab-server-unknown)(?:['"])?$/)?.[1];
   return code ? `online.sessionErrors.${code}` : null;
 }
 

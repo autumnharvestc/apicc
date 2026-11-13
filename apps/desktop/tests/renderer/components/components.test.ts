@@ -180,6 +180,11 @@ async function clickEditorSaveAndWait(wrapper: VueWrapper, editor: ReturnType<ty
 }
 
 /** 读取 a-select 受控 :value 绑定值（显示侧断言用，不经 antd 内部渲染）。 */
+async function chooseDebugEnvironment(wrapper: VueWrapper, key: string) {
+  await wrapper.get('[data-testid="debug-env-select"]').trigger("click");
+  await expectBody(`debug-env-option-${key}`).trigger("click");
+}
+
 function selectValue(wrapper: VueWrapper, testid: string): unknown {
   const select = wrapper
     .findAllComponents({ name: "ASelect" })
@@ -365,10 +370,11 @@ describe("SideTree", () => {
       const expandedBefore = row.find('[data-testid="tree-group-toggle"]').text();
       await row.find('[data-testid="tree-more"]').trigger("click");
       expect(row.find('[data-testid="tree-group-toggle"]').text()).toBe(expandedBefore);
-      expect(row.find('[data-testid="new-api"]').exists()).toBe(true);
-      expect(row.find('[data-testid="new-folder"]').exists()).toBe(true);
-      expect(row.find('[data-testid="container-manage"]').exists()).toBe(true);
+      expect(bodyHas("new-api")).toBe(true);
+      expect(bodyHas("new-folder")).toBe(true);
+      expect(bodyHas("container-manage")).toBe(true);
       expect(wrapper.emitted("select")).toBeUndefined();
+      await new DOMWrapper(document.body).get('[role="menu"]').trigger("keydown", { key: "Escape" });
     }
 
     await rename.trigger("click");
@@ -393,11 +399,27 @@ describe("SideTree", () => {
     expect(wrapper.emitted("select")).toBeTruthy();
   });
 
+  it("R7 目录使用方向键展开和收起项目节点", async () => {
+    const { wrapper, workspace } = await mountWith(SideTree);
+    const group = workspace.tree!.children.find((node) => node.kind === "group" && node.children.length)!;
+    const tree = wrapper.getComponent({ name: "ATree" });
+    const groupRow = wrapper.findAll(".node").find((row) => row.find(".label").exists() && row.get(".label").text() === group.label)!;
+    const toggle = () => groupRow.get('[data-testid="tree-group-toggle"]');
+    tree.vm.$emit("expand", [group.key], { node: { dto: group }, expanded: true, nativeEvent: new KeyboardEvent("keydown", { key: "ArrowRight" }) });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="tree-api"]').exists()).toBe(true);
+    expect(toggle().attributes("aria-expanded")).toBe("true");
+    tree.vm.$emit("expand", [], { node: { dto: group }, expanded: false, nativeEvent: new KeyboardEvent("keydown", { key: "ArrowLeft" }) });
+    await flushPromises();
+    expect(toggle().attributes("aria-expanded")).toBe("false");
+  });
+
   it("新建接口：集合动作钮经对话框输入后创建并选中", async () => {
     const { wrapper, tree } = await mountWith(SideTree);
     await expandAllCollapsedTreeContainers(wrapper);
-    await wrapper.find('[data-testid="tree-more"]').trigger("click");
-    await wrapper.find('[data-testid="new-api"]').trigger("click");
+    const module = wrapper.findAll(".node").find((row) => row.find(".kind-icon.mod").exists())!;
+    await module.get('[data-testid="tree-more"]').trigger("click");
+    await expectBody("new-api").trigger("click");
     // 创建走 ConfirmDialog 复用的输入对话框（a-modal 渲染于 body）
     const input = expectBody("dialog-input");
     await input.setValue("新接口");
@@ -413,12 +435,32 @@ describe("SideTree", () => {
     expect(wrapper.text()).toContain("新接口");
   });
 
+  it("R7 目录首行的新建菜单以当前模块为目标，窄树的更多菜单保留具名操作", async () => {
+    const { wrapper, workspace } = await mountWith(SideTree, { showCreateInHeader: true, compact: true });
+    const { collection } = seededProjectAndApi(workspace);
+    await expandAllCollapsedTreeContainers(wrapper);
+    const module = wrapper.findAll(".node").find((row) => row.find(".kind-icon.mod").exists())!;
+    await module.get(".row-title").trigger("click");
+    await wrapper.get('[data-testid="directory-create"]').trigger("click");
+    expect(wrapper.get('[data-testid="directory-create"]').attributes("aria-label")).toContain(collection.label);
+    expect(bodyHas("new-api")).toBe(true);
+    expect(bodyHas("new-folder")).toBe(true);
+    expect(bodyHas("new-group")).toBe(false);
+    await new DOMWrapper(document.body).get('[role="menu"]').trigger("keydown", { key: "Escape" });
+    await module.get('[data-testid="tree-more"]').trigger("click");
+    expect(module.find('[data-testid="node-rename"]').exists()).toBe(false);
+    expect(expectBody("node-rename").text()).toBe("重命名");
+    expect(expectBody("node-delete").text()).toBe("删除");
+    expect(wrapper.emitted("select")).toHaveLength(1);
+  });
+
   it("对话框 run 拒绝时经 reportError 上报（宽审查 I1，不再静默吞没）", async () => {
     const errors: unknown[] = [];
     const { wrapper, api, tree } = await mountWith(SideTree, { reportError: (e: unknown) => { errors.push(e); } });
     await expandAllCollapsedTreeContainers(wrapper);
-    await wrapper.find('[data-testid="tree-more"]').trigger("click");
-    await wrapper.find('[data-testid="new-api"]').trigger("click");
+    const module = wrapper.findAll(".node").find((row) => row.find(".kind-icon.mod").exists())!;
+    await module.get('[data-testid="tree-more"]').trigger("click");
+    await expectBody("new-api").trigger("click");
     await expectBody("dialog-input").setValue("x");
     api.nodeCreate = async () => { throw new Error("boom"); };
     const create = captureTreeCreate(tree);
@@ -691,25 +733,17 @@ describe("SideTree", () => {
 
 // —— M5-B 任务 1：正式 ApiAsset 契约下的协议编辑与字段适配（规格 D2/D8）。——
 
-/** 协议单选切换：经 ARadioGroup 组件级 update:value（与 chooseMode 同理，jsdom 不点真实 radio）。 */
-function chooseProtocol(wrapper: VueWrapper, value: "http" | "websocket" | "soap"): void {
-  antdComponent(wrapper, "ARadioGroup", "editor-protocol").vm.$emit("update:value", value);
+async function chooseProtocol(wrapper: VueWrapper, value: "http" | "websocket" | "soap"): Promise<void> {
+  await wrapper.get('[data-testid="editor-protocol"]').trigger("click");
+  await expectBody(`request-protocol-${value}`).trigger("click");
 }
 
 function chooseBodyKind(wrapper: VueWrapper, value: string): void {
   antdComponent(wrapper, "ARadioGroup", "body-kind").vm.$emit("update:value", value);
 }
 
-/** 读取协议单选组当前值（显示侧断言用，不经 antd 内部渲染）。 */
-function protocolValue(wrapper: VueWrapper): unknown {
-  return antdComponent(wrapper, "ARadioGroup", "editor-protocol").props("value");
-}
-
-/** 协议选项（值 + 标签）断言取用：jsdom 不点真实 radio，经 ARadioButton 组件 props/文本读取。 */
-function protocolOptionsOf(wrapper: VueWrapper): Array<{ value: unknown; label: string }> {
-  return wrapper
-    .findAllComponents({ name: "ARadioButton" })
-    .map((r) => ({ value: r.props("value"), label: r.text() }));
+function protocolValue(wrapper: VueWrapper): string {
+  return wrapper.get('[data-testid="editor-protocol"]').text();
 }
 
 /** 判定含指定标记的面板是否为激活面板：antd Tabs 对激活过的面板保留 DOM（去 -active 类），exists 不可作活跃判据。 */
@@ -964,7 +998,7 @@ describe("RequestEditor", () => {
     await flushPromises();
     expect(acquireResolvers).toHaveLength(1);
     expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(true);
-    chooseSelect(wrapper, "debug-env-select", secondEnvironment.id);
+    await chooseDebugEnvironment(wrapper, secondEnvironment.id);
     await flushPromises();
     await flushPromises();
     expect(wrapper.get('[data-testid="oauth-snapshot-status"]').text()).toContain("可用");
@@ -980,7 +1014,7 @@ describe("RequestEditor", () => {
     await flushPromises();
     expect((wrapper.get('[data-testid="oauth-acquire"]').element as HTMLButtonElement).disabled).toBe(false);
 
-    chooseSelect(wrapper, "debug-env-select", environment.id);
+    await chooseDebugEnvironment(wrapper, environment.id);
     await flushPromises();
     await flushPromises();
     await wrapper.get('[data-testid="oauth-profile-select"]').setValue(alternateProfile.profileId);
@@ -1175,7 +1209,7 @@ describe("RequestEditor", () => {
     const devEnvironment = editor.envs.find((environment) => environment.name === "dev");
     if (!devEnvironment) throw new Error("Created dev environment did not reload into the editor");
     const trace = traceDebugStartWait(api);
-    chooseSelect(wrapper, "debug-env-select", "dev");
+    await chooseDebugEnvironment(wrapper, "dev");
     chooseSelect(wrapper, "debug-case-select", JSON.stringify(["t2", "base"]));
     await clickDebugSendAndWait(wrapper, debug);
     expect(debug.selectedCase).toEqual({ caseId: "t2", scope: "base" });
@@ -1226,7 +1260,7 @@ describe("RequestEditor", () => {
     expect(debug.result?.mode).toBe("request");
   });
 
-  it("悬空环境选择显示回退：删环境后失效名不再显示，回退「无环境」（显示与 send 一致）", async () => {
+  it("R7 删除当前环境后阻止发送，显式选择无环境才恢复", async () => {
     const { wrapper, api, editor, debug, workspace } = await mountWith(RequestEditor);
     const { project, apiNode } = seededProjectAndApi(workspace);
     await editor.load(apiNode.locator);
@@ -1236,12 +1270,19 @@ describe("RequestEditor", () => {
     const caseOverride = JSON.parse(JSON.stringify(editor.api!.contract.request));
     caseOverride.path = "/case-only";
     editor.api!.cases[0]!.requestOverride = caseOverride;
-    chooseSelect(wrapper, "debug-env-select", "dev");
+    await chooseDebugEnvironment(wrapper, "dev");
     await flushPromises();
-    expect(selectValue(wrapper, "debug-env-select")).toBe("dev");
-    editor.envs.splice(0, editor.envs.length); // 模拟刷新结果已不含所选环境（send 回退 undefined → 无环境）
+    expect(wrapper.get('[data-testid="debug-env-select"]').text()).toBe("dev");
+    editor.envs.splice(0, editor.envs.length);
     await flushPromises();
-    expect(selectValue(wrapper, "debug-env-select")).toBe("");
+    expect(wrapper.get('[data-testid="debug-env-select"]').text()).toContain("环境已不可用");
+    const send = wrapper.get('[data-testid="request-send-slot"]');
+    expect(send.attributes("aria-disabled")).toBe("true");
+    const blocked = traceDebugStartWait(api);
+    await send.trigger("click");
+    expect(blocked.invocations).toHaveLength(0);
+    await chooseDebugEnvironment(wrapper, "none");
+    expect(wrapper.get('[data-testid="debug-env-select"]').text()).toBe("无环境");
     const trace = traceDebugStartWait(api);
     await clickDebugSendAndWait(wrapper, debug);
     expect(trace.invocations).toHaveLength(1);
@@ -1262,9 +1303,9 @@ describe("RequestEditor", () => {
     const { apiNode } = seededProjectAndApi(workspace);
     await editor.load(apiNode.locator);
     expect(editor.api!.contract.request.protocol).toBe("http");
-    expect(protocolValue(wrapper)).toBe("http");
-    expect(protocolOptionsOf(wrapper).map((o) => o.value)).toEqual(["http", "websocket", "soap"]);
-    expect(protocolOptionsOf(wrapper).map((o) => o.label)).toEqual(["HTTP", "WebSocket", "SOAP"]);
+    expect(protocolValue(wrapper)).toBe("HTTP");
+    await wrapper.get('[data-testid="editor-protocol"]').trigger("click");
+    expect(["http", "websocket", "soap"].map((key) => expectBody(`request-protocol-${key}`).text())).toEqual(["HTTP", "WebSocket", "SOAP"]);
   });
 
   it("M5-B HTTP↔WebSocket↔SOAP 多轮编辑/草稿保留/合法保存载荷（旧三协议与保存标题合并）", async () => {
@@ -1278,7 +1319,7 @@ describe("RequestEditor", () => {
     initial.body = { kind: "json", content: '{"a":1}' };
 
     // 旧“切 WebSocket”断言：HTTP 专属 method/body 面板退场，WS message tab 入场。
-    chooseProtocol(wrapper, "websocket");
+    await chooseProtocol(wrapper, "websocket");
     await flushPromises();
     expect(wrapper.find('[data-testid="editor-method"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="tab-path"]').exists()).toBe(true);
@@ -1293,7 +1334,7 @@ describe("RequestEditor", () => {
     expect(websocket.message).toBe("hello {{name}}");
 
     // 旧“切 SOAP”断言：SOAP 固定 POST，不暴露 HTTP 参数/请求体控件。
-    chooseProtocol(wrapper, "soap");
+    await chooseProtocol(wrapper, "soap");
     await flushPromises();
     const soap = editor.api!.contract.request;
     if (soap.protocol !== "soap") throw new Error("Protocol switch did not produce SOAP request");
@@ -1309,23 +1350,23 @@ describe("RequestEditor", () => {
     expect(soap.soapAction).toBe("urn:do");
 
     // 旧“协议往返”断言：HTTP body/query、WS message 与 SOAP envelope 各自留在原协议草稿。
-    chooseProtocol(wrapper, "http");
+    await chooseProtocol(wrapper, "http");
     await flushPromises();
     const restoredHttp = editor.api!.contract.request;
     if (restoredHttp.protocol !== "http") throw new Error("Protocol switch did not restore HTTP request");
-    expect(protocolValue(wrapper)).toBe("http");
+    expect(protocolValue(wrapper)).toBe("HTTP");
     expect(wrapper.find('[data-testid="tab-path"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="tab-body"]').exists()).toBe(true);
     await wrapper.find('[data-testid="tab-path"]').trigger("click");
     expect(restoredHttp.query).toMatchObject([{ name: "q1", value: "v1", enabled: true }]);
     expect(restoredHttp.body).toEqual({ kind: "json", content: '{"a":1}' });
-    chooseProtocol(wrapper, "websocket");
+    await chooseProtocol(wrapper, "websocket");
     await flushPromises();
     const restoredWebsocket = editor.api!.contract.request;
     if (restoredWebsocket.protocol !== "websocket") throw new Error("Protocol switch did not restore WebSocket request");
     await wrapper.find('[data-testid="tab-message"]').trigger("click");
     expect(restoredWebsocket.message).toBe("hello {{name}}");
-    chooseProtocol(wrapper, "soap");
+    await chooseProtocol(wrapper, "soap");
     await flushPromises();
     const restoredSoap = editor.api!.contract.request;
     if (restoredSoap.protocol !== "soap") throw new Error("Protocol switch did not restore SOAP request");
@@ -1337,7 +1378,7 @@ describe("RequestEditor", () => {
     const sent: Array<{ locator: ApiLocator; asset: ApiAsset }> = [];
     const original = api.apiSave.bind(api);
     api.apiSave = async (locator, asset, revision) => { sent.push({ locator, asset }); return original(locator, asset, revision); };
-    chooseProtocol(wrapper, "websocket");
+    await chooseProtocol(wrapper, "websocket");
     await flushPromises();
     await clickEditorSaveAndWait(wrapper, editor);
     expect(sent).toHaveLength(1);
@@ -1356,7 +1397,7 @@ describe("RequestEditor", () => {
     const { wrapper, api, editor, workspace } = await mountWith(RequestEditor);
     const { apiNode: apiA, collection } = seededProjectAndApi(workspace);
     await editor.load(apiA.locator);
-    chooseProtocol(wrapper, "websocket");
+    await chooseProtocol(wrapper, "websocket");
     await flushPromises();
     await wrapper.find('[data-testid="tab-message"]').trigger("click");
     expect(wrapper.find('[data-testid="editor-message"]').exists()).toBe(true);
@@ -1367,7 +1408,7 @@ describe("RequestEditor", () => {
     await flushPromises();
     // 新接口是正式 HTTP 契约：message 面板退场，HTTP path 页签仍可操作。
     expect(wrapper.find('[data-testid="editor-message"]').exists()).toBe(false);
-    expect(protocolValue(wrapper)).toBe("http");
+    expect(protocolValue(wrapper)).toBe("HTTP");
     await wrapper.find('[data-testid="tab-path"]').trigger("click");
     expect(wrapper.find('[data-testid="add-path"]').exists()).toBe(true);
     expect(paneActive(wrapper, "add-path")).toBe(true);
@@ -1387,7 +1428,7 @@ describe("RequestEditor", () => {
     await flushPromises();
     expect(paneActive(wrapper, "add-path")).toBe(true);
     // WS message → headers → message，同协议内页签互切。
-    chooseProtocol(wrapper, "websocket");
+    await chooseProtocol(wrapper, "websocket");
     await flushPromises();
     await wrapper.find('[data-testid="tab-message"]').trigger("click");
     expect(paneActive(wrapper, "editor-message")).toBe(true);
@@ -1449,7 +1490,7 @@ describe("ResponseViewer", () => {
     expect(headers.text()).toContain("application/json");
   });
 
-  it("带 response 时头部展示状态码与请求耗时；无 response 时不展示（宽审查修复 2）", async () => {
+  it("带 response 时头部展示状态码与实际耗时，无 response 时耗时未知且无 HTTP 徽标", async () => {
     const withResponse = {
       ...result,
       response: { status: 201, headers: {}, bodyText: "created", timeMs: 12.4 },
@@ -1459,7 +1500,7 @@ describe("ResponseViewer", () => {
     expect(wrapper.find('[data-testid="response-time"]').text()).toContain("12 ms");
     await wrapper.setProps({ result });
     expect(wrapper.find('[data-testid="response-status"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="response-time"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="response-time"]').text()).toContain("未知");
   });
 
   it("error 属性非空时显示错误徽标", () => {
@@ -1518,6 +1559,61 @@ describe("ResponseViewer", () => {
     expect(wrapper.find('[data-testid="response-action-error"]').text()).toContain("synthetic save failure");
   });
 
+  it("restores the active panel scroll by request owner and rejects a late download error", async () => {
+    const api = createMemoryApi();
+    const debug = useDebugStore(api);
+    const asset = { root: "memory-root", generation: 1, project: stressStoreLocator,
+      source: { kind: "asset" as const, locator: stressStoreLocator } };
+    debug.requestTabState({ ...asset, tabId: "response-a" });
+    debug.requestTabState({ ...asset, tabId: "response-b" });
+    const stateA = debug.requestTabs["response-a"]!;
+    const stateB = debug.requestTabs["response-b"]!;
+    const withResponse = {
+      ...result,
+      outcome: { ...result.outcome, passed: false },
+      response: { status: 200, headers: { "content-type": "application/json" }, bodyText: '{"ok":true}', timeMs: 3 },
+    };
+    let rejectDownload!: (reason: Error) => void;
+    const download = new Promise<string>((_resolve, reject) => { rejectDownload = reject; });
+    vi.spyOn(api, "debugSaveProjected").mockReturnValue(download);
+    const wrapper = mountWithI18n(ResponseViewer, { result: withResponse, api, tabState: stateA });
+    await flushPromises();
+    const body = wrapper.get<HTMLElement>('[data-testid="response-body-scroll"]');
+    expect(wrapper.get('[data-testid="response-status"]').text()).toBe("HTTP 200");
+    expect(wrapper.get('[data-testid="response-outcome"]').text()).toBe("失败");
+    expect(body.get('[data-testid="response-body"]').element.textContent).toBe('{\n  "ok": true\n}');
+    expect(body.findAll(".line-numbers span")).toHaveLength(3);
+    body.element.scrollTop = 42;
+    await body.trigger("scroll");
+    expect(stateA.responseScrollByPanel.body).toBe(42);
+    await wrapper.get('[data-testid="response-download"]').trigger("click");
+
+    await wrapper.get('[data-testid="response-tab-headers"]').trigger("click");
+    await flushPromises();
+    const headers = wrapper.get<HTMLElement>(".ant-tabs-tabpane-active");
+    expect(headers.find('[data-testid="response-headers"]').exists()).toBe(true);
+    headers.element.scrollTop = 120;
+    await headers.trigger("scroll");
+    expect(stateA.responseScrollByPanel.headers).toBe(120);
+
+    await wrapper.setProps({ tabState: stateB });
+    await flushPromises();
+    expect(body.element.scrollTop).toBe(0);
+    rejectDownload(new Error("stale response A download"));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="response-action-error"]').exists()).toBe(false);
+    await wrapper.setProps({ tabState: stateA });
+    await flushPromises();
+    expect(headers.element.scrollTop).toBe(120);
+    await wrapper.get('[data-testid="response-tab-body"]').trigger("click");
+    await flushPromises();
+    expect(body.element.scrollTop).toBe(42);
+    await wrapper.setProps({ result: { ...withResponse } });
+    await flushPromises();
+    expect(body.element.scrollTop).toBe(0);
+    expect(stateA.responseScrollByPanel).toEqual({});
+  });
+
   it("renders a P3 exchange projection as inert text and leaves absent byte counters unknown", async () => {
     const html = "<script>must-not-run()</script>";
     const debugResult: DebugResult = {
@@ -1562,7 +1658,7 @@ describe("ResponseViewer", () => {
     expect(wrapper.find('[data-testid="response-body"] script').exists()).toBe(false);
     await wrapper.find('[data-testid="response-tab-exchanges"]').trigger("click");
     expect(wrapper.find('[data-testid="response-exchanges"]').text()).toContain("未知");
-    expect(wrapper.find('[data-testid="response-exchange-1"]').text()).toContain("body");
+    expect(wrapper.find('[data-testid="response-exchange-1"]').text()).toContain("正文");
     expect(wrapper.find('[data-testid="response-exchange-1"]').text()).toContain("ECONNRESET");
     await wrapper.find('[data-testid="response-tab-request"]').trigger("click");
     expect(wrapper.find('[data-testid="response-request-sources"]').text()).toContain("项目资源");
@@ -1596,7 +1692,7 @@ describe("ResponseViewer", () => {
     const counters = wrapper.find('[data-testid="response-request-upload-counters"]').text();
     expect(counters).toContain("18 B");
     expect(counters).toContain("176 B");
-    expect(counters).toContain("true");
+    expect(counters).toContain("请求体读取完成 · 是");
   });
 
   // —— M5-B 任务 1：D3 响应映射契约 fixture（零分支核验，组件零改动）——
@@ -1959,24 +2055,7 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
     expect((errors[0] as Error).message).toBe("打不开");
   });
 
-  // —— M3-B 任务 2：顶栏在线模式入口 ——
-  it("在线入口：零连接进入管理；保存连接后打开登录；已登录显示登录身份", async () => {
-    const { wrapper, online } = await mountWith(TopBar, {});
-    expect(wrapper.find('[data-testid="online-toggle"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="online-status"]').text()).toBe("在线模式");
-    await wrapper.find('[data-testid="online-toggle"]').trigger("click");
-    expect(online.dialogOpen).toBe(false);
-    expect(wrapper.emitted("manage-connections")).toEqual([[]]);
-    // 已登录态（经 store login）→ 按钮文案切登录身份（用户 + 档案名）
-    online.addProfile("http://127.0.0.1:8080", "团队服务器");
-    await wrapper.find('[data-testid="online-toggle"]').trigger("click");
-    expect(online.dialogOpen).toBe(true);
-    expect(wrapper.emitted("manage-connections")).toHaveLength(1);
-    await online.login("alice", "password8");
-    await flushPromises();
-    expect(wrapper.find('[data-testid="online-status"]').text()).toContain("示例用户");
-    expect(wrapper.find('[data-testid="online-status"]').text()).toContain("团队服务器");
-  });
+
 });
 
 // —— M2-D3 任务 2：压测面板与报告展示（简报裁定 A/B/C/D） ——

@@ -12,7 +12,8 @@ export function resolveTheme(preference: Theme, prefersDark: boolean): "light" |
 }
 
 export function loadPreference(): Theme {
-  return (localStorage.getItem(KEY) as Theme | null) ?? "system";
+  const value = localStorage.getItem(KEY);
+  return value === "dark" || value === "light" ? value : "system";
 }
 
 export function savePreference(preference: Theme): void {

@@ -7,6 +7,20 @@ import { withLocalSync } from '../../../main/sync/fixtures.js';
 import { onlineDetailFailure } from '../../../main/sync/detail-error-fixture.js';
 
 describe('readable synchronization panel', () => {
+  it('R7 an unmounted project panel cannot publish a delayed action failure into the next scope', async () => {
+    const f = await mountSyncPanel('en');
+    await f.showCandidate('project-a');
+    const pending = deferred<void>();
+    const action = vi.spyOn(f.store, 'configureTool').mockImplementation(() => pending.promise);
+    const git = f.wrapper.findAll('button').find(button => button.text() === 'Select installed Git')!;
+    await git.trigger('click');
+    expect(action).toHaveBeenCalledExactlyOnceWith('git');
+    f.unmount();
+    await f.switchProject('project-b');
+    pending.reject(new Error('late project A failure'));
+    await f.flush();
+    expect(f.store.error).toBe('');
+  });
   it.each([{ same: false, language: 'en' as const }, { same: true, language: 'zh-CN' as const }])('A-P2-01 adopts the latest candidate only on top Refresh and clears old decisions/details ($same, $language)', async ({ same, language }) => {
     let completed = false;
     const original = candidateView(), next = candidateView();

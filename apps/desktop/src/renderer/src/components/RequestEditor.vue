@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, toRaw, watch } from "vue";
+import { computed, ref, toRaw, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { DownOutlined, EllipsisOutlined, SlidersOutlined } from "@ant-design/icons-vue";
 import { Alert as AAlert, Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
 import type { ApiRequest, ComponentAsset, DebugFieldState, ModelAsset, MultipartEntry, ParameterBinding, RequestBody } from "@apicc/core";
 import type { SchemaNode } from "@apicc/core/schema";
@@ -20,6 +21,9 @@ import OAuthManager from "./OAuthManager.vue";
 import ProjectAssetsPanel from "./ProjectAssetsPanel.vue";
 import MockPanel from "./MockPanel.vue";
 import DebugSettings from "./DebugSettings.vue";
+import DebugEnvironmentMenu from "./DebugEnvironmentMenu.vue";
+import ActionMenu from "./ActionMenu.vue";
+import { debugEnvironmentSelection, type DebugEnvironmentSelection } from "../debugEnvironment.js";
 
 const emit = defineEmits<{ "new-free-request": []; 'collaboration-history': [] }>();
 
@@ -39,9 +43,13 @@ const props = defineProps<{
   };
   projectLocator?: ProjectLocator | null;
   requestTab?: RequestTab | null;
+  environmentSelection?: DebugEnvironmentSelection | null;
+  environmentLoading?: boolean;
+  requestPath?: string;
+  hasDrafts?: boolean;
   projectNode?: LocalProjectTreeNodeDTO | null;
   createFreeModule?: (tab: RequestTab, name: string) => Promise<ApiParentLocator>;
-  saveFreeRequest?: (tab: RequestTab, targetParent: ApiParentLocator, name: string, request: ApiRequest, fields: DebugFieldState[]) => Promise<void>;
+  saveFreeRequest?: (tab: RequestTab, targetParent: ApiParentLocator, name: string, request: ApiRequest, fields: DebugFieldState[]) => Promise<{ tabId: string; generation: number } | undefined>;
 }>();
 const { t } = useI18n();
 const isFreeRequest = computed(() => props.requestTab?.source.kind === "free");
@@ -117,8 +125,13 @@ const freeModuleName = ref("");
 const createdFreeSaveParents = ref<Array<{ key: string; label: string; locator: ApiParentLocator }>>([]);
 let freeSaveOperation = 0;
 const settingsOpen = ref(false);
+const metadataOpen = ref(false);
+const parameterDetails = ref<string[]>([]);
+const cancelError = ref("");
+let saveOperation = 0;
 const chosenFileInfo = ref<Record<string, { name: string; size: number }>>({});
 const editorElement = ref<HTMLElement | null>(null);
+let renderedRequestScroll: { element: HTMLElement; owner: string } | undefined;
 const localRequestPanel = ref("path");
 const requestPanel = computed({
   get: () => tabDebugState.value?.requestPanel ?? localRequestPanel.value,
@@ -134,6 +147,38 @@ const parameterLocations = ["path", "query", "header", "cookie"] as const;
 type ParameterLocation = (typeof parameterLocations)[number];
 const credentialProjectLocator = computed(() => props.requestTab?.project ?? props.projectLocator ?? null);
 const oauthManagedState = ref<"managed" | "unmanaged" | "unknown">("unmanaged");
+const editorTitle = computed(() => isFreeRequest.value ? t("requestTabs.freeName") : metadata.value?.name || t("requestWorkbench.title"));
+const protocolItems = computed(() => (["http", "websocket", "soap"] as const).map((key) => ({
+  key, label: t(`protocol.${key}`), checked: request.value?.protocol === key, testId: `request-protocol-${key}`,
+})));
+const moreItems = computed(() => [
+  ...(!isFreeRequest.value ? [{ key: "save-request", label: t("requestWorkbench.saveRequestOnly"),
+    disabled: props.editor.readOnly || pendingRestoreFields.value.length > 0, testId: "save-request-btn" }] : []),
+  { key: "settings", label: t("debugLoop.settings"), disabled: !props.api, testId: "debug-settings-open" },
+  { key: "history", label: t("collaboration.chooseDebugHistory"), testId: "collaboration-open-history" },
+]);
+const sending = computed(() => tabDebugState.value?.sending ?? props.debug.sending);
+const runId = computed(() => tabDebugState.value ? tabDebugState.value.activeRunId : props.debug.activeRunId);
+const cancellingRun = computed(() => tabDebugState.value ? tabDebugState.value.cancelRunId : props.debug.cancelRunId);
+const sendAction = computed(() => sending.value && runId.value ? "cancel" : sending.value ? "busy" : "send");
+const sendDisabled = computed(() => sendAction.value === "cancel"
+  ? runId.value === cancellingRun.value
+  : sendAction.value === "busy" || pendingRestoreFields.value.length > 0 || environmentUnavailable.value || !!freeSession.value?.urlDraftInvalid);
+
+function selectProtocol(key: string) {
+  if (key === "http" || key === "websocket" || key === "soap") switchProtocol(key);
+}
+
+function selectRequestAction(key: string) {
+  if (key === "save-request") void saveRequest(true);
+  else if (key === "settings") settingsOpen.value = true;
+  else if (key === "history") emit("collaboration-history");
+}
+
+function toggleParameterDetails(id: string) {
+  parameterDetails.value = parameterDetails.value.includes(id)
+    ? parameterDetails.value.filter((key) => key !== id) : [...parameterDetails.value, id];
+}
 
 const freeSaveParents = computed(() => {
   const project = props.projectNode;
@@ -165,7 +210,10 @@ const freeSaveParents = computed(() => {
   return result;
 });
 
-watch(() => props.requestTab?.tabId, () => {
+watch(credentialContextKey, () => {
+  saveOperation += 1;
+  saveFeedback.value = "";
+  saveError.value = "";
   freeSaveOperation += 1;
   freeSaveOpen.value = false;
   freeSaveBusy.value = false;
@@ -173,7 +221,12 @@ watch(() => props.requestTab?.tabId, () => {
   freeSaveName.value = "";
   freeModuleName.value = "";
   createdFreeSaveParents.value = [];
-});
+  metadataOpen.value = false;
+  parameterDetails.value = [];
+  settingsOpen.value = false;
+  cancelError.value = "";
+}, { flush: "sync" });
+watch(runId, () => { cancelError.value = ""; });
 
 function openFreeSaveDialog() {
   saveError.value = "";
@@ -222,9 +275,11 @@ async function submitFreeSave() {
   freeSaveBusy.value = true;
   saveError.value = "";
   try {
-    await props.saveFreeRequest(tab, target, freeSaveName.value.trim(), cloneContract(current),
+    const receipt = await props.saveFreeRequest(tab, target, freeSaveName.value.trim(), cloneContract(current),
       (tabDebugState.value?.fields ?? []).map((field) => ({ ...field })));
-    if (operation !== freeSaveOperation || props.requestTab?.tabId !== tab.tabId) return;
+    const active = props.requestTab;
+    if (!receipt || !active || active.source.kind !== "asset" || active.tabId !== receipt.tabId
+      || active.generation !== receipt.generation) return;
     saveFeedback.value = t("debugLoop.freeSavedInherited");
     freeSaveOpen.value = false;
   } catch (error) {
@@ -246,13 +301,18 @@ watch(() => request.value, () => {
   else props.debug.refreshRestoredFields(props.editor);
 }, { deep: true, flush: "post" });
 
-watch(() => props.requestTab?.tabId, async () => {
-  await nextTick();
-  if (editorElement.value && tabDebugState.value) editorElement.value.scrollTop = tabDebugState.value.requestScrollTop;
+watch([credentialContextKey, editorElement], ([owner, element]) => {
+  renderedRequestScroll = undefined;
+  if (!element) return;
+  element.scrollTop = tabDebugState.value?.requestScrollTop ?? 0;
+  renderedRequestScroll = { element, owner };
 }, { immediate: true, flush: "post" });
 
 function captureRequestScroll(event: Event) {
-  if (tabDebugState.value) tabDebugState.value.requestScrollTop = (event.currentTarget as HTMLElement).scrollTop;
+  if (tabDebugState.value && renderedRequestScroll?.owner === credentialContextKey.value
+    && renderedRequestScroll.element === event.currentTarget) {
+    tabDebugState.value.requestScrollTop = renderedRequestScroll.element.scrollTop;
+  }
 }
 
 function cloneContract<T>(value: T): T {
@@ -300,10 +360,12 @@ function setRequest(value: ApiRequest) {
   else if (props.editor.api) props.editor.api.contract.request = value;
 }
 
-const selectedEnvironmentId = computed(() => {
-  if (tabDebugState.value) return tabDebugState.value.selectedEnvironmentId ?? "";
-  return props.editor.envs.some((environment) => environment.name === props.debug.selectedEnvName)
-    ? props.debug.selectedEnvName ?? "" : "";
+const environment = computed(() => props.environmentSelection === undefined
+  ? debugEnvironmentSelection(props.editor, props.debug, props.requestTab) : props.environmentSelection);
+const selectedEnvironmentId = computed(() => environment.value?.value ?? "");
+const environmentUnavailable = computed(() => {
+  const selection = environment.value;
+  return !!selection?.value && !selection.options.some((option) => option.key === selection.value);
 });
 
 const oauthContextKey = computed(() => JSON.stringify({
@@ -330,19 +392,31 @@ function updateRequestAuth(auth: ApiRequest["auth"]): void {
   current.auth = auth;
 }
 
-function selectEnvironment(value: string) {
-  if (tabDebugState.value) tabDebugState.value.selectedEnvironmentId = value || null;
-  else props.debug.selectEnv(value || null);
-}
-
 function onSend() {
+  if (environmentUnavailable.value) return;
   if (props.requestTab) void props.debug.sendRequestTab(props.requestTab, props.editor);
   else void props.debug.send(props.editor);
 }
 
-function onCancel() {
-  if (props.requestTab) void props.debug.cancelRequestTab(props.requestTab.tabId);
-  else void props.debug.cancel();
+async function onCancel() {
+  const current = runId.value;
+  if (!current || sendDisabled.value) return;
+  const tab = props.requestTab;
+  cancelError.value = "";
+  try {
+    const result = tab ? await props.debug.cancelRequestTab(tab.tabId) : await props.debug.cancel();
+    if (runId.value === current && props.requestTab === tab) {
+      if (result.status !== "cancelled") cancelError.value = t("requestWorkbench.cancelUnconfirmed");
+    }
+  } catch (error) {
+    if (runId.value === current && props.requestTab === tab) cancelError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function runCommand() {
+  if (sendDisabled.value) return;
+  if (sendAction.value === "cancel") void onCancel();
+  else onSend();
 }
 
 function updateFullUrl(value: string) {
@@ -522,7 +596,7 @@ function caseValue(identity: { caseId: string; scope: string }): string {
 function activeCaseValue(): string {
   if (isFreeRequest.value) return "";
   const cases = props.editor.api?.cases ?? [];
-  const selected = tabDebugState.value?.selectedCase ?? props.debug.selectedCase;
+  const selected = tabDebugState.value ? tabDebugState.value.selectedCase : props.debug.selectedCase;
   const active = cases.find((item) => item.id === selected?.caseId && item.scope === selected.scope) ?? cases[0];
   return active ? caseValue({ caseId: active.id, scope: active.scope }) : "";
 }
@@ -544,61 +618,67 @@ function metadataTags(value: string) {
   if (metadata.value) metadata.value.tags = value.split(",").map((tag) => tag.trim()).filter(Boolean);
 }
 
-async function onSave() {
+async function saveRequest(requestOnly: boolean) {
+  if (props.editor.readOnly || !request.value || pendingRestoreFields.value.length) return;
+  const operation = ++saveOperation;
   saveFeedback.value = "";
   saveError.value = "";
   try {
-    await props.editor.save();
-    saveFeedback.value = t("editor.saved");
+    if (requestOnly) {
+      await props.editor.saveRequestDraft(currentRestoreMatches.value ? tabDebugState.value?.fields ?? props.debug.restoredFields : []);
+    } else await props.editor.save();
+    if (operation === saveOperation) saveFeedback.value = t(requestOnly ? "debugLoop.requestSaved" : "editor.saved");
   } catch (error) {
-    saveError.value = error instanceof Error ? error.message : String(error);
-  }
-}
-
-async function onSaveRequest() {
-  saveFeedback.value = "";
-  saveError.value = "";
-  try {
-    await props.editor.saveRequestDraft(currentRestoreMatches.value ? tabDebugState.value?.fields ?? props.debug.restoredFields : []);
-    saveFeedback.value = t("debugLoop.requestSaved");
-  } catch (error) {
-    saveError.value = error instanceof Error ? error.message : String(error);
+    if (operation === saveOperation) saveError.value = error instanceof Error ? error.message : String(error);
   }
 }
 </script>
 
 <template>
   <section v-if="request" class="editor" data-testid="request-editor" :data-source-kind="isFreeRequest ? 'free' : 'asset'">
-    <div class="editor-header">
-    <div class="top-row">
-      <a-radio-group :value="request.protocol" data-testid="editor-protocol" :disabled="editor.readOnly" @update:value="switchProtocol">
-        <a-radio-button v-for="protocol in ['http', 'websocket', 'soap']" :key="protocol" :value="protocol">{{ t(`protocol.${protocol}`) }}</a-radio-button>
-      </a-radio-group>
-      <a-select v-if="request.protocol === 'http'" v-model:value="request.method" class="method-select" data-testid="editor-method" :disabled="editor.readOnly" :options="methods.map((value) => ({ label: value, value }))" />
-      <span v-else-if="request.protocol === 'soap'" data-testid="editor-method">POST</span>
-      <template v-if="isFreeRequest && freeSession && request.protocol === 'http'">
-        <a-input :value="freeSession.urlDraft" class="url full-url" data-testid="editor-full-url" :disabled="editor.readOnly" :placeholder="t('editor.fullUrl')" @update:value="updateFullUrl" />
-        <a-alert v-if="freeSession.urlDraftInvalid" type="error" :message="t('editor.invalidFullUrl')" data-testid="free-url-draft-error" />
-      </template>
-      <template v-else>
-        <a-input v-model:value="request.baseUrl" class="url" data-testid="editor-base-url" :disabled="editor.readOnly" :placeholder="t('editor.baseUrl')" />
-        <a-input v-model:value="request.path" class="url" data-testid="editor-path" :disabled="editor.readOnly" :placeholder="t('editor.path')" />
-      </template>
-      <a-select data-testid="debug-env-select" :value="selectedEnvironmentId" :options="[{ label: t('editor.noEnv'), value: '' }, ...editor.envs.map((e) => ({ label: e.name, value: tabDebugState ? e.id : e.name }))]" @update:value="(value) => selectEnvironment(value as string)" />
-      <a-select v-if="!isFreeRequest" data-testid="debug-case-select" :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))" @update:value="(value) => selectDebugCase(value as string)" />
-      <a-button type="primary" data-testid="send-btn" :disabled="(tabDebugState?.sending ?? debug.sending) || pendingRestoreFields.length > 0" @click="onSend">{{ (tabDebugState?.sending ?? debug.sending) ? t('editor.sending') : t('editor.send') }}</a-button>
-      <a-button v-if="(tabDebugState?.sending ?? debug.sending) && (tabDebugState?.activeRunId ?? debug.activeRunId)" data-testid="debug-cancel" @click="onCancel">{{ t('debugLoop.cancelRun') }}</a-button>
-      <a-button data-testid="debug-settings-open" @click="settingsOpen = true">{{ t('debugLoop.settings') }}</a-button>
-      <a-button data-testid="collaboration-open-history" @click="emit('collaboration-history')">{{ t('collaboration.chooseDebugHistory') }}</a-button>
-      <template v-if="!isFreeRequest">
-        <a-button data-testid="save-request-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSaveRequest">{{ t('debugLoop.saveRequest') }}</a-button>
-        <a-button data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="onSave">{{ t('editor.save') }}</a-button>
-      </template>
-      <a-button v-else data-testid="save-free-btn" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || pendingRestoreFields.length > 0 || !props.saveFreeRequest" @click="openFreeSaveDialog">{{ t('debugLoop.freeSaveAsApi') }}</a-button>
-      <span v-if="saveFeedback" data-testid="save-feedback">{{ saveFeedback }}</span>
-      <span v-if="saveError" data-testid="save-error">{{ saveError }}</span>
-    </div>
-    </div>
+    <header class="editor-header">
+      <div class="request-heading">
+        <div class="request-heading-text">
+          <div v-if="requestPath && !isFreeRequest" class="request-path" :title="requestPath" tabindex="0">{{ requestPath }}</div>
+          <h2 :title="editorTitle">{{ editorTitle }}</h2>
+        </div>
+        <span v-if="hasDrafts || editor.dirty" class="dirty">{{ t("editor.unsaved") }}</span>
+        <button v-if="metadata" type="button" class="editor-detail-button" data-testid="asset-metadata-toggle"
+          :aria-expanded="metadataOpen" @click="metadataOpen = !metadataOpen">{{ t("requestWorkbench.details") }}</button>
+      </div>
+      <div class="request-command" data-testid="request-command">
+        <div class="request-address">
+          <ActionMenu :key="credentialContextKey" class="protocol-trigger" test-id="editor-protocol" :label="t('requestWorkbench.protocol') + ' · ' + t(`protocol.${request.protocol}`)"
+            :disabled="editor.readOnly" :items="protocolItems" @select="selectProtocol">
+            {{ t(`protocol.${request.protocol}`) }} <DownOutlined />
+          </ActionMenu>
+          <a-select v-if="request.protocol === 'http'" v-model:value="request.method" class="method-select" data-testid="editor-method" :aria-label="t('requestWorkbench.method')" :disabled="editor.readOnly" :options="methods.map((value) => ({ label: value, value }))" />
+          <span v-else-if="request.protocol === 'soap'" class="method-fixed" data-testid="editor-method">POST</span>
+          <a-input v-if="isFreeRequest && freeSession && request.protocol === 'http'" :value="freeSession.urlDraft" class="url full-url" data-testid="editor-full-url" :disabled="editor.readOnly" :aria-label="t('editor.fullUrl')" :placeholder="t('editor.fullUrl')" @update:value="updateFullUrl" />
+          <template v-else>
+            <a-input v-model:value="request.baseUrl" class="url base-url" data-testid="editor-base-url" :disabled="editor.readOnly" :aria-label="t('editor.baseUrl')" :placeholder="t('editor.baseUrl')" />
+            <a-input v-model:value="request.path" class="url url-path" data-testid="editor-path" :disabled="editor.readOnly" :aria-label="t('editor.path')" :placeholder="t('editor.path')" />
+          </template>
+        </div>
+        <div class="request-actions">
+          <DebugEnvironmentMenu :selection="environment" :loading="environmentLoading" test-id="debug-env-select" />
+          <button type="button" class="send-slot" data-testid="request-send-slot" :aria-busy="sending" :aria-disabled="sendDisabled" @click="runCommand">
+            <span :data-testid="sendAction === 'cancel' ? 'debug-cancel' : 'send-btn'">{{ sendAction === "cancel" ? t('debugLoop.cancelRun') : sending ? t('editor.sending') : t('editor.send') }}</span>
+          </button>
+          <a-button v-if="!isFreeRequest" data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="saveRequest(false)">{{ t('editor.save') }}</a-button>
+          <a-button v-else data-testid="save-free-btn" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || pendingRestoreFields.length > 0 || !props.saveFreeRequest" @click="openFreeSaveDialog">{{ t('debugLoop.freeSaveAsApi') }}</a-button>
+          <ActionMenu :key="credentialContextKey" test-id="request-more" :label="t('requestWorkbench.more')" :items="moreItems" @select="selectRequestAction"><EllipsisOutlined /></ActionMenu>
+          <a-select v-if="!isFreeRequest" class="case-select" data-testid="debug-case-select" size="small" :aria-label="t('requestWorkbench.case')"
+            :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))"
+            @update:value="(value) => selectDebugCase(value as string)" />
+        </div>
+      </div>
+      <p v-if="freeSession?.urlDraftInvalid" class="request-feedback error" role="alert" data-testid="free-url-draft-error">{{ t('editor.invalidFullUrl') }}</p>
+      <p v-if="environmentUnavailable" class="request-feedback error" role="status">{{ t("environmentShortcut.unavailable") }}</p>
+      <p v-if="cancelError" class="request-feedback error" role="alert">{{ cancelError }}</p>
+      <span v-if="saveFeedback" class="request-feedback" role="status" data-testid="save-feedback">{{ saveFeedback }}</span>
+      <span v-if="saveError" class="request-feedback error" role="alert" data-testid="save-error">{{ saveError }}</span>
+    </header>
 
     <a-modal :open="freeSaveOpen" :title="t('debugLoop.freeSaveTitle')" :confirm-loading="freeSaveBusy" @cancel="freeSaveOpen = false">
       <a-input v-model:value="freeSaveName" data-testid="free-save-name" :placeholder="t('debugLoop.freeSaveName')" />
@@ -618,38 +698,52 @@ async function onSaveRequest() {
       </template>
     </a-modal>
 
-    <div ref="editorElement" class="editor-content" data-testid="request-editor-scroll" @scroll="captureRequestScroll">
-    <section v-if="metadata" class="metadata" aria-label="API metadata">
+    <div :key="requestTab ? credentialContextKey : undefined" ref="editorElement" class="editor-content" data-testid="request-editor-scroll" @scroll="captureRequestScroll">
+    <section v-if="metadata && metadataOpen" class="metadata" :aria-label="t('requestWorkbench.details')">
       <a-input v-model:value="metadata.name" data-testid="asset-metadata-name" :disabled="editor.readOnly" :placeholder="t('contract.metadataName')" />
       <a-input v-model:value="metadata.description" data-testid="asset-metadata-description" :disabled="editor.readOnly" :placeholder="t('contract.metadataDescription')" />
       <a-input :value="metadata.tags.join(', ')" data-testid="asset-metadata-tags" :disabled="editor.readOnly" :placeholder="t('contract.metadataTags')" @update:value="metadataTags" />
       <a-input v-model:value="metadata.version" data-testid="asset-metadata-version" :disabled="editor.readOnly" :placeholder="t('contract.metadataVersion')" />
       <a-select v-model:value="metadata.status" data-testid="asset-metadata-status" :disabled="editor.readOnly" :options="['draft', 'published', 'deprecated'].map((value) => ({ label: t(`contract.status.${value}`), value }))" />
-      <span v-if="editor.dirty" class="dirty" :title="t('editor.unsaved')">●</span>
     </section>
     <a-tabs v-model:active-key="requestPanel">
       <a-tab-pane v-for="location in parameterLocations" :key="location">
         <template #tab><span :data-testid="`tab-${location}`">{{ t(`contract.location.${location}`) }}</span></template>
-        <div class="panel">
-          <div v-for="(binding, index) in parameterList(location)" :key="binding.id" class="kv-row">
-            <a-select v-if="assets" :value="binding.kind === 'componentRef' ? binding.componentId : ''" :data-testid="`parameter-component-${location}-${index}`" :disabled="editor.readOnly" :options="[{ label: t('contract.inlineParameter'), value: '' }, ...parameterComponents(location).map((item) => ({ label: item.name, value: item.id }))]" @update:value="(value) => bindParameter(location, index, value as string)" />
-            <template v-if="binding.kind === 'inline'">
-              <a-input v-model:value="binding.name" data-testid="kv-key" :disabled="editor.readOnly" placeholder="name" />
-              <a-input v-model:value="binding.value" data-testid="kv-value" :disabled="editor.readOnly" placeholder="value" />
-              <a-input v-model:value="binding.description" :disabled="editor.readOnly" :placeholder="t('contract.description')" />
-              <a-checkbox v-model:checked="binding.required" :data-testid="`parameter-required-${location}-${index}`" :disabled="editor.readOnly">{{ t('contract.required') }}</a-checkbox>
-              <div :data-testid="`parameter-schema-${location}-${index}`">
-                <SchemaEditor :model-value="binding.schema" :models="assets?.models ?? []" :read-only="editor.readOnly" @update:model-value="(value) => { if (value) binding.schema = value; }" />
-              </div>
-            </template>
-            <template v-else>
-              <span>{{ parameterComponents(location).find((item) => item.id === binding.componentId)?.name ?? t('contract.missingComponent') }}</span>
-              <a-input v-model:value="binding.value" data-testid="kv-value" :disabled="editor.readOnly" placeholder="value" />
-            </template>
-            <a-checkbox v-model:checked="binding.enabled" data-testid="kv-enabled" :disabled="editor.readOnly" />
-            <a-button danger type="text" size="small" data-testid="kv-remove" :disabled="editor.readOnly" @click="removeParameter(location, index)">×</a-button>
+        <div class="panel parameter-panel">
+          <div v-if="parameterList(location).length" class="parameter-grid parameter-labels" aria-hidden="true">
+            <span>{{ t("requestWorkbench.enabled") }}</span><span>{{ t("requestWorkbench.field") }}</span><span>{{ t("requestWorkbench.value") }}</span><span>{{ t("contract.description") }}</span><span>{{ t("requestWorkbench.actions") }}</span>
           </div>
-          <a-button class="add" :disabled="editor.readOnly" :data-testid="`add-${location}`" @click="addParameter(location)">{{ t('editor.addRow') }}</a-button>
+          <div v-for="(binding, index) in parameterList(location)" :key="binding.id" class="parameter-entry">
+            <div class="parameter-grid">
+              <a-checkbox v-model:checked="binding.enabled" data-testid="kv-enabled" :aria-label="t('requestWorkbench.enabled')" :disabled="editor.readOnly" />
+              <a-input v-if="binding.kind === 'inline'" v-model:value="binding.name" size="small" data-testid="kv-key" :aria-label="t('requestWorkbench.field')" :disabled="editor.readOnly" />
+              <span v-else class="component-name" :title="parameterComponents(location).find((item) => item.id === binding.componentId)?.name ?? t('contract.missingComponent')">
+                {{ parameterComponents(location).find((item) => item.id === binding.componentId)?.name ?? t("contract.missingComponent") }}
+              </span>
+              <a-input v-model:value="binding.value" size="small" data-testid="kv-value" :aria-label="t('requestWorkbench.value')" :disabled="editor.readOnly" />
+              <a-input v-if="binding.kind === 'inline'" v-model:value="binding.description" size="small" :aria-label="t('contract.description')" :disabled="editor.readOnly" />
+              <span v-else class="component-name">{{ t("requestWorkbench.componentReference") }}</span>
+              <div class="parameter-actions">
+                <button type="button" class="editor-detail-button" :data-testid="`parameter-details-${location}-${index}`"
+                  :title="t('requestWorkbench.parameterDetails')" :aria-label="t('requestWorkbench.parameterDetails')"
+                  :aria-expanded="parameterDetails.includes(binding.id)" @click="toggleParameterDetails(binding.id)"><SlidersOutlined /></button>
+                <a-button danger type="text" size="small" data-testid="kv-remove" :aria-label="t('tree.delete')" :disabled="editor.readOnly" @click="removeParameter(location, index)">×</a-button>
+              </div>
+            </div>
+            <div v-if="parameterDetails.includes(binding.id)" class="parameter-details">
+              <label v-if="assets">
+                <span>{{ t("requestWorkbench.componentReference") }}</span>
+                <a-select :value="binding.kind === 'componentRef' ? binding.componentId : ''" :data-testid="`parameter-component-${location}-${index}`" :disabled="editor.readOnly" :options="[{ label: t('contract.inlineParameter'), value: '' }, ...parameterComponents(location).map((item) => ({ label: item.name, value: item.id }))]" @update:value="(value) => bindParameter(location, index, value as string)" />
+              </label>
+              <template v-if="binding.kind === 'inline'">
+                <a-checkbox v-model:checked="binding.required" :data-testid="`parameter-required-${location}-${index}`" :disabled="editor.readOnly">{{ t('contract.required') }}</a-checkbox>
+                <div :data-testid="`parameter-schema-${location}-${index}`">
+                  <SchemaEditor :model-value="binding.schema" :models="assets?.models ?? []" :read-only="editor.readOnly" @update:model-value="(value) => { if (value) binding.schema = value; }" />
+                </div>
+              </template>
+            </div>
+          </div>
+          <a-button class="add" type="text" size="small" :disabled="editor.readOnly" :data-testid="`add-${location}`" @click="addParameter(location)">＋ {{ t('editor.addRow') }}</a-button>
         </div>
       </a-tab-pane>
 
@@ -734,11 +828,22 @@ async function onSaveRequest() {
         <a-input v-model:value="request.soapAction" data-testid="editor-soap-action" :disabled="editor.readOnly" />
       </a-tab-pane>
     </a-tabs>
-    <ResponseEditor v-if="assets && !isFreeRequest && metadata && editor.api" :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
-    <ProjectAssetsPanel v-if="assets && !isFreeRequest" :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
-    <MockPanel v-if="api && projectLocator" :api="api" :root="requestTab?.root" :locator="projectLocator" :read-only="editor.readOnly" @new-free-request="emit('new-free-request')" />
-    <CredentialEditor v-if="api && credentialProjectLocator" :api="api" :locator="credentialProjectLocator" :auth="request.auth" :context-key="credentialContextKey" :managed-state="oauthManagedState" :read-only="editor.readOnly" />
-    <OAuthManager
+    <details v-if="assets && !isFreeRequest && metadata && editor.api" class="request-extra">
+      <summary>{{ t("requestWorkbench.responseContract") }}</summary>
+      <ResponseEditor :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
+    </details>
+    <details v-if="assets && !isFreeRequest" class="request-extra">
+      <summary>{{ t("requestWorkbench.projectAssets") }}</summary>
+      <ProjectAssetsPanel :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
+    </details>
+    <details v-if="api && projectLocator" class="request-extra">
+      <summary>{{ t("requestWorkbench.mock") }}</summary>
+      <MockPanel :api="api" :root="requestTab?.root" :locator="projectLocator" :read-only="editor.readOnly" @new-free-request="emit('new-free-request')" />
+    </details>
+    <details v-if="api && credentialProjectLocator" class="request-extra">
+      <summary>{{ t("requestWorkbench.credentials") }}</summary>
+      <CredentialEditor :api="api" :locator="credentialProjectLocator" :auth="request.auth" :context-key="credentialContextKey" :managed-state="oauthManagedState" :read-only="editor.readOnly" />
+      <OAuthManager
       v-if="api && credentialProjectLocator && requestTab?.root"
       :api="api"
       :locator="credentialProjectLocator"
@@ -748,7 +853,8 @@ async function onSaveRequest() {
       :read-only="editor.readOnly"
       @update:auth="updateRequestAuth"
       @managed-state="oauthManagedState = $event"
-    />
+      />
+    </details>
     </div>
     <DebugSettings v-if="api" :open="settingsOpen" :api="api" :debug="debug" :editor="editor" :request-tab="requestTab" @close="settingsOpen = false" />
   </section>
@@ -756,18 +862,61 @@ async function onSaveRequest() {
 </template>
 
 <style scoped>
-.editor { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 14px; box-sizing: border-box; overflow: hidden; background: var(--bg); }
-.editor-header { flex: none; display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
-.editor-content { flex: 1; min-height: 0; overflow: auto; }
+.editor { container-type: inline-size; display: flex; flex: 1; flex-direction: column; gap: 5px; min-height: 0; padding: 8px 12px 10px; box-sizing: border-box; overflow: hidden; background: var(--bg); }
+.editor-header { flex: none; display: flex; flex-direction: column; gap: 5px; }
+.request-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.request-heading-text { flex: 1; min-width: 0; }
+.request-heading-text h2, .request-path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.request-heading-text h2 { color: var(--text); font-size: 20px; line-height: 1.35; }
+.request-path { color: var(--text-muted); font-size: 12px; }
+.request-command { display: flex; align-items: center; gap: 8px; }
+.request-address { flex: 1 1 410px; min-width: 0; display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 6px; }
+.request-address :deep(.protocol-trigger) { border: 0; border-radius: 5px 0 0 5px; min-height: 30px; padding-inline: 6px; border-inline-end: 1px solid var(--border); }
+.request-address :deep(.ant-select-selector), .request-address :deep(.ant-input) { border: 0; border-radius: 0; height: 30px; box-shadow: none; }
+.request-address :deep(.ant-input:focus) { outline-offset: -2px; }
+.request-address :deep(.ant-select-selector) { background: var(--workbench-method-surface); color: var(--pass); border-inline-end: 1px solid var(--border); }
+.request-address .method-select { flex: 0 0 74px; min-width: 0; }
+.method-fixed { flex: none; padding: 0 6px; color: var(--pass); }
+.request-address .url { flex: 1 1 100px; min-width: 0; }
+.request-address .url-path { border-inline-start: 1px solid var(--border); }
+.request-actions { display: flex; align-items: center; flex: none; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.request-actions :deep(.menu-trigger) { border-color: var(--border); min-height: 32px; }
+.send-slot { flex: 0 0 8.6em; width: 8.6em; height: 32px; border: 1px solid transparent; border-radius: 6px; background: #1557d8; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.send-slot[aria-disabled="true"] { opacity: 0.7; cursor: default; }
+.send-slot:focus-visible, .editor-detail-button:focus-visible { outline-offset: 1px; }
+.editor-detail-button { flex: none; min-height: 26px; padding: 2px 6px; color: var(--text-muted); border: 1px solid transparent; border-radius: 4px; background: transparent; font: inherit; cursor: pointer; }
+.editor-detail-button:hover, .editor-detail-button[aria-expanded="true"] { border-color: var(--border); background: var(--active-weak); color: var(--text); }
+.case-select { width: 125px; min-width: 95px; max-width: 100%; }
+.request-feedback { margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.request-feedback.error { color: var(--fail); }
+.editor-content { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
+.editor-content :deep(.ant-tabs-nav) { margin-bottom: 4px; }
+.editor-content :deep(.ant-tabs-tab) { padding: 5px 0; }
 .metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--subtle); }
-.top-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.url { flex: 1; min-width: 120px; }
 .panel { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
-.kv-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-.kv-row > * { flex: 1 1 140px; min-width: 0; }
-.kv-row > :deep(.ant-checkbox-wrapper), .kv-row > :deep(.ant-btn) { flex: none; }
-.kv-row > [data-testid^="parameter-schema-"] { flex-basis: 100%; }
-.dirty { color: var(--accent); }
+.parameter-panel { gap: 0; padding-bottom: 12px; }
+.parameter-grid { display: grid; grid-template-columns: 42px minmax(45px, 1fr) minmax(55px, 1fr) minmax(50px, 1.2fr) 64px; align-items: center; min-height: 32px; gap: 4px; }
+.parameter-labels { min-height: 20px; padding-inline: 2px; color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.parameter-entry { border-bottom: 1px solid var(--border); }
+.parameter-actions { display: flex; }
+.parameter-details { display: grid; gap: 6px; margin: 0 0 6px; padding: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--subtle); }
+.parameter-details label { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.parameter-details :deep(.ant-select) { min-width: 130px; }
+.component-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.request-extra { border-top: 1px solid var(--border); margin-top: 3px; }
+.request-extra summary { padding: 5px 0; color: var(--text-muted); cursor: pointer; }
+.request-extra[open] summary { color: var(--text); }
+@container (max-width: 760px) {
+  .request-command { flex-direction: column; align-items: stretch; gap: 5px; }
+  .request-address { flex: auto; }
+}
+@container (max-width: 420px) {
+  .request-address { flex-wrap: wrap; }
+  .request-address .url-path { flex-basis: 100%; border-inline-start: 0; border-top: 1px solid var(--border); }
+  .parameter-grid { grid-template-columns: 32px minmax(38px, 1fr) minmax(45px, 1fr) minmax(50px, 1fr) 54px; gap: 2px; }
+  .parameter-labels { font-size: 10px; }
+}
+.dirty { flex: none; color: var(--accent); font-size: 12px; }
 .body-text { font-family: ui-monospace, monospace; resize: vertical; }
 .body-schema { display: grid; gap: 8px; }
 .examples { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

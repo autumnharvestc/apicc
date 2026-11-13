@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // 注：验证 ConfigProvider 两个数据源与既有交互链路的联动——
 // locale 源 = bridge.currentLocale()（语言下拉选择后随之变化），
-// algorithm 源 = theme.themePreference（Segmented 选中段后随之变化）。
+// algorithm 源 = theme.themePreference（选中主题菜单项后随之变化）。
 import { describe, expect, it, beforeAll } from "vitest";
 import { mount, flushPromises, DOMWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
@@ -52,15 +52,11 @@ describe("antd 联动数据源", () => {
     expect(currentLocale()).not.toBe(before);
     expect(currentLocale()).toBe("en");
   });
-  it("Segmented 选中段后 themePreference 变化（ConfigProvider algorithm 源）", async () => {
+  it("主题菜单选择后 themePreference 变化（ConfigProvider algorithm 源）", async () => {
     const wrapper = await mountToggle();
-    // data-testid 契约：theme-toggle 落在 Segmented 根元素（attrs 透传）
-    expect(wrapper.find('[data-testid="theme-toggle"]').exists()).toBe(true);
     const before = themePreference.value; // system（fresh jsdom + localStorage 已清）
-    // 三段选项由 radio input 承载，顺序 = options 声明序 [system, light, dark]
-    const inputs = wrapper.findAll('input[type="radio"]');
-    expect(inputs.length).toBe(3);
-    await inputs[1]!.trigger("change"); // 选中「亮色」段
+    await wrapper.get('[data-testid="theme-toggle"]').trigger("click");
+    await new DOMWrapper(document.body).get('[data-testid="theme-option-light"]').trigger("click");
     expect(themePreference.value).not.toBe(before);
     expect(themePreference.value).toBe("light");
   });

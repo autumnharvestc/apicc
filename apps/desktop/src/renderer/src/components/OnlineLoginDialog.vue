@@ -173,7 +173,7 @@ async function onOpenWorkspace(workspaceId: string) {
   if (!ws) return;
   formError.value = "";
   await props.online.openWorkspace(ws);
-  if (props.online.activeWorkspace?.id === ws.id) props.online.dialogOpen = false;
+  if (!props.online.error && props.online.activeWorkspace?.id === ws.id) props.online.dialogOpen = false;
 }
 
 // —— 退出登录前草稿确认（终审 Important 2）——
@@ -189,7 +189,7 @@ const logoutDraftTabs = ref<ProjectTab[]>([]);
 function onlineWorkspaceRefs(): WorkspaceRef[] {
   const refs = new Map<string, WorkspaceRef>();
   for (const tab of props.tabs.tabs) {
-    if (tab.workspaceRef.kind === "online") refs.set(tab.workspaceRef.workspaceId, tab.workspaceRef);
+    if (tab.workspaceRef.kind === "online") refs.set(JSON.stringify([tab.workspaceRef.baseUrl, tab.workspaceRef.workspaceId]), tab.workspaceRef);
   }
   return [...refs.values()];
 }

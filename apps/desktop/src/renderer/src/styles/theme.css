@@ -5,6 +5,12 @@
   --subtle: #f8fafc; --rail-bg: #162337; --rail-text: #b5c4db;
   --rail-hover: #253853; --rail-active: #304c7a; --rail-selected: #ecf3ff;
   --control-radius: 6px; --panel-shadow: 0 2px 5px rgb(31 53 85 / 3%);
+  --workbench-topbar: #f5f8fd;
+  --workbench-background: #eaf0f8; --workbench-rail: #edf3fa; --workbench-directory: #f7f9fc;
+  --workbench-directory-selected: #dce9ff;
+  --workbench-method-post: #914b0a; --workbench-method-patch: #6624ac;
+  --workbench-method-surface: #e6f5eb; --workbench-code: #f1f5fb;
+  --workbench-json-key: #214c97; --workbench-json-string: #176037; --workbench-json-literal: #78361a;
   --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 html[data-theme="dark"] {
@@ -12,6 +18,12 @@ html[data-theme="dark"] {
   --accent: #9ab8ff; --text-muted: #a4b3ca; --pass: #7adbb0; --fail: #ff9ea6;
   --hover: rgba(230, 237, 248, 0.07); --active-weak: #2a3c62;
   --subtle: #202c3d; --rail-bg: #101926; --panel-shadow: none;
+  --workbench-topbar: #141b27;
+  --workbench-background: var(--panel); --workbench-rail: #141e2c; --workbench-directory: #192435;
+  --workbench-directory-selected: var(--active-weak);
+  --workbench-method-post: #ffbc7c; --workbench-method-patch: #d4adff;
+  --workbench-method-surface: #193b32; --workbench-code: #172231;
+  --workbench-json-key: #b4ccff; --workbench-json-string: #92e1a9; --workbench-json-literal: #ffbf91;
 }
 html[data-theme] body { background: var(--bg); color: var(--text); font-family: var(--ui-font); }
 /* Selected text needs a lighter foreground on dark panels. Keep filled controls

@@ -381,6 +381,9 @@ export interface WfRunInput { locator: WorkflowLocator; envName?: string | null;
 export interface WfCancelInput { locator: WorkflowLocator; invocationId: string; root: string }
 
 export interface ApiccApi extends TestingApi {
+  readonly windowsTitleBarOverlay?: boolean;
+  setWindowChromeTheme?(theme: import("./window-chrome.js").WindowChromeTheme): Promise<void>;
+  showApplicationMenu?(): Promise<void>;
   wsOpen(rootPath: string): Promise<OpenResult>;
   wsCreate(rootPath: string, name: string): Promise<OpenResult>;
   wsPickDirectory(): Promise<string>;
