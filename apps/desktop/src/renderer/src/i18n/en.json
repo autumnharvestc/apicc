@@ -1510,6 +1510,13 @@
     "credentials": "Credentials and OAuth"
   },
   "responseWorkbench": {
+    "history": "History",
+    "noResult": "No response yet",
+    "previousResult": "Previous response",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "expandResponse": "Expand response",
+    "collapseResponse": "Collapse response",
     "title": "Response",
     "previous": "Sending · Previous response",
     "noHttpStatus": "No HTTP status received",
@@ -1558,6 +1565,9 @@
     "scenarioStressDeferred": "Scenario stress is coming soon",
     "title": "Test"
   },
+  "projectTools": {"importInterfaces":"Import APIs","importTargetProject":"Target project","importSelectedModule":"Available merge target","noModels":"This project has no models yet.","noComponents":"This project has no components yet.","viewModel":"View model","retry":"Retry","loadingAssets":"Loading project assets…","importedModule":"Module \"{name}\" created","mergedModule":"Merged into module \"{name}\"","mergedSelectedModule":"Merged into the selected module","assetChanged":"The saved asset changed. Load the latest version to continue editing.","useSavedAsset":"Load saved version"},
+  "requestAuth": {"manageCredentials":"Manage credentials","sharedComponent":"Shared authentication component","viewComponent":"View component"},
+  "requestAi": {"configureModel":"Configure a model for case suggestions.","openSettings":"Open AI settings"},
   "api": {
     "import": "Import"
   },

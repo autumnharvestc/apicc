@@ -60,6 +60,12 @@ export function useAssetsStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
           projectId: locator.projectId,
         };
         const key = projectSessionKey(root, fixedLocator);
+        const current = this.projectLocator;
+        if (!current || projectSessionKey(this.root, current) !== key) {
+          const state = mutableAssetState(this);
+          state.models = [];
+          state.components = [];
+        }
         const revision = ++this.revision;
         this.projectLocator = fixedLocator;
         this.root = root;
@@ -72,6 +78,15 @@ export function useAssetsStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const state = mutableAssetState(this);
         state.models = models.map(clone);
         state.components = components.map(clone);
+      },
+
+      deactivate(): void {
+        const state = mutableAssetState(this);
+        state.revision += 1;
+        state.projectLocator = null;
+        state.root = "";
+        state.models = [];
+        state.components = [];
       },
 
       async listModels(): Promise<ModelAsset[]> {

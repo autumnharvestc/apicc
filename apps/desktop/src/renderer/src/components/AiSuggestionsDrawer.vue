@@ -18,8 +18,10 @@ import '../styles/ai-presentation.css';
  * editor.api.cases，不自动保存——裁定③）；关闭经 @close 调 dismissSuggestions 丢弃（零落盘）。
  * 组件零 i18n 内联中文。
  */
-const props = defineProps<{ ai: ReturnType<typeof createAiStore> }>();
+const props = defineProps<{ ai: ReturnType<typeof createAiStore>; openCaseSettings?: () => void }>();
 const { t, te } = useI18n();
+const missingCaseModel = computed(() => !!props.openCaseSettings && props.ai.businessPurpose === "case-suggestion"
+  && props.ai.businessError === "missing-model");
 const errorMessage = computed(() => {
   const code = props.ai.businessError;
   return code ? te(`ai.errors.${code}`) ? t(`ai.errors.${code}`) : te(`aiSettings.errorCodes.${code}`) ? t(`aiSettings.errorCodes.${code}`) : t('ai.operationFailed') : '';
@@ -43,8 +45,12 @@ function downloadAnalysis() {
   >
     <div class="ai-assistance">
     <!-- 来源标注恒在（裁定④）：列表内容为 AI 生成，采用前必须可见 -->
-    <a-tag color="purple" class="source-tag" data-testid="ai-source-tag">{{ t("ai.sourceTag") }}</a-tag>
-    <p v-if="errorMessage" role="alert">{{ errorMessage }}</p>
+    <a-tag v-if="!missingCaseModel" color="purple" class="source-tag" data-testid="ai-source-tag">{{ t("ai.sourceTag") }}</a-tag>
+    <div v-if="missingCaseModel" class="ai-model-required">
+      <p role="alert">{{ t("requestAi.configureModel") }}</p>
+      <a-button data-testid="ai-open-case-settings" @click="openCaseSettings?.()">{{ t("requestAi.openSettings") }}</a-button>
+    </div>
+    <p v-else-if="errorMessage" role="alert">{{ errorMessage }}</p>
     <section v-if="ai.contentChoices && !ai.businessOperationId && !ai.businessResult" class="content-choices" data-testid="ai-content-choices">
       <h3>{{ t('ai.contentSelection') }}</h3>
       <p>{{ t('ai.selectionNotice') }}</p>
@@ -78,10 +84,10 @@ function downloadAnalysis() {
     <AiOutboundPreview v-else-if="ai.outboundPreview" :preview="ai.outboundPreview.preview" :connection="ai.outboundConnection" @confirm="ai.confirmAssistance()" />
     <AiAssertionSuggestions v-else-if="ai.businessResult?.purpose === 'assertion-suggestion'" :ai="ai" />
     <AiReportAnalysis v-else-if="ai.businessResult?.purpose === 'report-analysis'" :result="ai.businessResult" :can-locate="ai.canLocateEvidence" @locate="ai.locateEvidence" @export="downloadAnalysis" />
-    <div v-else-if="!ai.suggestions || ai.suggestions.length === 0" class="empty" data-testid="ai-suggestions-empty">
+    <div v-else-if="!missingCaseModel && (!ai.suggestions || ai.suggestions.length === 0)" class="empty" data-testid="ai-suggestions-empty">
       {{ t("ai.empty") }}
     </div>
-    <div v-else class="list">
+    <div v-else-if="ai.suggestions?.length" class="list">
       <div
         v-for="row in ai.suggestions"
         :key="row.id"

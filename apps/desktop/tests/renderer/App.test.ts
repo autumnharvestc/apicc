@@ -32,6 +32,7 @@ import RequestEditor from "../../src/renderer/src/components/RequestEditor.vue";
 import OAuthManager from "../../src/renderer/src/components/OAuthManager.vue";
 import SideTree from "../../src/renderer/src/components/SideTree.vue";
 import ImportWizard from "../../src/renderer/src/components/ImportWizard.vue";
+import MockPanel from "../../src/renderer/src/components/MockPanel.vue";
 import StressPanel from "../../src/renderer/src/components/StressPanel.vue";
 import RunView from "../../src/renderer/src/components/RunView.vue";
 import TestView from "../../src/renderer/src/components/TestView.vue";
@@ -46,7 +47,7 @@ import { useDebugStore } from '../../src/renderer/src/stores/debug.js';
 import { useEditorStore } from '../../src/renderer/src/stores/editor.js';
 import { debugHistory as collaborationDebugFixture, runReport as collaborationRunFixture } from '../../../../packages/core/tests/collaboration/fixtures.js';
 import { workspaceFixture } from '../../../../packages/core/tests/helpers/contractFixtures.js';
-import { ContractWorkspaceSchema, DebugHistoryRecordSchema } from '@apicc/core/schema';
+import { ApiAssetSchema, ContractProjectSchema, ContractWorkspaceSchema, DebugHistoryRecordSchema } from '@apicc/core/schema';
 import { defaultPolicyConfig } from '@apicc/execution/contract';
 import { holdRealReportDigest } from '../helpers/realReportDigest.js';
 import { onlineTreeToDto } from '../../src/main/online/session.js';
@@ -142,13 +143,13 @@ function langOption(locale: string): DOMWrapper<Element> {
 }
 
 /** 动态 import App：保证上方 window.apicc 注入先于 api/index.ts 的模块求值。 */
-async function mountApp(attachTo?: HTMLElement) {
+async function mountApp(attachTo?: HTMLElement, stubs?: Record<string, boolean>) {
   // M11 启动恢复会读持久化键——测试间清理保证互不影响。
   // 计划 C 任务 5：apicc.lastWorkspace 单槽退役，不再读写也无须清理；签表键 apicc.projectTabs
   // 为启动恢复的数据源（恢复用例自行播种后由 mountApp 清理隔离）。
   for (const k of ["apicc.lastApi", "apicc.tree.expanded", "apicc.moduleMemory", "apicc.projectTabs"]) localStorage.removeItem(k);
   const { default: App } = await import("../../src/renderer/src/App.vue");
-  const wrapper = mount(App, { attachTo, global: { plugins: [initI18n().i18n], components: { AButton } } });
+  const wrapper = mount(App, { attachTo, global: { plugins: [initI18n().i18n], components: { AButton }, stubs } });
   await flushPromises();
   return wrapper;
 }
@@ -181,6 +182,18 @@ async function openNewApiFromContainer(wrapper: VueWrapper, label: string): Prom
   if (!row) throw new Error(`Expected the ${label} container row to be rendered`);
   await row.get('[data-testid="tree-more"]').trigger("click");
   await expectBody("new-api").trigger("click");
+}
+
+async function openProjectTool(wrapper: VueWrapper, item: string) {
+  await wrapper.get('[data-testid="project-tools"]').trigger("click");
+  await expectBody(item).trigger("click");
+  await flushPromises();
+}
+
+async function openDirectoryImport(wrapper: VueWrapper) {
+  await wrapper.get('[data-testid="directory-create"]').trigger("click");
+  await expectBody("directory-import-interfaces").trigger("click");
+  await flushPromises();
 }
 
 /** Open the real workspace, await its store action, then open the named seed project tab. */
@@ -280,8 +293,10 @@ async function openWorkflowDesigner(wrapper: VueWrapper): Promise<ReturnType<typ
 describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
   it('T12 opens the one synchronization entry for the selected local project and clears it on home', async () => {
     const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);
-    expect(wrapper.findAll('[data-testid="sync-entry"]')).toHaveLength(1);
-    await wrapper.get('[data-testid="sync-entry"]').trigger('click'); await flushPromises();
+    await wrapper.get('[data-testid="project-tools"]').trigger("click");
+    expect(document.body.querySelectorAll('[data-testid="sync-entry"]')).toHaveLength(1);
+    await expectBody("sync-entry").trigger("click");
+    await flushPromises();
     expect(wrapper.get('[data-testid="sync-panel"]').text()).toContain('当前电脑');
     await wrapper.get('[data-testid="topbar-home"]').trigger('click'); await flushPromises(); expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(false);
   });
@@ -299,14 +314,13 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     try {
       await workspace.refresh();
       const tools = () => wrapper.get('[data-testid="project-tools"]');
-      expect(wrapper.get('[data-testid="sidebar-api"]').find('[data-testid="sync-entry"]').exists()).toBe(true);
-      await wrapper.get('[data-testid="sync-entry"]').trigger("click");
-      await flushPromises();
+      expect(wrapper.get('[data-testid="sidebar-api"]').find('[data-testid="project-tools"]').exists()).toBe(true);
+      await openProjectTool(wrapper, "sync-entry");
       expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(true);
       await tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: second.locator, name: second.label });
       await flushPromises();
       expect(wrapper.find('[data-testid="sync-panel"]').exists()).toBe(false);
-      expect(wrapper.findAll('[data-testid="sync-entry"]')).toHaveLength(1);
+      expect(wrapper.findAll('[data-testid="project-tools"]')).toHaveLength(1);
       vi.stubGlobal("innerWidth", 640);
       window.dispatchEvent(new Event("resize"));
       await flushPromises();
@@ -339,6 +353,349 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     } finally {
       vi.unstubAllGlobals();
       await failingApi.nodeDelete({ kind: "project", locator: second.locator });
+    }
+  });
+
+  it("R7 后续 项目工具在空请求区可用，模型按稳定 ID 定位并恢复到请求原位置", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const model = await failingApi.modelCreate(project.locator, { name: "工具模型", description: "", schema: { kind: "scalar", type: "string" } });
+    const component = await failingApi.componentCreate(project.locator, {
+      kind: "parameter", name: "工具组件", description: "",
+      definition: { location: "query", name: "fromTool", schema: { kind: "scalar", type: "string" }, required: false, description: "" },
+    });
+    try {
+      expect(wrapper.find('[data-testid="request-editor"]').exists()).toBe(false);
+      await openProjectTool(wrapper, "project-assets-entry");
+      await vi.waitFor(() => expect(expectBody("project-tool-title").text()).toContain("示例项目"));
+      expect(expectBody("assets-panel").element.tagName).toBe("SECTION");
+      expect(expectBody(`asset-model-select-${model.id}`).text()).toBe("工具模型");
+      await expectBody(`asset-component-select-parameter-${component.id}`).trigger("click");
+      const rawDraft = JSON.stringify({ ...component, name: "待保存组件" }, null, 2);
+      await expectBody("asset-component-definition").setValue(rawDraft);
+      await new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!).find(".ant-modal-close").trigger("click");
+      await flushPromises();
+      await openProjectTool(wrapper, "project-assets-entry");
+      expect((expectBody("asset-component-definition").element as HTMLTextAreaElement).value).toBe(rawDraft);
+      await new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!).find(".ant-modal-close").trigger("click");
+      await flushPromises();
+
+      await clickApiAndWait(wrapper);
+      const editor = wrapper.getComponent(RequestEditor).props("editor");
+      const request = editor.api!.contract.request;
+      if (request.protocol !== "http") throw new Error("Expected HTTP fixture");
+      request.body = { kind: "json", content: '{"edited":true}', schema: { kind: "array", items: { kind: "modelRef", modelId: model.id } } };
+      await wrapper.get('[data-testid="tab-body"]').trigger("click");
+      await flushPromises();
+      const scroll = wrapper.get<HTMLElement>('[data-testid="request-editor-scroll"]');
+      scroll.element.scrollTop = 61;
+      await scroll.trigger("scroll");
+      const shortcut = wrapper.get<HTMLElement>('[data-testid="schema-view-model"]');
+      shortcut.element.focus();
+      await shortcut.trigger("click");
+      await flushPromises();
+      expect(expectBody(`asset-model-select-${model.id}`).attributes("aria-pressed")).toBe("true");
+      await new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!).find(".ant-modal-close").trigger("click");
+      await flushPromises();
+      expect(document.activeElement).toBe(shortcut.element);
+      expect(wrapper.get('[data-testid="request-editor-scroll"]').element).toBe(scroll.element);
+      expect(scroll.element.scrollTop).toBe(61);
+      expect(request.body.content).toBe('{"edited":true}');
+      request.body.schema = { kind: "modelRef", modelId: "missing-model" };
+      await flushPromises();
+      await wrapper.get('[data-testid="schema-view-model"]').trigger("click");
+      await flushPromises();
+      expect(expectBody("project-asset-target-missing").text()).toBeTruthy();
+      await new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!).find(".ant-modal-close").trigger("click");
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.source.kind).toBe("free"));
+      const free = editor.activeFreeSession;
+      if (!free || free.request.protocol !== "http") throw new Error("Expected a free HTTP draft");
+      free.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: model.id } };
+      await wrapper.get('[data-testid="tab-body"]').trigger("click");
+      await wrapper.get('[data-testid="schema-view-model"]').trigger("click");
+      await vi.waitFor(() => expect(expectBody(`asset-model-select-${model.id}`).attributes("aria-pressed")).toBe("true"));
+    } finally {
+      await failingApi.nodeDelete({ kind: "model", locator: { ...project.locator, modelId: model.id } });
+      await failingApi.nodeDelete({ kind: "component", locator: { ...project.locator, componentKind: "parameter", componentId: component.id } });
+    }
+  });
+
+  it("R7 后续 认证签显示共享凭据引用，按稳定组件 ID 定位且回焦", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const ref = { id: "shared-auth-ref-for-view", policy: "test-auto" as const };
+    const asset = await failingApi.componentCreate(project.locator, { kind: "auth", name: "共享认证 A", description: "", definition: { kind: "bearer", token: ref } });
+    try {
+      await clickApiAndWait(wrapper);
+      const editor = wrapper.getComponent(RequestEditor).props("editor");
+      const request = editor.api!.contract.request;
+      request.auth = { kind: "componentRef", componentId: asset.id, expectedKind: "auth" };
+      await wrapper.get('[data-testid="tab-auth"]').trigger("click");
+      expect(wrapper.get('[data-testid="request-shared-auth"]').text()).toContain("共享认证 A");
+      expect(wrapper.get('[data-testid="request-shared-auth"]').text()).toContain("Bearer");
+      expect(wrapper.get('[data-testid="request-auth-reference"]').text()).toContain(ref.id);
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="credential-status"]').text()).toBe("凭据未保存"));
+      expect(wrapper.find('[data-testid="credential-value"]').exists()).toBe(false);
+      expect(request.auth.kind).toBe("componentRef");
+      const trigger = wrapper.get<HTMLElement>('[data-testid="auth-view-shared-component"]');
+      trigger.element.focus();
+      await trigger.trigger("click");
+      await vi.waitFor(() => expect(expectBody(`asset-component-select-auth-${asset.id}`).attributes("aria-pressed")).toBe("true"));
+      const modal = new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!);
+      expect(modal.find('[data-testid="credential-editor"]').exists()).toBe(true);
+      const token = "shared-fixture-value";
+      let releaseSave!: () => void;
+      const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+      const realPut = failingApi.credentialPut.bind(failingApi);
+      const put = vi.spyOn(failingApi, "credentialPut").mockImplementationOnce(async (input) => { await saveGate; return realPut(input); });
+      try {
+        await modal.get('[data-testid="credential-value"]').setValue(token);
+        await modal.get('[data-testid="credential-save"]').trigger("click");
+        expect(put).toHaveBeenCalledOnce();
+        await modal.get(".ant-modal-close").trigger("click");
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="credential-status"]').text()).toBe("凭据未保存"));
+      } finally { releaseSave(); put.mockRestore(); }
+      await flushPromises();
+      expect(document.activeElement).toBe(trigger.element);
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="credential-status"]').text()).toBe("凭据可用"));
+      expect(wrapper.text()).not.toContain(token);
+      expect(request.auth).toEqual({ kind: "componentRef", componentId: asset.id, expectedKind: "auth" });
+
+      await trigger.trigger("click");
+      await vi.waitFor(() => expect(expectBody(`asset-component-select-auth-${asset.id}`).attributes("aria-pressed")).toBe("true"));
+      const reopened = new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!);
+      let releaseRemove!: () => void;
+      const removeGate = new Promise<void>((resolve) => { releaseRemove = resolve; });
+      const realRemove = failingApi.credentialRemove.bind(failingApi);
+      const remove = vi.spyOn(failingApi, "credentialRemove").mockImplementationOnce(async (input) => { await removeGate; return realRemove(input); });
+      try {
+        await reopened.get('[data-testid="credential-remove"]').trigger("click");
+        expect(remove).toHaveBeenCalledOnce();
+        await reopened.get(".ant-modal-close").trigger("click");
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="credential-status"]').text()).toBe("凭据可用"));
+      } finally { releaseRemove(); remove.mockRestore(); }
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="credential-status"]').text()).toBe("凭据未保存"));
+
+      const workspace = wrapper.getComponent(TopBar).props("workspace");
+      const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+      const second = await realNodeCreate({ kind: "project", parent: { workspaceId: project.locator.workspaceId, groupId: project.locator.groupId }, name: "共享凭据隔离 B" });
+      if (second.kind !== "project") throw new Error("Expected second project");
+      let releasePrior!: () => void;
+      const priorGate = new Promise<void>((resolve) => { releasePrior = resolve; });
+      const latePut = vi.spyOn(failingApi, "credentialPut").mockImplementationOnce(async (input) => { await priorGate; return realPut(input); });
+      try {
+        await trigger.trigger("click");
+        await vi.waitFor(() => expect(expectBody(`asset-component-select-auth-${asset.id}`).attributes("aria-pressed")).toBe("true"));
+        const prior = new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!);
+        await prior.get('[data-testid="credential-value"]').setValue(token);
+        await prior.get('[data-testid="credential-save"]').trigger("click");
+        expect(latePut).toHaveBeenCalledOnce();
+        await workspace.refresh();
+        await tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: second.locator, name: second.label });
+        await flushPromises();
+        expect(bodyFind("local-project-tool")).toBeNull();
+        releasePrior();
+        await latePut.mock.results[0]?.value;
+        await flushPromises();
+        expect(wrapper.find('[data-testid="credential-status"]').exists()).toBe(false);
+        expect(bodyFind("local-project-tool")).toBeNull();
+      } finally {
+        releasePrior();
+        await latePut.mock.results[0]?.value;
+        latePut.mockRestore();
+        await realRemove({ locator: project.locator, ref });
+        await failingApi.nodeDelete({ kind: "project", locator: second.locator });
+      }
+    } finally {
+      await failingApi.nodeDelete({ kind: "component", locator: { ...project.locator, componentKind: "auth", componentId: asset.id } });
+    }
+  });
+
+  it("R7 后续 Mock 从项目工具关闭停止读取，切项目无串读，回到同项目保留草稿和运行", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const root = await failingApi.treeGet();
+    const project = projectByLabel(root, "示例项目");
+    const group = root.children?.find((node) => node.kind === "group");
+    if (group?.kind !== "group") throw new Error("Expected workspace group");
+    const second = await realNodeCreate({ kind: "project", parent: group.locator, name: "后续 Mock B" });
+    if (second.kind !== "project") throw new Error("Expected project");
+    const workspace = wrapper.getComponent(TopBar).props("workspace");
+    const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+    const get = vi.spyOn(failingApi, "mockGet");
+    const stop = vi.spyOn(failingApi, "mockStop");
+    const original = await failingApi.mockGet(project.locator);
+    const savedConfig = { formatVersion: 1 as const, seed: "saved-before-mock", enabledContractIds: [], rules: [] };
+    await failingApi.mockConfigSave({ locator: project.locator, sourceProjectRevision: original.sourceProjectRevision, config: savedConfig });
+    get.mockClear();
+    try {
+      await workspace.refresh();
+      expect(wrapper.findComponent(RequestEditor).attributes("data-source-kind")).toBeUndefined();
+      await openProjectTool(wrapper, "project-mock-entry");
+      await vi.waitFor(() => expect(expectBody("mock-status").attributes("data-status")).toBe("stopped"));
+      await expectBody("mock-start").trigger("click");
+      await vi.waitFor(() => expect(expectBody("mock-status").attributes("data-status")).toBe("running"));
+      const draftText = JSON.stringify({ ...savedConfig, seed: "keep-A-draft" }, null, 2);
+      await expectBody("mock-config").setValue(draftText);
+      await new DOMWrapper(expectBody("local-project-tool").element.closest('[role="dialog"]')!).find(".ant-modal-close").trigger("click");
+      await flushPromises();
+      expect(wrapper.getComponent(MockPanel).props("active")).toBe(false);
+      const before = get.mock.calls.length;
+      vi.useFakeTimers();
+      await vi.advanceTimersByTimeAsync(4_500);
+      vi.useRealTimers();
+      expect(get).toHaveBeenCalledTimes(before);
+      expect(stop).not.toHaveBeenCalled();
+
+      await tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: second.locator, name: second.label });
+      await openProjectTool(wrapper, "project-mock-entry");
+      expect(get).toHaveBeenLastCalledWith(second.locator);
+      expect((expectBody("mock-config").element as HTMLTextAreaElement).value).not.toContain("keep-A-draft");
+      const originalTab = Object.values((tabs as ReturnType<typeof createTabsStore>).tabs)
+        .find((tab) => "projectLocator" in tab && tab.projectLocator.projectId === project.locator.projectId);
+      if (!originalTab) throw new Error("Expected the original project tab");
+      await tabs.activateTab(originalTab.tabId);
+      await flushPromises();
+      expect(wrapper.findComponent(MockPanel).exists()).toBe(false);
+      await openProjectTool(wrapper, "project-mock-entry");
+      expect(get).toHaveBeenLastCalledWith(project.locator);
+      expect(expectBody("mock-status").attributes("data-status")).toBe("running");
+      expect((expectBody("mock-config").element as HTMLTextAreaElement).value).toBe(draftText);
+      await expectBody("mock-new-free-request").trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.source.kind).toBe("free"));
+      expect(wrapper.getComponent(RequestEditor).props("requestTab")?.project).toEqual(project.locator);
+    } finally {
+      vi.useRealTimers();
+      get.mockRestore();
+      stop.mockRestore();
+      await failingApi.mockProjectClose({ root: workspace.root, locator: project.locator });
+      await failingApi.nodeDelete({ kind: "project", locator: second.locator });
+    }
+  });
+
+  it("R7 后续 目录导入锁定当前项目和所选模块，新建和合并各自落盘", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const existing = project.children.find((node) => node.kind === "collection");
+    if (existing?.kind !== "collection") throw new Error("Expected existing module");
+    const source = ContractProjectSchema.parse({
+      id: "b2514220-cb8f-4c2e-a690-c41e017afe00", name: "目录导入测试", globals: {},
+      collections: [{ id: "b2514220-cb8f-4c2e-a690-c41e017afe01", name: "导入来源", variables: {}, preOperations: [], postOperations: [], folders: [],
+        apis: [ApiAssetSchema.parse({ contract: {
+          formatVersion: 1, id: "b2514220-cb8f-4c2e-a690-c41e017afe02", metadata: { name: "合并来源接口", description: "", tags: [], version: "1", status: "draft" },
+          request: { protocol: "http", method: "GET", baseUrl: "https://example.test", path: "/directory-import", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" }, body: { kind: "none" } },
+          responses: [],
+        }, cases: [], documentation: "" })],
+      }],
+    });
+    const imported = source.collections[0]!;
+    const originalPreview = failingApi.importPreview.bind(failingApi);
+    const preview = vi.spyOn(failingApi, "importPreview").mockImplementation(async (input) => {
+      const result = await originalPreview(input);
+      failingApi.setImportPreviewCandidate(result.token, source);
+      return { ...result, tree: [{ id: imported.id, name: imported.name, apis: [
+        { id: imported.apis[0]!.contract.id, name: "合并来源接口", method: "GET", path: "/directory-import" },
+      ] }] };
+    });
+    const plan = vi.spyOn(failingApi, "importPlan");
+    const apply = vi.spyOn(failingApi, "importApply");
+    try {
+      expect(wrapper.find('[data-testid="request-editor"]').exists()).toBe(false);
+      await openDirectoryImport(wrapper);
+      expect(expectBody("import-target-project").text()).toBe("示例项目");
+      await expectBody("import-curl-input").setValue("curl https://example.test/directory-import");
+      await expectBody("import-curl-preview").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("import-preview-tree")).not.toBeNull());
+      await expectBody("import-name-input").setValue("目录新建模块");
+      await expectBody("import-build-plan").trigger("click");
+      await vi.waitFor(() => expect(expectBody("import-apply").attributes("disabled")).toBeUndefined());
+      await expectBody("import-apply").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("import-done")).not.toBeNull());
+      expect(expectBody("import-done").text()).toContain("已新建模块「目录新建模块」");
+      expect(plan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "module", target: project.locator, name: "目录新建模块" }));
+      expect(projectByLabel(await failingApi.treeGet(), "示例项目").children.some((node) => node.label === "目录新建模块")).toBe(true);
+      await expectBody("import-undo").trigger("click");
+      await vi.waitFor(async () => expect(projectByLabel(await failingApi.treeGet(), "示例项目").children.some((node) => node.label === "目录新建模块")).toBe(false));
+      await expectBody("import-finish").trigger("click");
+
+      await clickApiAndWait(wrapper);
+      await openDirectoryImport(wrapper);
+      expect(expectBody("import-target-module").text()).toBe(existing.label);
+      await expectBody("import-curl-input").setValue("curl https://example.test/directory-import");
+      await expectBody("import-curl-preview").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("import-preview-tree")).not.toBeNull());
+      const control = expectBody("import-merge-selected-module").element;
+      const checkbox = control instanceof HTMLInputElement ? control : control.querySelector("input");
+      if (!checkbox) throw new Error("Expected merge option");
+      await new DOMWrapper(checkbox).setValue(true);
+      expect(bodyFind("import-name-input")).toBeNull();
+      await expectBody("import-build-plan").trigger("click");
+      await vi.waitFor(() => expect(expectBody("import-apply").attributes("disabled")).toBeUndefined());
+      await expectBody("import-apply").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("import-done")).not.toBeNull());
+      expect(expectBody("import-done").text()).toContain(`已合并到模块「${existing.label}」`);
+      expect(plan).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "merge", target: existing.locator }));
+      expect(apply).toHaveBeenCalledTimes(2);
+      const merged = projectByLabel(await failingApi.treeGet(), "示例项目").children.find((node) => node.id === existing.id);
+      expect(merged?.children?.some((node) => node.label === "合并来源接口")).toBe(true);
+      await expectBody("import-undo").trigger("click");
+      await vi.waitFor(async () => {
+        const restored = projectByLabel(await failingApi.treeGet(), "示例项目").children.find((node) => node.id === existing.id);
+        expect(restored?.children?.some((node) => node.label === "合并来源接口")).toBe(false);
+      });
+    } finally { preview.mockRestore(); plan.mockRestore(); apply.mockRestore(); }
+  });
+
+  it("R7 后续 目录导入在同工作区切项目时丢弃迟到计划，旧预览无法应用", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const workspace = wrapper.getComponent(TopBar).props("workspace");
+    const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+    const root = await failingApi.treeGet();
+    const projectA = projectByLabel(root, "示例项目");
+    const group = root.children?.find((node) => node.kind === "group");
+    if (group?.kind !== "group") throw new Error("Expected workspace group");
+    const projectB = await realNodeCreate({ kind: "project", parent: group.locator, name: "目录导入 B" });
+    if (projectB.kind !== "project") throw new Error("Expected a second project");
+    const originalPlan = failingApi.importPlan.bind(failingApi);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const plan = vi.spyOn(failingApi, "importPlan").mockImplementation(async (input) => {
+      if (input.target.workspaceId === projectA.locator.workspaceId && "projectId" in input.target && input.target.projectId === projectA.locator.projectId) await gate;
+      return originalPlan(input);
+    });
+    const apply = vi.spyOn(failingApi, "importApply");
+    try {
+      await workspace.refresh();
+      await openDirectoryImport(wrapper);
+      await expectBody("import-curl-input").setValue("curl https://example.test/old");
+      await expectBody("import-curl-preview").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("import-preview-tree")).not.toBeNull());
+      const oldStore = wrapper.getComponent(ImportWizard).props("importW");
+      await expectBody("import-build-plan").trigger("click");
+      await vi.waitFor(() => expect(plan).toHaveBeenCalledTimes(1));
+      await tabs.openProjectTab({ kind: "local", dir: workspace.root }, { locator: projectB.locator, name: projectB.label });
+      await flushPromises();
+      expect(bodyFind("import-wizard")).toBeNull();
+      await openDirectoryImport(wrapper);
+      expect(expectBody("import-target-project").text()).toBe("目录导入 B");
+      await expectBody("import-curl-input").setValue("curl https://example.test/new");
+      await expectBody("import-curl-preview").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("import-preview-tree")).not.toBeNull());
+      release();
+      await flushPromises();
+      expect(oldStore.plan).toBeNull();
+      expect(expectBody("import-apply").attributes("disabled")).toBeDefined();
+      expect(apply).not.toHaveBeenCalled();
+    } finally {
+      release();
+      plan.mockRestore();
+      apply.mockRestore();
+      await failingApi.nodeDelete({ kind: "project", locator: projectB.locator });
     }
   });
 
@@ -540,6 +897,92 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       expect(cancelled).toEqual([operationId]); expect(detached).toBe(1);
     } finally { release(); await pending; for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
   });
+
+  it("R7 后续 AI 建议从标题、窄窗请求菜单和设计进入，缺模型时明确点击设置并回焦", async () => {
+    const inspect = vi.spyOn(failingApi, "aiInspectChoices").mockRejectedValue(
+      new Error("Error invoking remote method 'ai:inspectChoices': Error: missing-model"),
+    );
+    const wrapper = await mountApp(document.body);
+    try {
+      await openLocalDir(wrapper);
+      await clickApiAndWait(wrapper);
+      const title = wrapper.get<HTMLElement>(".request-heading [data-testid='ai-suggest-btn']");
+      title.element.focus();
+      await title.trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-open-case-settings")).not.toBeNull());
+      expect(bodyFind("ai-config-body")).toBeNull();
+      await expectBody("ai-open-case-settings").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-settings-for-suggestion")).not.toBeNull());
+      expect(inspect).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "capture", input: expect.objectContaining({
+        selection: expect.objectContaining({ business: expect.objectContaining({ purpose: "case-suggestion" }) }),
+      }) }));
+      await expectBody("ai-config-close").trigger("click");
+      await flushPromises();
+      expect(document.activeElement).toBe(title.element);
+
+      vi.stubGlobal("innerWidth", 640);
+      window.dispatchEvent(new Event("resize"));
+      await flushPromises();
+      expect(wrapper.find(".request-heading [data-testid='ai-suggest-btn']").exists()).toBe(false);
+      const more = wrapper.get<HTMLElement>('[data-testid="request-more"]');
+      await more.trigger("click");
+      await expectBody("ai-suggest-btn").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-open-case-settings")).not.toBeNull());
+      expect(bodyFind("ai-config-body")).toBeNull();
+      await expectBody("ai-open-case-settings").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-settings-for-suggestion")).not.toBeNull());
+      await expectBody("ai-config-close").trigger("click");
+      await flushPromises();
+      expect(document.activeElement).toBe(more.element);
+
+      await subRadio(wrapper, "design").setValue(true);
+      await flushPromises();
+      const designTrigger = wrapper.get<HTMLElement>('[data-testid="design-panel"] [data-testid="ai-suggest-btn"]');
+      await designTrigger.trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-open-case-settings")).not.toBeNull());
+      expect(bodyFind("ai-config-body")).toBeNull();
+      await expectBody("ai-open-case-settings").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-settings-for-suggestion")).not.toBeNull());
+      await expectBody("ai-config-close").trigger("click");
+      await flushPromises();
+      expect(document.activeElement).toBe(designTrigger.element);
+      expect(inspect).toHaveBeenCalledTimes(3);
+
+      await wrapper.get('[data-testid="settings-toggle"]').trigger("click");
+      await expectBody("settings-ai").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("ai-config-body")).not.toBeNull());
+      expect(bodyFind("ai-settings-for-suggestion")).toBeNull();
+      await expectBody("ai-config-close").trigger("click");
+      await flushPromises();
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="settings-toggle"]').element);
+    } finally {
+      vi.unstubAllGlobals();
+      inspect.mockRestore();
+    }
+  });
+
+  it("R7 后续 切换请求后迟到的 AI 缺模型结果不会打开设置", async () => {
+    let rejectInspection!: (error: Error) => void;
+    const inspection = new Promise<Awaited<ReturnType<typeof failingApi.aiInspectChoices>>>((_resolve, reject) => { rejectInspection = reject; });
+    const inspect = vi.spyOn(failingApi, "aiInspectChoices").mockReturnValue(inspection);
+    const wrapper = await mountApp(document.body);
+    try {
+      await openLocalDir(wrapper);
+      await clickApiAndWait(wrapper);
+      const tab = wrapper.getComponent(RequestEditor).props("requestTab");
+      if (!tab) throw new Error("Expected API request tab");
+      await wrapper.get('[data-testid="ai-suggest-btn"]').trigger("click");
+      expect(inspect).toHaveBeenCalledOnce();
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.source.kind).toBe("free"));
+      await wrapper.get(`[data-testid="request-tab-${tab.tabId}"]`).trigger("click");
+      await clickApiAndWait(wrapper);
+      rejectInspection(new Error("Error invoking remote method 'ai:inspectChoices': Error: missing-model"));
+      await flushPromises();
+      expect(bodyFind("ai-config-body")).toBeNull();
+      expect(wrapper.getComponent(AiSuggestionsDrawer).props("ai").drawerOpen).toBe(false);
+    } finally { inspect.mockRestore(); }
+  });
   it("挂载缺省主页（无打开记录）；顶栏主页入口可见；主页视图不渲染 rail（用户裁定）", async () => {
     const wrapper = await mountApp();
     expect(wrapper.find('[data-testid="app-root"]').exists()).toBe(true);
@@ -565,6 +1008,10 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(split.exists()).toBe(true);
     expect(Array.from(split.element.children).map((el) => el.getAttribute("data-testid"))).toEqual(["api-head", "debug-split"]);
     const debugSplit = split.get('[data-testid="debug-split"]');
+    expect(Array.from(debugSplit.element.children).map((el) => el.getAttribute("data-testid"))).toEqual(["editor-pane", "viewer-pane"]);
+    const toggle = debugSplit.get('[data-testid="response-expand-toggle"]');
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    await toggle.trigger("click");
     expect(Array.from(debugSplit.element.children).map((el) => el.getAttribute("data-testid"))).toEqual(["editor-pane", "split-divider", "viewer-pane"]);
     const separator = debugSplit.get('[role="separator"]');
     expect(separator.attributes("aria-valuenow")).toBe("54");
@@ -572,8 +1019,114 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(separator.attributes("aria-valuenow")).toBe("59");
     await separator.trigger("keydown", { key: "End" });
     expect(separator.attributes("aria-valuenow")).toBe("70");
-    await separator.trigger("keydown", { key: "Enter" });
-    expect(separator.attributes("aria-valuenow")).toBe("54");
+    await toggle.trigger("click");
+    expect(debugSplit.find('[role="separator"]').exists()).toBe(false);
+    await toggle.trigger("click");
+    expect(debugSplit.get('[role="separator"]').attributes("aria-valuenow")).toBe("70");
+    await debugSplit.get('[role="separator"]').trigger("keydown", { key: "Enter" });
+    expect(debugSplit.get('[role="separator"]').attributes("aria-valuenow")).toBe("54");
+  });
+
+  it("R7 后续 收起和展开时共用响应历史入口，设计入口也保留筛选和回焦", async () => {
+    const wrapper = await mountApp(document.body, { transition: false });
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    const start = vi.spyOn(failingApi, "debugStart");
+    const historyList = vi.spyOn(failingApi, "debugHistoryList");
+    try {
+      const history = wrapper.getComponent(DebugHistory);
+      const trigger = wrapper.get<HTMLElement>('[data-testid="debug-history-open"]');
+      for (const expanded of [false, true]) {
+        const toggle = wrapper.get('[data-testid="response-expand-toggle"]');
+        if (expanded) await toggle.trigger("click");
+        expect(toggle.attributes("aria-expanded")).toBe(String(expanded));
+        expect(wrapper.get('[data-testid="debug-history-open"]').element).toBe(trigger.element);
+        trigger.element.focus();
+        await trigger.trigger("click");
+        await vi.waitFor(() => expect(bodyFind("debug-history")).not.toBeNull());
+        expect(wrapper.getComponent(DebugHistory).props("history") === history.props("history")).toBe(true);
+        await expectBody("debug-history-current-api").trigger("click");
+        await expectBody("debug-history-filter").trigger("click");
+        await flushPromises();
+        expect(historyList).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: expect.any(String), apiId: expect.any(String) }));
+        const close = new DOMWrapper(expectBody("debug-history").element.closest('[role="dialog"]')!).get<HTMLElement>(".ant-modal-close");
+        close.element.focus();
+        await close.trigger("keydown", { key: "Escape", keyCode: 27 });
+        await vi.waitFor(() => expect(document.activeElement === trigger.element).toBe(true));
+      }
+      await subRadio(wrapper, "design").setValue(true);
+      await flushPromises();
+      const design = wrapper.get<HTMLElement>('[data-testid="debug-history-open"]');
+      await design.trigger("click");
+      await vi.waitFor(() => expect(bodyFind("debug-history")).not.toBeNull());
+      expect(wrapper.getComponent(DebugHistory).props("history") === history.props("history")).toBe(true);
+      await new DOMWrapper(expectBody("debug-history").element.closest('[role="dialog"]')!).get(".ant-modal-close").trigger("click");
+      await vi.waitFor(() => expect(document.activeElement === design.element).toBe(true));
+      expect(start).not.toHaveBeenCalled();
+    } finally { start.mockRestore(); historyList.mockRestore(); }
+  });
+
+  it("R7 后续 仅已接受的前台发送展开响应，拒绝和后台结果不改变偏好", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    const tab = wrapper.getComponent(RequestEditor).props("requestTab");
+    if (!tab) throw new Error("Expected API request tab");
+    const toggle = () => wrapper.get('[data-testid="response-expand-toggle"]');
+    const realStart = failingApi.debugStart.bind(failingApi);
+    const realWait = failingApi.debugWait.bind(failingApi);
+    const waitWithHttp = async (input: Parameters<typeof realWait>[0]) => {
+      const result = await realWait(input);
+      if (result.source.sourceKind !== "asset") return result;
+      return { ...result, exchanges: [{
+        source: { sourceKind: "asset" as const, case: { ...result.source.locator, caseId: "fixture-case", scope: "base" } },
+        rowIndex: 0, hopIndex: 0, order: 1, transportState: "responded" as const,
+        settings: { connectTimeoutMs: 1000, headersTimeoutMs: 1000, bodyTimeoutMs: 1000, totalTimeoutMs: 1000, followRedirects: false, maxRedirects: 0, uploadLimitBytes: 1024, responseLimitBytes: 1024 },
+        response: { status: 200, headers: [], cookies: [], body: { kind: "text" as const, text: "ok", contentBytes: 2, truncated: false } },
+        startedAt: result.startedAt,
+      }], exchangeTotal: 1 };
+    };
+    const start = vi.spyOn(failingApi, "debugStart").mockRejectedValueOnce(new Error("preflight request rejected"));
+    const wait = vi.spyOn(failingApi, "debugWait").mockImplementation(waitWithHttp);
+    try {
+      expect(toggle().attributes("aria-expanded")).toBe("false");
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="response-compact-status"]').text()).toBe("preflight request rejected"));
+      expect(toggle().attributes("aria-expanded")).toBe("false");
+      expect(wait).not.toHaveBeenCalled();
+
+      let acceptForeground!: () => void;
+      let finishForeground!: () => void;
+      const foregroundStart = new Promise<void>((resolve) => { acceptForeground = resolve; });
+      const foregroundWait = new Promise<void>((resolve) => { finishForeground = resolve; });
+      start.mockImplementationOnce(async (input) => { await foregroundStart; return realStart(input); });
+      wait.mockImplementationOnce(async (input) => { await foregroundWait; return waitWithHttp(input); });
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      expect(toggle().attributes("aria-expanded")).toBe("false");
+      expect(wrapper.get('[data-testid="request-send-slot"]').attributes("aria-busy")).toBe("true");
+      acceptForeground();
+      await vi.waitFor(() => expect(toggle().attributes("aria-expanded")).toBe("true"));
+      expect(wrapper.find('[data-testid="debug-cancel"]').exists()).toBe(true);
+      await toggle().trigger("click");
+      finishForeground();
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="response-status"]').text()).toBe("HTTP 200"));
+      expect(toggle().attributes("aria-expanded")).toBe("false");
+      expect(wrapper.find('[data-testid="response-tab-body"]').isVisible()).toBe(false);
+
+      let acceptBackground!: () => void;
+      const backgroundStart = new Promise<void>((resolve) => { acceptBackground = resolve; });
+      start.mockImplementationOnce(async (input) => { await backgroundStart; return realStart(input); });
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.source.kind).toBe("free"));
+      acceptBackground();
+      await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(2));
+      expect(toggle().attributes("aria-expanded")).toBe("false");
+      await wrapper.get(`[data-testid="request-tab-${tab.tabId}"]`).trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.tabId).toBe(tab.tabId));
+      expect(toggle().attributes("aria-expanded")).toBe("false");
+      expect(wrapper.get('[data-testid="response-status"]').text()).toBe("HTTP 200");
+    } finally { start.mockRestore(); wait.mockRestore(); }
   });
 
   it("R7 固定发送槽按请求签取消，离开和返回同一次运行也不会重复取消", async () => {
@@ -1195,6 +1748,45 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect((wrapper.get('[data-testid="schema-default"]').element as HTMLTextAreaElement).value).toBe("invalid-only-raw-draft");
   });
 
+  it("R7 后续 还原缺省参数后可直接关闭请求和项目签，其他改动仍需确认", async () => {
+    const registration = vi.spyOn(failingApi, "onDirtyCheck");
+    const wrapper = await mountApp();
+    const hasDrafts = registration.mock.calls.at(-1)?.[0];
+    registration.mockRestore();
+    if (!hasDrafts) throw new Error("Missing desktop dirty-check handler");
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    const editor = wrapper.getComponent(RequestEditor).props("editor");
+    const projectTabs = wrapper.getComponent(ProjectTabs).props("tabs");
+    const requests = wrapper.getComponent(RequestTabs).props("tabs");
+    const requestTab = wrapper.getComponent(RequestEditor).props("requestTab");
+    if (!requestTab || !editor.activeKey) throw new Error("Expected API request");
+    const session = editor.sessions[editor.activeKey]!;
+    session.api.contract.request.query = [{ kind: "inline", id: "restore-query", name: "query", schema: { kind: "scalar", type: "string" },
+      required: false, enabled: true, description: "" }];
+    session.snapshot = JSON.stringify(session.api);
+    await wrapper.get('[data-testid="tab-query"]').trigger("click");
+    const query = wrapper.get('[data-testid="kv-value"]');
+    await query.setValue("edited");
+    expect(hasDrafts()).toBe(true);
+    await query.setValue("");
+    expect(hasDrafts()).toBe(false);
+    await wrapper.get('[data-testid="asset-metadata-toggle"]').trigger("click");
+    const name = session.api.contract.metadata.name;
+    await wrapper.get('[data-testid="asset-metadata-name"]').setValue("other edit");
+    await wrapper.get(`[data-testid="request-tab-close-${requestTab.tabId}"]`).trigger("click");
+    await vi.waitFor(() => expect(bodyFind("dialog-confirm")).not.toBeNull());
+    await expectBody("dialog-cancel").trigger("click");
+    await wrapper.get('[data-testid="asset-metadata-name"]').setValue(name);
+    expect(hasDrafts()).toBe(false);
+    await wrapper.get(`[data-testid="request-tab-close-${requestTab.tabId}"]`).trigger("click");
+    await vi.waitFor(() => expect(requests.tabs[requestTab.tabId]).toBeUndefined());
+    expect(bodyFind("dialog-confirm")).toBeNull();
+    await wrapper.get('[data-testid="tab-close-0"]').trigger("click");
+    await vi.waitFor(() => expect(projectTabs.tabs).toHaveLength(0));
+    expect(bodyFind("dialog-confirm")).toBeNull();
+  });
+
   it("唯一项目签从主页切回时恢复原项目及未保存请求草稿", async () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
@@ -1419,28 +2011,27 @@ describe("App 视图切换装配（M8 模块化）", () => {
     await flushPromises();
     expect(wrapper.find('[data-testid="run-view"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="runs-history-btn"]').exists()).toBe(true);
-    // 导入（M10 归接口模块）：接口头按钮打开向导，取消回调试子视图
+    // 目录打开导入，取消后保留当前调试子视图
     await wrapper.find('[data-testid="rail-api"]').trigger("click");
     await flushPromises();
-    await wrapper.find('[data-testid="api-import-btn"]').trigger("click");
-    await flushPromises();
-    expect(wrapper.find('[data-testid="import-wizard"]').exists()).toBe(true);
-    const fileInput = wrapper.get('[data-testid="import-file-input"]').element as HTMLInputElement;
+    await openDirectoryImport(wrapper);
+    expect(bodyFind("import-wizard")).not.toBeNull();
+    const fileInput = expectBody("import-file-input").element as HTMLInputElement;
     Object.defineProperty(fileInput, "files", {
       value: [new File(["openapi: 3.0.0"], "preview.yaml", { type: "text/yaml" })],
       configurable: true,
     });
     await fileInput.dispatchEvent(new Event("change"));
     await flushPromises();
-    expect(wrapper.find('[data-testid="import-preview-tree"]').exists()).toBe(true);
-    expect((wrapper.get('[data-testid="import-name-input"]').element as HTMLInputElement).value).toBe("导入示例项目");
+    expect(bodyFind("import-preview-tree")).not.toBeNull();
+    expect((expectBody("import-name-input").element as HTMLInputElement).value).toBe("导入示例项目");
     const importW = wrapper.findComponent(ImportWizard).props("importW") as { preview: ImportPreviewResult | null };
     expect(importW.preview?.importerName).toBe("sample");
     expect(importW.preview?.diagnostics).toContainEqual(expect.objectContaining({
       severity: "warning", code: "IMPORT_SAMPLE_WARNING", message: "示例警告",
     }));
-    expect(wrapper.get('[data-testid="import-warnings"]').text()).toContain("示例警告");
-    await wrapper.find('[data-testid="import-cancel"]').trigger("click");
+    expect(expectBody("import-warnings").text()).toContain("示例警告");
+    await expectBody("import-cancel").trigger("click");
     await flushPromises();
     expect(importW.preview).toBeNull();
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
@@ -2432,14 +3023,12 @@ describe("App 测试模块装配（M9-D）", () => {
 
     await wrapper.get('[data-testid="rail-api"]').trigger("click");
     await wrapper.get(`[data-testid="request-tab-${tabB}"]`).trigger("click"); await flushPromises();
-    type Models = Awaited<ReturnType<typeof failingApi.modelList>>;
-    const originalModels = failingApi.modelList;
+    const originalLoad = editor.load.bind(editor);
     let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
     let entered = false; let armed = true;
-    failingApi.modelList = async (project) => {
-      const models: Models = await originalModels(project);
+    editor.load = async (...args) => {
+      await originalLoad(...args);
       if (armed) { armed = false; entered = true; await gate; }
-      return models;
     };
     try {
       await wrapper.get('[data-testid="rail-run"]').trigger("click");
@@ -2459,7 +3048,7 @@ describe("App 测试模块装配（M9-D）", () => {
       expect(cases.selectedCase).toEqual({ caseId: first.id, scope: first.scope });
       expect(debug.requestTabState(requestTabs.tabs[tabA]!).selectedCase).toEqual({ caseId: first.id, scope: first.scope });
       expect(JSON.stringify(editor.api)).toBe(draft); expect(editor.dirty).toBe(true);
-    } finally { release(); failingApi.modelList = originalModels; }
+    } finally { release(); editor.load = originalLoad; }
   });
   it("R19 evidence locate reveals the exact case from suites/history and respects dirty pane cancellation", async () => {
     const wrapper = await mountApp(); await openLocalDir(wrapper); await clickApiAndWait(wrapper);

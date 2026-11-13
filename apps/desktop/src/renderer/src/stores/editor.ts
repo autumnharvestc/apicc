@@ -1,5 +1,5 @@
 import { createPinia, defineStore } from "pinia";
-import type { ApiAsset, ApiRequest } from "@apicc/core";
+import type { ApiAsset, ApiRequest, ParameterBinding } from "@apicc/core";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { CaseDraftDeletion } from "../../../shared/types.js";
 import type { DebugFieldState, DebugInvocation } from "@apicc/core";
@@ -37,6 +37,7 @@ export interface FreeRequestSession {
 
 export type FullAssetSaveGuard = (session: EditorSession) => void;
 export type RequestDraftSaveGuard = (session: EditorSession) => void;
+export type ParameterListKey = "pathParams" | "query" | "headers" | "cookies";
 
 function copy<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -110,6 +111,23 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
       },
     },
     actions: {
+      setParameterValue(request: ApiRequest, key: ParameterListKey, binding: ParameterBinding, value: string): void {
+        const active = this.activeRequest;
+        const context = getContext();
+        const root = this.activeFreeSession?.root ?? activeSession(this)?.root;
+        if (context.readOnly || root !== context.root || active !== request || !active[key].includes(binding)) return;
+        if (value !== "") {
+          binding.value = value;
+          return;
+        }
+        const snapshot = this.snapshot;
+        const saved = snapshot ? JSON.parse(snapshot) as ApiAsset | ApiRequest : null;
+        const baseline = saved && ("contract" in saved ? saved.contract.request : saved);
+        const previous = baseline?.protocol === request.protocol ? baseline[key].find((item) => item.id === binding.id) : undefined;
+        if (previous && previous.value === undefined) delete binding.value;
+        else binding.value = "";
+      },
+
       registerFullAssetSaveGuard(guard: FullAssetSaveGuard): void {
         fullAssetSaveGuards.add(guard);
       },

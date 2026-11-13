@@ -15,6 +15,7 @@ import type { CaseIdentity } from "./cases.js";
 type Editor = ReturnType<typeof useEditorStore>;
 type RunFn = (input: DebugInvocation) => Promise<DebugResult>;
 type StartFn = (onStarted: (runId: string) => boolean) => Promise<DebugResult>;
+type OnRunAccepted = () => void;
 type ResultTarget = { root: string; locator: ApiLocator; generation?: number };
 type RequestDebugInvocation = Extract<DebugInvocation, { mode: "request" }>;
 type RestoreState = {
@@ -46,6 +47,10 @@ export interface RequestTabDebugState {
   cancelRunId: string | null;
   requestPanel: string;
   responsePanel: string;
+  responseExpanded: boolean;
+  responseFormat: "raw" | "pretty";
+  responseSearch: string;
+  responseExchangeOrder: number | null;
   requestScrollTop: number;
   responseScrollByPanel: Record<string, number>;
 }
@@ -249,6 +254,10 @@ export function useDebugStore(
           cancelRunId: null,
           requestPanel: "path",
           responsePanel: "body",
+          responseExpanded: false,
+          responseFormat: "pretty",
+          responseSearch: "",
+          responseExchangeOrder: null,
           requestScrollTop: 0,
           responseScrollByPanel: {},
         };
@@ -354,7 +363,7 @@ export function useDebugStore(
         const state = this.requestTabs[tabId];
         return !!state && (state.starting || state.sending);
       },
-      async runRequestTabInvocation(tab: RequestTab, editorValue: Editor, invocation?: DebugInvocation, runFn?: RunFn, startFn?: StartFn): Promise<void> {
+      async runRequestTabInvocation(tab: RequestTab, editorValue: Editor, invocation?: DebugInvocation, runFn?: RunFn, startFn?: StartFn, onAccepted?: OnRunAccepted): Promise<void> {
         const state = this.requestTabState(tab);
         if (state.starting || state.sending || !requestTabs?.isCurrent(tab.tabId, tab.generation, tab.root)
           || getContext().root !== tab.root) return;
@@ -393,6 +402,7 @@ export function useDebugStore(
             if (!ownerIsCurrent()) return false;
             state.activeRunId = runId;
             state.starting = false;
+            onAccepted?.();
             return true;
           };
           if (startFn) result = await startFn(registerRunId);
@@ -409,6 +419,7 @@ export function useDebugStore(
           } else throw new Error("缺少调试调用信息");
           if (ownerIsCurrent()) {
             state.result = result;
+            state.responseExchangeOrder = null;
             state.responseScrollByPanel = {};
           }
         } catch (error) {
@@ -425,7 +436,7 @@ export function useDebugStore(
       evictRequestTab(tabId: string): void {
         delete this.requestTabs[tabId];
       },
-      async sendRequestTab(tab: RequestTab, editorValue: Editor, runFn?: RunFn): Promise<void> {
+      async sendRequestTab(tab: RequestTab, editorValue: Editor, runFn?: RunFn, onAccepted?: OnRunAccepted): Promise<void> {
         const state = this.requestTabState(tab);
         if (state.starting || state.sending || !requestTabs?.isCurrent(tab.tabId, tab.generation, tab.root)) return;
         if (getContext().root !== tab.root) return;
@@ -493,7 +504,7 @@ export function useDebugStore(
             ...(state.parentHistoryId ? { parentHistoryId: state.parentHistoryId } : {}),
           };
         }
-        await this.runRequestTabInvocation(tab, editorValue, invocation, runFn);
+        await this.runRequestTabInvocation(tab, editorValue, invocation, runFn, undefined, onAccepted);
       },
       async cancelRequestTab(tabId: string) {
         const state = this.requestTabs[tabId];
@@ -713,7 +724,7 @@ export function useDebugStore(
         };
         await this.runInvocation(targetEditor, invocation, runFn);
       },
-      async send(targetEditor: Editor, runFn?: RunFn) {
+      async send(targetEditor: Editor, runFn?: RunFn, onAccepted?: OnRunAccepted) {
         const activeKey = targetEditor.activeKey;
         const session = activeKey ? targetEditor.sessions[activeKey] : undefined;
         const root = session?.root;
@@ -740,7 +751,7 @@ export function useDebugStore(
           ...(Object.keys(this.settings).length ? { settings: { ...this.settings } } : {}),
           ...(restore?.parentHistoryId ? { parentHistoryId: restore.parentHistoryId } : {}),
         };
-        await this.runInvocation(targetEditor, invocation, runFn);
+        await this.runInvocation(targetEditor, invocation, runFn, undefined, undefined, onAccepted);
       },
       async replay(historyId: string, targetEditor: Editor, locator: ApiLocator) {
         const root = getContext().root;
@@ -764,7 +775,7 @@ export function useDebugStore(
       async cancel() {
         return cancelActiveRun(this);
       },
-      async runInvocation(targetEditor: Editor, invocation: DebugInvocation | undefined, runFn?: RunFn, target?: ResultTarget, startFn?: StartFn) {
+      async runInvocation(targetEditor: Editor, invocation: DebugInvocation | undefined, runFn?: RunFn, target?: ResultTarget, startFn?: StartFn, onAccepted?: OnRunAccepted) {
         const activeKey = targetEditor.activeKey;
         const session = activeKey ? targetEditor.sessions[activeKey] : undefined;
         const root = target?.root ?? session?.root;
@@ -798,6 +809,7 @@ export function useDebugStore(
             if (epoch !== this.sendEpoch || !contextIsCurrent()) return false;
             this.activeRunId = runId;
             this.starting = false;
+            onAccepted?.();
             return true;
           };
           if (startFn) {
@@ -807,12 +819,10 @@ export function useDebugStore(
             result = await runFn(invocation);
           } else if (invocation) {
             const started = await api.debugStart(invocation);
-            if (epoch !== this.sendEpoch || !contextIsCurrent()) {
+            if (!registerRunId(started.runId)) {
               void api.debugCancel({ runId: started.runId });
               return;
             }
-            this.activeRunId = started.runId;
-            this.starting = false;
             result = await api.debugWait({ runId: started.runId });
           } else {
             throw new Error("缺少调试调用信息");
@@ -828,7 +838,7 @@ export function useDebugStore(
             this.sending = false;
             this.starting = false;
             this.activeRunId = null;
-          this.cancelRunId = null;
+            this.cancelRunId = null;
           }
         }
       },

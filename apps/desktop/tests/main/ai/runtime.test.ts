@@ -36,6 +36,16 @@ export async function setup(transport?: typeof fetch, onProgress?: (event: impor
   const runtime = createDesktopAiRuntime({ personal, sources, onProgress, fetch: transport ?? (async (url, init = {}) => { calls.push({ url: String(url), init }); return response(); }) });
   return { runtime, sources, personal, session, root, privateRoot, calls };
 }
+it("R7 gives a stable missing-model message when the case-suggestion purpose has no binding", async () => {
+  const fixture = await setup();
+  const document = await fixture.personal.repository.read();
+  expect(document.models).toHaveLength(1);
+  document.bindings = [];
+  await fixture.personal.repository.write(document, document.revision);
+  await expect(fixture.runtime.inspectChoices({ operation: "capture", input: { selection } }, {})).rejects.toThrow(/^missing-model$/);
+  expect(fixture.calls).toEqual([]);
+});
+
 it("final B I4 valid owned report returns metadata before full count or input budget can block choice", async () => {
   const f = await setup(), owner = {};
   const document = await f.personal.repository.read(); document.bindings.push({ purpose: "report-analysis", modelProfileId: "m", budgets: { evidenceCount: 1, maxInputBytes: 4096 } });

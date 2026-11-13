@@ -30,8 +30,10 @@ const props = defineProps<{
   defaultGroupLocator?: GroupLocator | null;
   /** module 模式：目标项目的完整位置。 */
   targetProjectLocator?: ProjectLocator | null;
+  targetProjectName?: string;
   /** merge 模式只绑定当前已选模块，不提供跨项目选择。 */
   targetCollectionLocator?: CollectionLocator | null;
+  targetCollectionName?: string;
 }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 const { t } = useI18n();
@@ -48,6 +50,7 @@ const decisionActions = ref<Record<string, "skip" | "rename" | "overwrite" | "ca
 const targetApiDecisions = ref<Record<string, string>>({});
 const overwriteConfirmed = ref(false);
 const lossyConfirmed = ref(false);
+const committedTarget = ref<ReturnType<typeof selectedTarget>>(null);
 
 const steps = computed(() => [
   { title: t("import.stepFile") },
@@ -79,6 +82,15 @@ const warnings = computed(() => hasCurrentPlan.value && props.importW.plan
   ? props.importW.plan.diagnostics
   : props.importW.preview?.diagnostics ?? []);
 const hasOverwrite = computed(() => props.importW.plan?.entries.some((entry) => decisionActions.value[entry.sourceApiId] === "overwrite") ?? false);
+const completionText = computed(() => {
+  if (props.importW.undone) return t("import.undoText");
+  if (!props.importW.applyResult?.committed) return t("import.planCancelled");
+  const target = committedTarget.value;
+  if (target?.mode === "module") return t("projectTools.importedModule", { name: target.name });
+  if (target?.mode === "merge") return props.targetCollectionName
+    ? t("projectTools.mergedModule", { name: props.targetCollectionName }) : t("projectTools.mergedSelectedModule");
+  return t("import.doneText", { name: props.importW.preview?.summary.projectName ?? "" });
+});
 
 async function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
@@ -173,6 +185,7 @@ async function applyImport() {
   try {
     const result = await props.importW.apply(target, lossyConfirmed.value);
     if (!props.importW.isPreviewContextCurrent(context)) return;
+    committedTarget.value = target;
     if (!result.committed && !props.importW.plan?.cancelled && result.summary.added + result.summary.overwritten === 0) {
       stepError.value = t("import.planNoChanges");
     }
@@ -187,7 +200,10 @@ async function refreshCommitted() {
 }
 
 async function undoImport() {
-  try { await props.importW.undo(); } catch (e) { props.reportError(e); }
+  const context = props.importW.previewContext;
+  if (!context) return;
+  try { await props.importW.undo(); }
+  catch (e) { if (props.importW.isPreviewContextCurrent(context)) props.reportError(e); }
 }
 
 function closeWizard() {
@@ -202,6 +218,7 @@ function closeWizard() {
   lossyConfirmed.value = false;
   stepError.value = "";
   curlText.value = "";
+  committedTarget.value = null;
   current.value = 0;
   emit("close");
 }
@@ -209,6 +226,12 @@ function closeWizard() {
 
 <template>
   <section class="import-wizard" data-testid="import-wizard">
+    <dl v-if="mode === 'module' && targetProjectName" class="import-destination">
+      <dt>{{ t("projectTools.importTargetProject") }}</dt><dd data-testid="import-target-project">{{ targetProjectName }}</dd>
+      <template v-if="targetCollectionName">
+        <dt>{{ t("projectTools.importSelectedModule") }}</dt><dd data-testid="import-target-module">{{ targetCollectionName }}</dd>
+      </template>
+    </dl>
     <a-steps :items="steps" :current="current" size="small" data-testid="import-steps" />
     <!-- 第一步：选择文件 -->
     <div v-if="current === 0" class="step-body">
@@ -277,7 +300,7 @@ function closeWizard() {
           data-testid="import-group-select"
         />
       </label>
-      <label class="group-row">
+      <label v-if="mode === 'project' || !mergeIntoExisting" class="group-row">
         <span>{{ mode === "project" ? t("home.projectName") : t("home.moduleName") }}</span>
         <a-input
           v-model:value="targetName"
@@ -320,7 +343,7 @@ function closeWizard() {
         <a-alert
           :type="importW.applyResult?.committed || importW.undone ? 'success' : 'info'"
           :message="importW.undone ? t('import.undoTitle') : importW.applyResult?.committed ? t('import.doneTitle') : t('import.noChangesWritten')"
-          :description="importW.undone ? t('import.undoText') : importW.applyResult?.committed ? t('import.doneText', { name: importW.preview?.summary.projectName ?? '' }) : t('import.planCancelled')"
+          :description="completionText"
           show-icon
         />
       </div>
@@ -350,6 +373,9 @@ function closeWizard() {
 .hidden-input {
   display: none;
 }
+.import-destination { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+.import-destination dt { color: var(--text-muted); }
+.import-destination dd { margin: 0; overflow-wrap: anywhere; font-weight: 600; }
 .curl-input {
   box-sizing: border-box;
   width: 100%;

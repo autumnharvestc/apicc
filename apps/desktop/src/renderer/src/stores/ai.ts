@@ -312,7 +312,7 @@ export function createAiStore(deps: {
       },
 
       /** Prepare the current API through the trusted host; sending requires a separate confirmation. */
-      async fetchSuggestions(caseIdentity?: { caseId: string; scope: string }, basis: Extract<AiPrepareInput['selection']['business'], { purpose: 'assertion-suggestion' }>['basis'] = { kind: 'contract' }): Promise<void> {
+      async fetchSuggestions(caseIdentity?: { caseId: string; scope: string }, basis: Extract<AiPrepareInput['selection']['business'], { purpose: 'assertion-suggestion' }>['basis'] = { kind: 'contract' }, entryIsCurrent: () => boolean = () => true): Promise<void> {
         const target = activeTarget(this.settings?.revision ?? null);
         if (!target || getContext().readOnly) {
           this.error = this.businessError = "ai-source-unavailable";
@@ -337,17 +337,18 @@ export function createAiStore(deps: {
         this.outboundPreview = null;
         this.businessResult = null;
         this.drawerOpen = true;
+        const isCurrent = () => entryIsCurrent() && targetIsCurrent(target, this.settings?.revision ?? null);
         try {
-          assistanceIsCurrent = () => targetIsCurrent(target, this.settings?.revision ?? null);
+          assistanceIsCurrent = isCurrent;
           const { bodySelection: _body, evidenceSelection: _evidence, choicesId: _choices, ...captureInput } = input;
           const choices = await api.aiInspectChoices({ operation: 'capture', input: captureInput });
           if (requestGeneration !== suggestionGeneration) return;
-          if (!targetIsCurrent(target, this.settings?.revision ?? null)) { clearSuggestions(this); return; }
+          if (!isCurrent()) { clearSuggestions(this); return; }
           this.contentChoices = choices; this.contentEvidenceIds = null; choiceInput = input;
           input.choicesId = choices.choicesId;
           const prepared = await api.aiPrepareAssistance(input);
           if (requestGeneration !== suggestionGeneration) return;
-          if (!targetIsCurrent(target, this.settings?.revision ?? null)) {
+          if (!isCurrent()) {
             clearSuggestions(this);
             return;
           }
@@ -358,10 +359,10 @@ export function createAiStore(deps: {
           this.selectedIds = [];
           this.drawerOpen = true;
           suggestionTarget = target;
-          assistanceIsCurrent = () => targetIsCurrent(target, this.settings?.revision ?? null);
+          assistanceIsCurrent = isCurrent;
         } catch (e) {
           if (requestGeneration !== suggestionGeneration) return;
-          if (!targetIsCurrent(target, this.settings?.revision ?? null)) {
+          if (!isCurrent()) {
             clearSuggestions(this);
             return;
           }

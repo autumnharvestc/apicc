@@ -8,6 +8,7 @@ const props = withDefaults(defineProps<{
   modelValue?: SchemaNode;
   models?: ModelAsset[];
   readOnly?: boolean;
+  viewModel?: (modelId: string, trigger: HTMLElement) => void;
   /** Optional identity-scoped raw-value bridge used by the formal Design view. */
   draftScope?: string;
   drafts?: Record<string, { value: string; error: string }>;
@@ -262,6 +263,8 @@ function parseAnnotation(key: AnnotationField, value: string) {
           <option v-for="model in models" :key="model.id" :value="model.id">{{ model.name }}</option>
         </select>
         <span v-if="!modelRefExists">{{ t('contract.missingModel') }}</span>
+        <a v-if="viewModel" href="#project-assets" data-testid="schema-view-model"
+          @click.prevent="viewModel(modelRefNode.modelId, $event.currentTarget as HTMLElement)">{{ t('projectTools.viewModel') }}</a>
       </div>
       <div v-else-if="node.kind === 'object'" class="nested">
         <div v-for="(child, name) in node.properties" :key="name" class="property">
@@ -270,7 +273,7 @@ function parseAnnotation(key: AnnotationField, value: string) {
             <label><input type="checkbox" :checked="node.required.includes(name)" data-testid="schema-required" @change="setRequired(name, ($event.target as HTMLInputElement).checked)" />{{ t('contract.required') }}</label>
             <button type="button" data-testid="schema-property-remove" @click="removeProperty(name)">×</button>
           </div>
-          <SchemaEditor :model-value="child" :models="models" :read-only="readOnly" :draft-scope="propertyScope(name)" :drafts="drafts" @update:model-value="setProperty(name, $event as SchemaNode | undefined)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
+          <SchemaEditor :model-value="child" :models="models" :read-only="readOnly" :view-model="viewModel" :draft-scope="propertyScope(name)" :drafts="drafts" @update:model-value="setProperty(name, $event as SchemaNode | undefined)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
         </div>
         <div class="row">
           <input v-model="propertyName" data-testid="schema-property-name" :placeholder="t('contract.propertyName')" />
@@ -282,17 +285,17 @@ function parseAnnotation(key: AnnotationField, value: string) {
           <option value="schema">schema</option>
         </select></label>
         <div v-if="typeof node.additionalProperties === 'object'" data-testid="schema-additional-schema">
-          <SchemaEditor :model-value="node.additionalProperties" :models="models" :read-only="readOnly" :draft-scope="draftScope ? `${draftScope}.additionalProperties` : undefined" :drafts="drafts" @update:model-value="replace((copy) => { if (copy.kind === 'object' && $event) copy.additionalProperties = $event; })" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
+          <SchemaEditor :model-value="node.additionalProperties" :models="models" :read-only="readOnly" :view-model="viewModel" :draft-scope="draftScope ? `${draftScope}.additionalProperties` : undefined" :drafts="drafts" @update:model-value="replace((copy) => { if (copy.kind === 'object' && $event) copy.additionalProperties = $event; })" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
         </div>
       </div>
       <div v-else-if="node.kind === 'array'" class="nested">
         <label>{{ t('contract.arrayItems') }}</label>
-          <SchemaEditor :model-value="node.items" :models="models" :read-only="readOnly" :draft-scope="draftScope ? `${draftScope}.items` : undefined" :drafts="drafts" @update:model-value="replace((copy) => { if (copy.kind === 'array' && $event) copy.items = $event; })" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
+          <SchemaEditor :model-value="node.items" :models="models" :read-only="readOnly" :view-model="viewModel" :draft-scope="draftScope ? `${draftScope}.items` : undefined" :drafts="drafts" @update:model-value="replace((copy) => { if (copy.kind === 'array' && $event) copy.items = $event; })" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
       </div>
       <div v-else-if="node.kind === 'allOf' || node.kind === 'oneOf' || node.kind === 'anyOf'" class="nested">
         <div v-for="(variant, index) in node.variants" :key="index" class="property">
           <div class="row"><strong>{{ t('contract.schemaVariant', { index: index + 1 }) }}</strong><button type="button" @click="removeVariant(index)">×</button></div>
-          <SchemaEditor :model-value="variant" :models="models" :read-only="readOnly" :draft-scope="draftScope ? `${draftScope}.variants.${index}` : undefined" :drafts="drafts" @update:model-value="setVariant(index, $event as SchemaNode)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
+          <SchemaEditor :model-value="variant" :models="models" :read-only="readOnly" :view-model="viewModel" :draft-scope="draftScope ? `${draftScope}.variants.${index}` : undefined" :drafts="drafts" @update:model-value="setVariant(index, $event as SchemaNode)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="(from, to) => emit('move:control-drafts', from, to)" />
         </div>
         <button type="button" data-testid="schema-variant-add" @click="addVariant">{{ t('contract.schemaAddVariant') }}</button>
       </div>

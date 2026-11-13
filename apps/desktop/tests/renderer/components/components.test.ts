@@ -873,6 +873,10 @@ describe("RequestEditor", () => {
     expect(profileReads).toEqual([{ locator: project.locator, environmentId: environment.id }]);
     expect(acquires).toHaveLength(0);
     expect(begins).toHaveLength(0);
+    await wrapper.get('[data-testid="tab-auth"]').trigger("click");
+    await wrapper.get('[data-testid="auth-manage-credentials"]').trigger("click");
+    await wrapper.get('[data-testid="auth-manage-oauth"]').trigger("click");
+    expect(wrapper.get('[data-testid="request-auth-reference"]').text()).toContain(profile.bearerRef.id);
     expect(wrapper.get('[data-testid="oauth-profile-status"]').text()).toContain("已连接");
     expect(wrapper.get('[data-testid="oauth-profile-expiry"]').text()).toContain("2033");
     expect(wrapper.text()).not.toContain("never-render-this-access-secret");
@@ -882,6 +886,11 @@ describe("RequestEditor", () => {
     await flushPromises();
     expect(begins).toEqual([{ locator: project.locator, environmentId: environment.id, profileId: profile.profileId }]);
     expect(waitResolvers.get(sessionIds[0]!)).toBeTypeOf("function");
+    await wrapper.get('[data-testid="tab-query"]').trigger("click");
+    await flushPromises();
+    expect(cancels).toHaveLength(0);
+    await wrapper.get('[data-testid="tab-auth"]').trigger("click");
+    expect(wrapper.get('[data-testid="oauth-session-status"]').isVisible()).toBe(true);
     await wrapper.get('[data-testid="oauth-cancel"]').trigger("click");
     await flushPromises();
     expect(cancels).toEqual([{ sessionId: sessionIds[0] }]);
@@ -1586,6 +1595,25 @@ describe("ResponseViewer", () => {
     body.element.scrollTop = 42;
     await body.trigger("scroll");
     expect(stateA.responseScrollByPanel.body).toBe(42);
+    await wrapper.get('[data-testid="response-search"]').setValue("true");
+    chooseSelect(wrapper, "response-format", "raw");
+    await flushPromises();
+    await wrapper.setProps({ expanded: false });
+    await flushPromises();
+    expect(body.isVisible()).toBe(false);
+    body.element.scrollTop = 0;
+    await body.trigger("scroll");
+    expect(stateA.responseScrollByPanel.body).toBe(42);
+    await wrapper.setProps({ expanded: true });
+    await flushPromises();
+    expect(body.element.scrollTop).toBe(42);
+    expect((wrapper.get('[data-testid="response-search"]').element as HTMLInputElement).value).toBe("true");
+    expect(body.get('[data-testid="response-body"]').element.textContent).toBe('{"ok":true}');
+    await wrapper.setProps({ expanded: false, error: "current preflight rejected" });
+    expect(wrapper.get('[data-testid="response-compact-status"]').text()).toBe("current preflight rejected");
+    expect(wrapper.find('[data-testid="response-status"]').exists()).toBe(false);
+    await wrapper.setProps({ expanded: true, error: null });
+    await flushPromises();
     await wrapper.get('[data-testid="response-download"]').trigger("click");
 
     await wrapper.get('[data-testid="response-tab-headers"]').trigger("click");
@@ -1663,6 +1691,26 @@ describe("ResponseViewer", () => {
     await wrapper.find('[data-testid="response-tab-request"]').trigger("click");
     expect(wrapper.find('[data-testid="response-request-sources"]').text()).toContain("项目资源");
     expect(wrapper.find('[data-testid="response-request-sources"]').text()).toContain("会话 Cookie Jar");
+
+    const debug = useDebugStore(createMemoryApi());
+    const asset = { root: "memory-root", generation: 1, project: stressStoreLocator,
+      source: { kind: "asset" as const, locator: stressStoreLocator } };
+    debug.requestTabState({ ...asset, tabId: "exchange-a" });
+    debug.requestTabState({ ...asset, tabId: "exchange-b" });
+    const stateA = debug.requestTabs["exchange-a"]!;
+    const stateB = debug.requestTabs["exchange-b"]!;
+    const firstExchange = debugResult.exchanges[0]!;
+    const resultA = { ...debugResult, exchanges: [firstExchange, { ...firstExchange, order: 2 }], exchangeTotal: 2 };
+    const resultB = { ...debugResult, runId: "run-2", exchanges: [{ ...firstExchange, order: 3 }] };
+    await wrapper.setProps({ result: resultA, tabState: stateA });
+    await wrapper.get('[data-testid="response-tab-exchanges"]').trigger("click");
+    expect(wrapper.get('[data-testid="response-exchange-2"]').classes()).toContain("active");
+    await wrapper.get('[data-testid="response-exchange-1"]').trigger("click");
+    await wrapper.setProps({ expanded: false });
+    expect(wrapper.get('[data-testid="response-exchange-1"]').isVisible()).toBe(false);
+    await wrapper.setProps({ result: resultB, tabState: stateB });
+    await wrapper.setProps({ result: resultA, tabState: stateA, expanded: true });
+    expect(wrapper.get('[data-testid="response-exchange-1"]').classes()).toContain("active");
   });
 
   it("shows captured and effective upload filenames separately from upload byte counters", async () => {

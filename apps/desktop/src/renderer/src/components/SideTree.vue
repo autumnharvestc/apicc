@@ -52,10 +52,11 @@ const props = defineProps<{
    * （工作区顶层即项目；分组层在主页管理）。空/未选 = 空态提示选择项目。 */
   activeProjectLocator?: ProjectLocator | null;
   showCreateInHeader?: boolean;
+  importTargetKey?: string;
   compact?: boolean;
   hidden?: boolean;
 }>();
-const emit = defineEmits<{ select: [node: TreeNodeDTO | NodeCreatedDTO] }>();
+const emit = defineEmits<{ select: [node: TreeNodeDTO | NodeCreatedDTO]; "import-interfaces": [targetKey: string] }>();
 const { t } = useI18n();
 
 // nodeRename/nodeDelete 频道接受的节点 kind（api 树节点；不含 root/workflow）。
@@ -218,7 +219,21 @@ const createTarget = computed<TreeNodeDTO | null>(() => {
   const target = findTarget(rootNode.value, null);
   return target?.kind === "workflow" ? rootNode.value : target ?? rootNode.value;
 });
-const createItems = computed(() => createTarget.value ? nodeCreateItems(createTarget.value) : []);
+const createItems = computed(() => [
+  ...(createTarget.value ? nodeCreateItems(createTarget.value) : []),
+  ...(createTarget.value && props.importTargetKey
+    ? [{ key: "import", label: t("projectTools.importInterfaces"), testId: "directory-import-interfaces" }] : []),
+]);
+let openedImportTarget: string | undefined;
+
+function selectDirectoryAction(action: string) {
+  if (props.hidden || !createTarget.value) return;
+  if (action === "import") {
+    if (openedImportTarget && openedImportTarget === props.importTargetKey) emit("import-interfaces", openedImportTarget);
+    return;
+  }
+  runNodeAction(createTarget.value, action);
+}
 
 function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.key];
@@ -487,10 +502,10 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
     <div v-if="showCreateInHeader" class="directory-header">
       <div class="directory-heading">
         <span class="sider-title" data-testid="sider-title">{{ t("workbench.directory") }}</span>
-        <ActionMenu v-if="createTarget && createItems.length" :key="createTarget.key"
+        <ActionMenu v-if="createTarget && createItems.length" :key="JSON.stringify([createTarget.key, importTargetKey])"
           test-id="directory-create" :label="t('workbench.createIn', { name: createTarget.label })" :items="createItems"
           :hidden="hidden"
-          @select="runNodeAction(createTarget, $event)">
+          @opened="openedImportTarget = importTargetKey" @select="selectDirectoryAction">
           <PlusOutlined />
         </ActionMenu>
       </div>

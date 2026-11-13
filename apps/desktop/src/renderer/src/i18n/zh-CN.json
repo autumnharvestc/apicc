@@ -1510,6 +1510,13 @@
     "credentials": "凭据与 OAuth"
   },
   "responseWorkbench": {
+    "history": "历史",
+    "noResult": "暂无响应",
+    "previousResult": "上次响应",
+    "expand": "展开",
+    "collapse": "收起",
+    "expandResponse": "展开响应",
+    "collapseResponse": "收起响应",
     "title": "响应",
     "previous": "发送中 · 上次响应",
     "noHttpStatus": "未取得 HTTP 状态",
@@ -1558,6 +1565,9 @@
     "scenarioStressDeferred": "场景级压测即将上线",
     "title": "测试"
   },
+  "projectTools": {"importInterfaces":"导入接口","importTargetProject":"目标项目","importSelectedModule":"可合并到","noModels":"此项目还没有模型。","noComponents":"此项目还没有组件。","viewModel":"查看模型","retry":"重试","loadingAssets":"正在加载项目资产…","importedModule":"已新建模块「{name}」","mergedModule":"已合并到模块「{name}」","mergedSelectedModule":"已合并到所选模块","assetChanged":"已保存的资产发生变化。载入最新版本后可以继续编辑。","useSavedAsset":"载入已保存版本"},
+  "requestAuth": {"manageCredentials":"管理凭据","sharedComponent":"共享认证组件","viewComponent":"查看组件"},
+  "requestAi": {"configureModel":"请为建议用例配置模型。","openSettings":"打开 AI 设置"},
   "api": {
     "import": "导入"
   },

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Drawer as ADrawer } from "ant-design-vue";
 import { ExclamationCircleOutlined, SettingOutlined } from "@ant-design/icons-vue";
@@ -53,12 +53,26 @@ const showLocalProblems = computed(() => props.workspace.problems.length > 0
 const hasNativeMenu = typeof window.apicc?.showApplicationMenu === "function";
 const nativeOverlay = window.apicc?.windowsTitleBarOverlay === true;
 let lastEditor: HTMLElement | null = null;
+let settingsAiReturnFocus = false;
 
 function rememberEditor(event: FocusEvent) {
   if (event.target instanceof HTMLElement && event.target.matches("input:not([type=button]), textarea, [contenteditable=true]")) {
     lastEditor = event.target;
   }
 }
+
+function openAiSettings() {
+  if (!props.ai) return;
+  settingsAiReturnFocus = true;
+  settingsOpen.value = false;
+  props.ai.configDialogOpen = true;
+}
+
+watch(() => props.ai?.configDialogOpen, (open, previous) => {
+  if (open !== false || !previous || !settingsAiReturnFocus) return;
+  settingsAiReturnFocus = false;
+  void nextTick(() => settingsTrigger.value?.focus({ preventScroll: true }));
+});
 
 if (hasNativeMenu) {
   onMounted(() => document.addEventListener("focusin", rememberEditor));
@@ -113,7 +127,7 @@ function restoreDrawerFocus(open: boolean, trigger: HTMLButtonElement | undefine
       </ul>
     </a-drawer>
     <a-drawer v-model:open="settingsOpen" :title="t('settings.title')" width="min(560px, 100vw)" data-testid="settings-drawer" @after-open-change="restoreDrawerFocus($event, settingsTrigger)">
-      <a-button v-if="ai" block data-testid="settings-ai" @click="settingsOpen = false; ai.configDialogOpen = true">{{ t("aiSettings.title") }}</a-button>
+      <a-button v-if="ai" block data-testid="settings-ai" @click="openAiSettings">{{ t("aiSettings.title") }}</a-button>
       <PluginsView :plugins="plugins" />
       <OnlineExecutionCacheSettings v-if="online.execution" :execution="online.execution" :open="settingsOpen" />
       <NetworkSettings

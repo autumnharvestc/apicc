@@ -21,7 +21,7 @@ import { contractAssetEditorFixture } from "../helpers/contract-assets.js";
 import { createAiBusinessFixture } from "../fixtures/aiBusiness.js";
 import { createSession } from "../../../src/main/session.js";
 import { createDesktopAiSources } from "../../../src/main/ai/sources.js";
-import { inspectAiContextChoices, prepareAiContext } from "@apicc/core";
+import { inspectAiContextChoices, prepareAiContext, type ParameterBinding } from "@apicc/core";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 
 const mountedWrappers: VueWrapper[] = [];
@@ -106,6 +106,94 @@ afterEach(() => {
 });
 
 describe("Contract asset editor", () => {
+  it("R7 restores the saved absence of a parameter value after typing and clearing", async () => {
+    const current = await contractAssetEditorFixture(undefined, `C:/apicc-r7-parameter-baseline-${randomUUID()}`);
+    const imported = await current.api.apiGet(current.apiLocator);
+    const request = imported.api.contract.request;
+    const binding = request.query[0];
+    if (!binding) throw new Error("Expected imported query binding");
+    delete binding.value;
+    await current.api.apiSave(current.apiLocator, imported.api, imported.sourceApiRevision);
+    const editor = await createEditor(current);
+    const wrapper = await mountRequestEditor(editor, current);
+    await wrapper.get('[data-testid="tab-query"]').trigger("click");
+    const input = wrapper.get('[data-testid="kv-value"]');
+    await input.setValue("temporary");
+    expect(editor.dirty).toBe(true);
+    await input.setValue("");
+    expect(editor.dirty).toBe(false);
+    expect(Object.hasOwn(editor.api!.contract.request.query[0]!, "value")).toBe(false);
+  });
+
+  it("R7 restores absent values by binding identity in Debug and Design and advances each successful save baseline", async () => {
+    const current = await contractAssetEditorFixture(undefined, `C:/apicc-r7-parameter-saves-${randomUUID()}`);
+    const imported = await current.api.apiGet(current.apiLocator);
+    const request = imported.api.contract.request;
+    const parameter = current.components.find((item) => item.kind === "parameter");
+    if (!parameter) throw new Error("Expected a parameter component");
+    const absent = (kind: "inline" | "componentRef", name: string): ParameterBinding => kind === "inline"
+      ? { kind, id: randomUUID(), name, schema: { kind: "scalar" as const, type: "string" as const }, required: false, enabled: true, description: "" }
+      : { kind, id: randomUUID(), componentId: parameter.id, expectedKind: "parameter" as const, enabled: true };
+    request.pathParams = [absent("inline", "path")];
+    request.query = [absent("componentRef", "query"), { ...absent("inline", "empty"), value: "" }, { ...absent("inline", "nonempty"), value: "initial" }];
+    request.headers = [absent("inline", "header")];
+    request.cookies = [absent("inline", "cookie")];
+    await current.api.apiSave(current.apiLocator, imported.api, imported.sourceApiRevision);
+    const editor = await createEditor(current);
+    const wrapper = await mountRequestEditor(editor, current);
+    const activeRequest = editor.api!.contract.request;
+    for (const [tab, key] of [["path", "pathParams"], ["query", "query"], ["header", "headers"], ["cookie", "cookies"]] as const) {
+      await wrapper.get(`[data-testid="tab-${tab}"]`).trigger("click");
+      const pane = wrapper.get(".ant-tabs-tabpane-active");
+      const value = pane.get('[data-testid="kv-value"]');
+      await value.setValue("changed");
+      await value.setValue("");
+      expect(Object.hasOwn(activeRequest[key][0]!, "value")).toBe(false);
+    }
+    expect(editor.dirty).toBe(false);
+
+    await wrapper.get('[data-testid="tab-query"]').trigger("click");
+    const queryFields = () => wrapper.get(".ant-tabs-tabpane-active").findAll('[data-testid="kv-value"]');
+    await queryFields()[1]!.setValue("changed");
+    await queryFields()[1]!.setValue("");
+    expect(activeRequest.query[1]!.value).toBe("");
+    await queryFields()[2]!.setValue("");
+    expect(activeRequest.query[2]!.value).toBe("");
+    expect(editor.dirty).toBe(true);
+    await queryFields()[2]!.setValue("initial");
+    expect(editor.dirty).toBe(false);
+
+    await queryFields()[0]!.setValue("saved by request");
+    const requestSave = vi.spyOn(current.api, "apiRequestDraftSave");
+    await wrapper.get('[data-testid="request-more"]').trigger("click");
+    await requestMenuOption("save-request-btn").trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="save-feedback"]').exists()).toBe(true));
+    expect(requestSave.mock.calls[0]?.[1].query[0]?.value).toBe("saved by request");
+    await queryFields()[0]!.setValue("");
+    expect(activeRequest.query[0]!.value).toBe("");
+    expect(editor.dirty).toBe(true);
+    const fullSave = vi.spyOn(current.api, "apiSave");
+    await saveEditorFromUi(wrapper, editor);
+    expect(fullSave.mock.calls[0]?.[1].contract.request.query[0]?.value).toBe("");
+    expect(Object.hasOwn(fullSave.mock.calls[0]![1].contract.request.headers[0]!, "value")).toBe(false);
+    expect(editor.dirty).toBe(false);
+
+    const workspace = useWorkspaceStore(current.api);
+    await workspace.open(current.root);
+    const design = useDesignStore(current.api, editor);
+    design.load();
+    const { i18n } = createI18nInstance();
+    const designWrapper = mount(DesignPanel, { props: { editor, design, workspace, reportError: () => {} }, global: { plugins: [i18n] } });
+    mountedWrappers.push(designWrapper);
+    await designWrapper.get('[data-testid="design-contract-tab"]').trigger("click");
+    const header = designWrapper.get('[data-testid="design-parameter-value-headers-0"]');
+    await header.setValue("from design");
+    expect(editor.dirty).toBe(true);
+    await header.setValue("");
+    expect(Object.hasOwn(activeRequest.headers[0]!, "value")).toBe(false);
+    expect(editor.dirty).toBe(false);
+  });
+
   it("saves a request-only draft from the dedicated editor action", async () => {
     const current = await contractAssetEditorFixture(undefined, `C:/apicc-task5-request-draft-${randomUUID()}`);
     const editor = await createEditor(current);
@@ -637,6 +725,36 @@ describe("Contract asset editor", () => {
     });
   });
 
+  it("preserves asset drafts across refresh and blocks an external same-ID replacement until it is acknowledged", async () => {
+    const current = await contractAssetEditorFixture(undefined, `C:/apicc-r7-asset-refresh-${randomUUID()}`);
+    const editor = await createEditor(current);
+    const wrapper = await mountRequestEditor(editor, current);
+    const assets = wrapper.props("assets") as ReturnType<typeof useAssetsStore>;
+    const parameter = current.components.find((item) => item.kind === "parameter");
+    if (!parameter) throw new Error("Expected a parameter component");
+    await wrapper.get(`[data-testid="asset-component-select-${parameter.kind}-${parameter.id}"]`).trigger("click");
+    await wrapper.get('[data-testid="asset-model-name"]').setValue("unsaved model text");
+    const rawDraft = JSON.stringify({ ...parameter, name: "unsaved component text" }, null, 2);
+    await wrapper.get('[data-testid="asset-component-definition"]').setValue(rawDraft);
+    await assets.load(current.projectLocator);
+    await flushPromises();
+    expect((wrapper.get('[data-testid="asset-model-name"]').element as HTMLInputElement).value).toBe("unsaved model text");
+    expect((wrapper.get('[data-testid="asset-component-definition"]').element as HTMLTextAreaElement).value).toBe(rawDraft);
+
+    await current.api.modelSave({ ...current.projectLocator, modelId: current.model.id }, { ...current.model, name: "external model" });
+    await current.api.componentSave({ ...current.projectLocator, componentKind: parameter.kind, componentId: parameter.id }, { ...parameter, name: "external component" });
+    await assets.load(current.projectLocator);
+    await flushPromises();
+    expect((wrapper.get('[data-testid="asset-model-name"]').element as HTMLInputElement).value).toBe("unsaved model text");
+    expect((wrapper.get('[data-testid="asset-component-definition"]').element as HTMLTextAreaElement).value).toBe(rawDraft);
+    expect(wrapper.get('[data-testid="asset-model-save"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="asset-component-save"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-testid="asset-model-use-saved"]').trigger("click");
+    await wrapper.get('[data-testid="asset-component-use-saved"]').trigger("click");
+    expect((wrapper.get('[data-testid="asset-model-name"]').element as HTMLInputElement).value).toBe("external model");
+    expect((wrapper.get('[data-testid="asset-component-definition"]').element as HTMLTextAreaElement).value).toContain("external component");
+  });
+
   it("creates, edits, and reopens models and all four component kinds through the mounted asset manager", async () => {
     const current = await contractAssetEditorFixture(undefined, `C:/apicc-task10b-assets-${randomUUID()}`);
     const editor = await createEditor(current);
@@ -1087,6 +1205,8 @@ describe("Contract asset editor", () => {
     const editor = await createEditor();
     const request = editor.api!.contract.request;
     const wrapper = await mountRequestEditor(editor);
+    await wrapper.get('[data-testid="tab-auth"]').trigger("click");
+    await wrapper.get('[data-testid="auth-manage-credentials"]').trigger("click");
     expect(wrapper.get('[data-testid="credential-remove-impact"]').text()).toContain("将失去绑定");
     await wrapper.get('[data-testid="credential-value"]').setValue("synthetic-token");
     await wrapper.get('[data-testid="credential-save"]').trigger("click");

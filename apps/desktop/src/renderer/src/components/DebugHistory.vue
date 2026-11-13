@@ -22,7 +22,7 @@ const props = defineProps<{
   restoreFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator }) => Promise<{ sourceChanged: boolean; sourceAvailable: boolean } | null>;
   replayFree?: (input: { historyId: string; exchangeOrder: number; project: ProjectLocator; draftId: string }) => Promise<void>;
 }>();
-const emit = defineEmits<{ (event: "close"): void; (event: 'collaboration', source: import('zod').z.infer<typeof import('../../../shared/online/collaboration.js').CollaborationLocalSourceSchema>): void }>();
+const emit = defineEmits<{ (event: "close" | "after-close"): void; (event: 'collaboration', source: import('zod').z.infer<typeof import('../../../shared/online/collaboration.js').CollaborationLocalSourceSchema>): void }>();
 const { t } = useI18n();
 const selectedExchangeOrder = ref<number | null>(null);
 const restoreResult = ref<{ sourceChanged: boolean; sourceAvailable: boolean } | null>(null);
@@ -333,7 +333,8 @@ async function savePreferences() {
 </script>
 
 <template>
-  <a-modal :open="open" :title="t('debugLoop.historyTitle')" :footer="null" width="1040px" @cancel="emit('close')">
+  <a-modal :open="open" :title="t('debugLoop.historyTitle')" :footer="null" width="1040px"
+    :focus-trigger-after-close="false" :after-close="() => emit('after-close')" @cancel="emit('close')">
     <div class="history" data-testid="debug-history">
       <div class="history-toolbar">
         <a-input v-model:value="searchText" allow-clear :placeholder="t('debugLoop.searchHistory')" data-testid="debug-history-search" @press-enter="applyFilters" />

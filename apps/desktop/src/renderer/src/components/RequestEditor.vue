@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, toRaw, watch } from "vue";
+import { computed, nextTick, ref, toRaw, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { DownOutlined, EllipsisOutlined, SlidersOutlined } from "@ant-design/icons-vue";
 import { Alert as AAlert, Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
@@ -8,11 +8,12 @@ import type { SchemaNode } from "@apicc/core/schema";
 import type { ApiccApi, CreateComponentInput, CreateModelInput } from "../../../shared/types.js";
 import type { ApiParentLocator, ComponentLocator, ModelLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { LocalProjectTreeNodeDTO } from "../../../shared/tree-dto.js";
-import type { useEditorStore } from "../stores/editor.js";
+import type { ParameterListKey, useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
 import type { RequestTab } from "../stores/requestTabs.js";
 import { apiSessionKey } from "../stores/localIdentity.js";
 import type { DeleteAssetResult } from "../stores/assets.js";
+import type { ProjectAssetTarget } from "../projectAssetTarget.js";
 import EmptyState from "./EmptyState.vue";
 import SchemaEditor from "./SchemaEditor.vue";
 import ResponseEditor from "./ResponseEditor.vue";
@@ -25,7 +26,7 @@ import DebugEnvironmentMenu from "./DebugEnvironmentMenu.vue";
 import ActionMenu from "./ActionMenu.vue";
 import { debugEnvironmentSelection, type DebugEnvironmentSelection } from "../debugEnvironment.js";
 
-const emit = defineEmits<{ "new-free-request": []; 'collaboration-history': [] }>();
+const emit = defineEmits<{ "new-free-request": []; "collaboration-history": [trigger: HTMLElement | undefined] }>();
 
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
@@ -46,6 +47,15 @@ const props = defineProps<{
   environmentSelection?: DebugEnvironmentSelection | null;
   environmentLoading?: boolean;
   requestPath?: string;
+  viewModel?: (modelId: string, trigger: HTMLElement) => void;
+  viewProjectAsset?: (target: ProjectAssetTarget, trigger: HTMLElement) => void;
+  sharedCredentialStatusRevision?: number;
+  suggestCases?: (trigger: HTMLElement) => void;
+  compactSuggest?: boolean;
+  suggestingCases?: boolean;
+  captureResponseExpansion?: () => (() => void);
+  models?: ModelAsset[];
+  projectTools?: boolean;
   hasDrafts?: boolean;
   projectNode?: LocalProjectTreeNodeDTO | null;
   createFreeModule?: (tab: RequestTab, name: string) => Promise<ApiParentLocator>;
@@ -145,18 +155,49 @@ const authKinds = ["none", "bearer", "basic", "apikey"];
 const bodyKinds = ["none", "json", "xml", "text", "graphql", "urlencoded", "multipart", "binary"];
 const parameterLocations = ["path", "query", "header", "cookie"] as const;
 type ParameterLocation = (typeof parameterLocations)[number];
+const parameterKeys: Record<ParameterLocation, ParameterListKey> = {
+  path: "pathParams", query: "query", header: "headers", cookie: "cookies",
+};
 const credentialProjectLocator = computed(() => props.requestTab?.project ?? props.projectLocator ?? null);
 const oauthManagedState = ref<"managed" | "unmanaged" | "unknown">("unmanaged");
+const credentialManagementOpen = ref(false);
+const oauthManagementOpen = ref(false);
+const sharedAuth = computed(() => {
+  const auth = request.value?.auth;
+  if (auth?.kind !== "componentRef") return null;
+  const asset = props.assets?.components.find((item): item is Extract<ComponentAsset, { kind: "auth" }> => item.kind === "auth" && item.id === auth.componentId);
+  return { id: auth.componentId, asset };
+});
+const effectiveAuth = computed(() => sharedAuth.value ? sharedAuth.value.asset?.definition : request.value?.auth);
+const authReference = computed(() => {
+  const auth = effectiveAuth.value;
+  if (auth?.kind === "bearer") return auth.token.id;
+  if (auth?.kind === "basic") return auth.password.id;
+  if (auth?.kind === "apikey") return auth.value.id;
+  return null;
+});
 const editorTitle = computed(() => isFreeRequest.value ? t("requestTabs.freeName") : metadata.value?.name || t("requestWorkbench.title"));
 const protocolItems = computed(() => (["http", "websocket", "soap"] as const).map((key) => ({
   key, label: t(`protocol.${key}`), checked: request.value?.protocol === key, testId: `request-protocol-${key}`,
 })));
 const moreItems = computed(() => [
+  ...(props.suggestCases && props.compactSuggest && !isFreeRequest.value ? [{ key: "suggest-cases", label: t("ai.suggestBtn"),
+    disabled: props.editor.readOnly || props.suggestingCases, testId: "ai-suggest-btn" }] : []),
   ...(!isFreeRequest.value ? [{ key: "save-request", label: t("requestWorkbench.saveRequestOnly"),
     disabled: props.editor.readOnly || pendingRestoreFields.value.length > 0, testId: "save-request-btn" }] : []),
   { key: "settings", label: t("debugLoop.settings"), disabled: !props.api, testId: "debug-settings-open" },
   { key: "history", label: t("collaboration.chooseDebugHistory"), testId: "collaboration-open-history" },
 ]);
+const requestMore = ref<InstanceType<typeof ActionMenu>>();
+watch(() => props.compactSuggest, (compact) => {
+  const focused = document.activeElement;
+  if (compact && focused instanceof HTMLElement && focused.matches('.request-heading [data-testid="ai-suggest-btn"]')) {
+    void nextTick(() => editorElement.value?.closest(".editor")?.querySelector<HTMLElement>('[data-testid="request-more"]')?.focus({ preventScroll: true }));
+  } else if (!compact && focused instanceof HTMLElement && focused.matches('[data-menu-owner="request-more"] [data-testid="ai-suggest-btn"]')) {
+    requestMore.value?.close(false);
+    void nextTick(() => editorElement.value?.closest(".editor")?.querySelector<HTMLElement>('.request-heading [data-testid="ai-suggest-btn"]')?.focus({ preventScroll: true }));
+  }
+});
 const sending = computed(() => tabDebugState.value?.sending ?? props.debug.sending);
 const runId = computed(() => tabDebugState.value ? tabDebugState.value.activeRunId : props.debug.activeRunId);
 const cancellingRun = computed(() => tabDebugState.value ? tabDebugState.value.cancelRunId : props.debug.cancelRunId);
@@ -170,9 +211,12 @@ function selectProtocol(key: string) {
 }
 
 function selectRequestAction(key: string) {
-  if (key === "save-request") void saveRequest(true);
+  if (key === "suggest-cases") {
+    const trigger = document.activeElement;
+    if (props.compactSuggest && !props.editor.readOnly && !props.suggestingCases && trigger instanceof HTMLElement) props.suggestCases?.(trigger);
+  } else if (key === "save-request") void saveRequest(true);
   else if (key === "settings") settingsOpen.value = true;
-  else if (key === "history") emit("collaboration-history");
+  else if (key === "history") emit("collaboration-history", document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
 }
 
 function toggleParameterDetails(id: string) {
@@ -379,11 +423,14 @@ const oauthContextKey = computed(() => JSON.stringify({
       : null,
   generation: props.requestTab?.generation ?? null,
   environmentId: selectedEnvironmentId.value || null,
-  bearerRef: request.value?.auth.kind === "bearer" ? request.value.auth.token : null,
+  sharedComponentId: sharedAuth.value?.id ?? null,
+  bearerRef: effectiveAuth.value?.kind === "bearer" ? effectiveAuth.value.token : null,
 }));
 
 watch(credentialContextKey, () => {
   oauthManagedState.value = props.requestTab ? "unknown" : "unmanaged";
+  credentialManagementOpen.value = false;
+  oauthManagementOpen.value = false;
 }, { flush: "sync" });
 
 function updateRequestAuth(auth: ApiRequest["auth"]): void {
@@ -394,8 +441,9 @@ function updateRequestAuth(auth: ApiRequest["auth"]): void {
 
 function onSend() {
   if (environmentUnavailable.value) return;
-  if (props.requestTab) void props.debug.sendRequestTab(props.requestTab, props.editor);
-  else void props.debug.send(props.editor);
+  const onAccepted = props.captureResponseExpansion?.();
+  if (props.requestTab) void props.debug.sendRequestTab(props.requestTab, props.editor, undefined, onAccepted);
+  else void props.debug.send(props.editor, undefined, onAccepted);
 }
 
 async function onCancel() {
@@ -459,11 +507,11 @@ function requestUrl(current: ApiRequest): string {
 }
 
 function parameterList(location: ParameterLocation): ParameterBinding[] {
-  const current = request.value;
-  if (!current) return [];
-  return location === "path" ? current.pathParams
-    : location === "query" ? current.query
-      : location === "header" ? current.headers : current.cookies;
+  return request.value?.[parameterKeys[location]] ?? [];
+}
+
+function editParameterValue(location: ParameterLocation, binding: ParameterBinding, value: string) {
+  if (request.value) props.editor.setParameterValue(request.value, parameterKeys[location], binding, value);
 }
 
 function addParameter(location: ParameterLocation) {
@@ -493,7 +541,7 @@ function bindParameter(location: ParameterLocation, index: number, componentId: 
   if (!component) return;
   list.splice(index, 1, {
     kind: "componentRef", id: previous.id, componentId: component.id, expectedKind: "parameter",
-    value: previous.value, enabled: previous.kind === "inline" ? previous.enabled : previous.enabled,
+    ...(previous.value === undefined ? {} : { value: previous.value }), enabled: previous.enabled,
   });
 }
 
@@ -645,6 +693,9 @@ async function saveRequest(requestOnly: boolean) {
         <span v-if="hasDrafts || editor.dirty" class="dirty">{{ t("editor.unsaved") }}</span>
         <button v-if="metadata" type="button" class="editor-detail-button" data-testid="asset-metadata-toggle"
           :aria-expanded="metadataOpen" @click="metadataOpen = !metadataOpen">{{ t("requestWorkbench.details") }}</button>
+        <a-button v-if="metadata && suggestCases && !compactSuggest" size="small" data-testid="ai-suggest-btn"
+          :aria-disabled="editor.readOnly || suggestingCases" :disabled="editor.readOnly"
+          @click="!suggestingCases && suggestCases($event.currentTarget as HTMLElement)">{{ t("ai.suggestBtn") }}</a-button>
       </div>
       <div class="request-command" data-testid="request-command">
         <div class="request-address">
@@ -667,7 +718,7 @@ async function saveRequest(requestOnly: boolean) {
           </button>
           <a-button v-if="!isFreeRequest" data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="saveRequest(false)">{{ t('editor.save') }}</a-button>
           <a-button v-else data-testid="save-free-btn" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || pendingRestoreFields.length > 0 || !props.saveFreeRequest" @click="openFreeSaveDialog">{{ t('debugLoop.freeSaveAsApi') }}</a-button>
-          <ActionMenu :key="credentialContextKey" test-id="request-more" :label="t('requestWorkbench.more')" :items="moreItems" @select="selectRequestAction"><EllipsisOutlined /></ActionMenu>
+          <ActionMenu ref="requestMore" :key="credentialContextKey" test-id="request-more" :label="t('requestWorkbench.more')" :items="moreItems" @select="selectRequestAction"><EllipsisOutlined /></ActionMenu>
           <a-select v-if="!isFreeRequest" class="case-select" data-testid="debug-case-select" size="small" :aria-label="t('requestWorkbench.case')"
             :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))"
             @update:value="(value) => selectDebugCase(value as string)" />
@@ -720,7 +771,8 @@ async function saveRequest(requestOnly: boolean) {
               <span v-else class="component-name" :title="parameterComponents(location).find((item) => item.id === binding.componentId)?.name ?? t('contract.missingComponent')">
                 {{ parameterComponents(location).find((item) => item.id === binding.componentId)?.name ?? t("contract.missingComponent") }}
               </span>
-              <a-input v-model:value="binding.value" size="small" data-testid="kv-value" :aria-label="t('requestWorkbench.value')" :disabled="editor.readOnly" />
+              <a-input :value="binding.value ?? ''" size="small" data-testid="kv-value" :aria-label="t('requestWorkbench.value')" :disabled="editor.readOnly"
+                @update:value="editParameterValue(location, binding, $event)" />
               <a-input v-if="binding.kind === 'inline'" v-model:value="binding.description" size="small" :aria-label="t('contract.description')" :disabled="editor.readOnly" />
               <span v-else class="component-name">{{ t("requestWorkbench.componentReference") }}</span>
               <div class="parameter-actions">
@@ -747,15 +799,44 @@ async function saveRequest(requestOnly: boolean) {
         </div>
       </a-tab-pane>
 
-      <a-tab-pane key="auth">
+      <a-tab-pane key="auth" force-render>
         <template #tab><span data-testid="tab-auth">{{ t('editor.auth') }}</span></template>
         <div class="panel">
-          <a-select :value="request.auth.kind === 'componentRef' ? `component:${request.auth.componentId}` : request.auth.kind" data-testid="auth-type" :disabled="editor.readOnly" :options="[...authKinds.map((value) => ({ label: t(`contract.auth.${value}`), value })), ...(assets?.components.filter((item) => item.kind === 'auth').map((item) => ({ label: item.name, value: `component:${item.id}` })) ?? [])]" @update:value="(value) => setAuthKind(value as string)" />
+          <div class="auth-controls">
+            <label class="auth-kind">
+              <span>{{ t("design.authKind") }}</span>
+              <a-select :value="request.auth.kind === 'componentRef' ? `component:${request.auth.componentId}` : request.auth.kind" data-testid="auth-type" :aria-label="t('design.authKind')" :disabled="editor.readOnly" :options="[...authKinds.map((value) => ({ label: t(`contract.auth.${value}`), value })), ...(assets?.components.filter((item) => item.kind === 'auth').map((item) => ({ label: item.name, value: `component:${item.id}` })) ?? [])]" @update:value="(value) => setAuthKind(value as string)" />
+            </label>
+            <button v-if="authReference && !sharedAuth && api && credentialProjectLocator" type="button" class="editor-detail-button"
+              data-testid="auth-manage-credentials" aria-controls="request-credential-controls" :aria-expanded="credentialManagementOpen"
+              @click="credentialManagementOpen = !credentialManagementOpen">{{ t("requestAuth.manageCredentials") }}</button>
+            <button v-if="api && credentialProjectLocator && requestTab?.root" type="button" class="editor-detail-button"
+              data-testid="auth-manage-oauth" aria-controls="request-oauth-controls" :aria-expanded="oauthManagementOpen"
+              @click="oauthManagementOpen = !oauthManagementOpen">{{ t("oauth.title") }}</button>
+          </div>
           <a-input v-if="request.auth.kind === 'basic'" v-model:value="request.auth.username" data-testid="auth-basic-username" :disabled="editor.readOnly" :placeholder="t('contract.username')" />
           <div v-if="request.auth.kind === 'apikey'" class="kv-row">
             <a-input v-model:value="request.auth.name" data-testid="auth-apikey-name" :disabled="editor.readOnly" :placeholder="t('contract.apiKeyName')" />
             <a-select v-model:value="request.auth.placement" data-testid="auth-apikey-placement" :disabled="editor.readOnly" :options="[{ label: t('contract.location.header'), value: 'header' }, { label: t('contract.location.query'), value: 'query' }]" />
           </div>
+          <div v-if="authReference" class="auth-reference" data-testid="request-auth-reference">
+            <span>{{ t("design.secretReference") }}</span> <code>{{ authReference }}</code>
+          </div>
+          <div v-if="sharedAuth" class="auth-reference" data-testid="request-shared-auth">
+            <span>{{ t("requestAuth.sharedComponent") }}</span>
+            <span>{{ sharedAuth.asset?.name ?? t("contract.missingComponent") }}</span>
+            <span v-if="effectiveAuth">{{ t(`contract.auth.${effectiveAuth.kind}`) }}</span>
+            <button v-if="viewProjectAsset" type="button" class="editor-detail-button" data-testid="auth-view-shared-component"
+              @click="viewProjectAsset({ kind: 'auth', id: sharedAuth.id }, $event.currentTarget as HTMLElement)">{{ t("requestAuth.viewComponent") }}</button>
+          </div>
+          <CredentialEditor v-if="api && credentialProjectLocator && effectiveAuth" id="request-credential-controls"
+            :api="api" :locator="credentialProjectLocator" :auth="effectiveAuth" :context-key="credentialContextKey"
+            :managed-state="oauthManagedState" :read-only="editor.readOnly || !!sharedAuth" :manage-open="!sharedAuth && credentialManagementOpen"
+            :status-only="!!sharedAuth" :status-revision="sharedCredentialStatusRevision" />
+          <OAuthManager v-if="api && credentialProjectLocator && requestTab?.root" v-show="oauthManagementOpen"
+            id="request-oauth-controls" :api="api" :locator="credentialProjectLocator" :context-key="oauthContextKey"
+            :environment-id="selectedEnvironmentId || undefined" :auth="effectiveAuth ?? request.auth" :read-only="editor.readOnly"
+            @update:auth="updateRequestAuth" @managed-state="oauthManagedState = $event" />
         </div>
       </a-tab-pane>
 
@@ -809,7 +890,7 @@ async function saveRequest(requestOnly: boolean) {
             <a-input v-model:value="request.body.contentType" data-testid="body-binary-content-type" :disabled="editor.readOnly" />
           </template>
           <section v-if="['json', 'xml', 'text'].includes(request.body.kind)" class="body-schema">
-            <SchemaEditor :model-value="bodySchema()" :models="assets?.models ?? []" :read-only="editor.readOnly" @update:model-value="updateBodySchema($event as SchemaNode | undefined)" />
+            <SchemaEditor :model-value="bodySchema()" :models="models ?? assets?.models ?? []" :read-only="editor.readOnly" :view-model="viewModel" @update:model-value="updateBodySchema($event as SchemaNode | undefined)" />
             <div v-if="bodyExamples().length" class="examples" data-testid="body-examples">
               <span>{{ t('contract.schemaExamples') }}</span>
               <button v-for="(example, index) in bodyExamples()" :key="index" type="button" :data-testid="`body-example-use-${index}`" :disabled="editor.readOnly" @click="useBodyExample(index)">{{ t('contract.useExample', { index: index + 1 }) }}</button>
@@ -830,30 +911,15 @@ async function saveRequest(requestOnly: boolean) {
     </a-tabs>
     <details v-if="assets && !isFreeRequest && metadata && editor.api" class="request-extra">
       <summary>{{ t("requestWorkbench.responseContract") }}</summary>
-      <ResponseEditor :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" />
+      <ResponseEditor :responses="editor.api.contract.responses" :assets="assets" :context-key="credentialContextKey" :read-only="editor.readOnly" :view-model="viewModel" />
     </details>
-    <details v-if="assets && !isFreeRequest" class="request-extra">
+    <details v-if="!projectTools && assets && !isFreeRequest" class="request-extra">
       <summary>{{ t("requestWorkbench.projectAssets") }}</summary>
       <ProjectAssetsPanel :assets="assets" :api="api" :credential-context-key="credentialContextKey" :read-only="editor.readOnly" />
     </details>
-    <details v-if="api && projectLocator" class="request-extra">
+    <details v-if="!projectTools && api && projectLocator" class="request-extra">
       <summary>{{ t("requestWorkbench.mock") }}</summary>
       <MockPanel :api="api" :root="requestTab?.root" :locator="projectLocator" :read-only="editor.readOnly" @new-free-request="emit('new-free-request')" />
-    </details>
-    <details v-if="api && credentialProjectLocator" class="request-extra">
-      <summary>{{ t("requestWorkbench.credentials") }}</summary>
-      <CredentialEditor :api="api" :locator="credentialProjectLocator" :auth="request.auth" :context-key="credentialContextKey" :managed-state="oauthManagedState" :read-only="editor.readOnly" />
-      <OAuthManager
-      v-if="api && credentialProjectLocator && requestTab?.root"
-      :api="api"
-      :locator="credentialProjectLocator"
-      :context-key="oauthContextKey"
-      :environment-id="selectedEnvironmentId || undefined"
-      :auth="request.auth"
-      :read-only="editor.readOnly"
-      @update:auth="updateRequestAuth"
-      @managed-state="oauthManagedState = $event"
-      />
     </details>
     </div>
     <DebugSettings v-if="api" :open="settingsOpen" :api="api" :debug="debug" :editor="editor" :request-tab="requestTab" @close="settingsOpen = false" />
@@ -892,6 +958,9 @@ async function saveRequest(requestOnly: boolean) {
 .editor-content { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
 .editor-content :deep(.ant-tabs-nav) { margin-bottom: 4px; }
 .editor-content :deep(.ant-tabs-tab) { padding: 5px 0; }
+.auth-controls, .auth-reference, .auth-kind { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.auth-kind :deep(.ant-select) { min-width: 150px; }
+.auth-reference { color: var(--text-muted); overflow-wrap: anywhere; }
 .metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--subtle); }
 .panel { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
 .parameter-panel { gap: 0; padding-bottom: 12px; }

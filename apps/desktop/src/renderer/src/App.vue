@@ -6,7 +6,7 @@
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
-import { EllipsisOutlined, SyncOutlined } from "@ant-design/icons-vue";
+import { EllipsisOutlined } from "@ant-design/icons-vue";
 import { useI18n } from "vue-i18n";
 import {
   ConfigProvider,
@@ -15,8 +15,8 @@ import {
   Alert as AAlert,
   Radio as ARadio,
   Input as AInput,
-  Space as ASpace,
   Button as AButton,
+  Modal as AModal,
   theme as antdTheme,
 } from "ant-design-vue";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
@@ -51,6 +51,9 @@ import { createOnlineProjectAdapter } from "./stores/onlineProjectAdapter.js";
 import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
 import RequestEditor from "./components/RequestEditor.vue";
+import ProjectAssetsPanel from "./components/ProjectAssetsPanel.vue";
+import MockPanel from "./components/MockPanel.vue";
+import type { ProjectAssetTarget } from "./projectAssetTarget.js";
 import ResponseViewer from "./components/ResponseViewer.vue";
 import RequestTabs from "./components/RequestTabs.vue";
 import DebugHistory from "./components/DebugHistory.vue";
@@ -95,7 +98,7 @@ import {
   type ProjectTab,
 } from "./stores/tabs.js";
 import { useModuleMemoryStore } from "./stores/moduleMemory.js";
-import { apiSessionKey } from "./stores/localIdentity.js";
+import { apiSessionKey, projectSessionKey } from "./stores/localIdentity.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import {
   isViewDisabled,
@@ -159,6 +162,7 @@ const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly
 const editor = useEditorStore(apicc, localContext);
 const design = useDesignStore(apicc, editor);
 const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
+const mockDrafts = new Map<string, { text: string; revision: string; port: number }>();
 let debugInstance: ReturnType<typeof useDebugStore> | null = null;
 let requestTabsRef: ReturnType<typeof createRequestTabsStore> | null = null;
 let requestContextRoot = "";
@@ -204,11 +208,18 @@ requestTabsRef = requestTabs;
 const debug = debugInstance = useDebugStore(apicc, editor, localContext, requestTabs);
 const debugHistory = useDebugHistoryStore(apicc);
 const historyOpen = ref(false);
+let historyTrigger: HTMLElement | undefined;
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
 const cases = useCasesStore(apicc, editor);
 const envs = useEnvsStore(apicc, localContext);
 const run = useRunStore(apicc);
 const importW = useImportWizardStore(apicc, workspace);
+const moduleImportW = useImportWizardStore(apicc, {
+  get root() { return workspace.root; },
+  get readOnly() { return workspace.readOnly; },
+  get tree() { return workspace.tree; },
+  refresh: () => refreshLocalProject(),
+});
 // —— 工作流设计器 store（M2-B 任务 4 装配）：同一组合根一次性创建 ——
 const wfList = useWfListStore(apicc, localContext);
 const workflowDesign = useWorkflowDesignStore(apicc, localContext);
@@ -259,7 +270,10 @@ const testing = createTestingStore(apicc, {
   confirmDiscard: () => window.confirm(t('testing.discardConfirm')),
   getActive: () => !isHome.value && !onlineMode.value && selectedProjectContext.value ? { root: selectedProjectContext.value.root, project: selectedProjectContext.value.locator, readOnly: workspace.readOnly } : null,
 });
-const evictSessions = createEvictProjectSessions({ editor, online, workflowDesign, requestTabs, mockProjectClose: async (root, locator) => { await apicc.mockProjectClose({ root, locator }); } });
+const evictSessions = createEvictProjectSessions({ editor, online, workflowDesign, requestTabs, mockProjectClose: async (root, locator) => {
+  mockDrafts.delete(projectSessionKey(root, locator));
+  await apicc.mockProjectClose({ root, locator });
+} });
 const tabs = createTabsStore({
   workspace,
   tree,
@@ -312,6 +326,7 @@ async function activateRequestTab(tabId: string, showRequestEditor = true, navig
     const session = await editor.loadFreeRequestTab(tab, isCurrent);
     if (!session || !isCurrent()) return;
     editor.activateFree(tabId);
+    void ensureProjectAssets(tab.root, tab.project).catch((error) => { if (isCurrent()) reportError(error); });
     return;
   }
   const nodeKey = localTreeNodeKey({ source: "local", kind: "api", locator: tab.source.locator });
@@ -350,7 +365,7 @@ async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean =
   if (!isCurrent() || workspace.root !== root || !editor.locator || JSON.stringify(editor.locator) !== JSON.stringify(expected)) return;
   const project = workspace.projectLocatorForApi(expected);
   if (!project) throw new Error("接口 locator 在当前本地树中不存在");
-  await assets.load(project);
+  await ensureProjectAssets(root, project);
   if (!isCurrent() || workspace.root !== root || !editor.locator || JSON.stringify(editor.locator) !== JSON.stringify(expected)) return;
   design.load();
 }
@@ -665,7 +680,6 @@ const treeFilter = computed({
   },
 });
 // 导入向导（M10 归接口模块）：显隐状态
-const importOpen = ref(false);
 
 watch(() => envs.envs, (environments) => {
   if (envs.root && envs.projectLocator) {
@@ -696,16 +710,58 @@ function dismissError() {
   errorMessage.value = "";
 }
 
-/**
- * 拉取 AI 建议用例（M6-C 任务 1，规格 §2 D4 调试视图入口）：成功 → store 打开建议抽屉；
- * 失败（如未配置 AI 密钥）→ store.error 上屏于抽屉/对话框，此处兜底转报错误通道。
- * M8：入口按钮自 debug-ai-bar 收编进接口模块头部（api-head），全子视图可达。
- */
-async function onAiSuggest() {
+let suggestionEntry: { isCurrent: () => boolean; trigger: HTMLElement } | undefined;
+const aiSettingsForSuggestion = ref(false);
+let suggestionEntryGeneration = 0;
+watch([view, apiSubView], () => { suggestionEntryGeneration += 1; }, { flush: "sync" });
+
+function restoreSuggestionFocus() {
+  const entry = suggestionEntry;
+  suggestionEntry = undefined;
+  if (!entry) return;
+  void nextTick(() => {
+    if (ai.drawerOpen || ai.configDialogOpen) return;
+    const target = entry.isCurrent()
+      ? entry.trigger.isConnected ? entry.trigger
+        : document.querySelector<HTMLElement>('[data-testid="main-split"] [data-testid="ai-suggest-btn"]')
+          ?? document.querySelector<HTMLElement>('[data-testid="request-more"]')
+      : document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
+    target?.focus({ preventScroll: true });
+  });
+}
+
+watch(() => ai.drawerOpen, (open) => { if (!open && !aiSettingsForSuggestion.value) restoreSuggestionFocus(); });
+watch(() => ai.configDialogOpen, (open) => {
+  if (open || !aiSettingsForSuggestion.value) return;
+  aiSettingsForSuggestion.value = false;
+  restoreSuggestionFocus();
+});
+
+function openSuggestionSettings() {
+  if (!suggestionEntry?.isCurrent() || !ai.drawerOpen || ai.businessPurpose !== "case-suggestion" || ai.businessError !== "missing-model") return;
+  aiSettingsForSuggestion.value = true;
+  ai.dismissSuggestions();
+  ai.configDialogOpen = true;
+}
+
+function invalidateSuggestionEntry() {
+  if (suggestionEntry && !suggestionEntry.isCurrent() && ai.drawerOpen) ai.dismissSuggestions();
+}
+watch([view, apiSubView], invalidateSuggestionEntry, { flush: "post" });
+
+async function onAiSuggest(trigger: HTMLElement) {
+  const navigation = historyNavigationGeneration.value;
+  const entryGeneration = suggestionEntryGeneration;
+  const subView = apiSubView.value;
+  const owner = editor.activeKey;
+  if (!owner || workspace.readOnly || ai.suggestLoading) return;
+  const isCurrent = () => historyNavigationGeneration.value === navigation && suggestionEntryGeneration === entryGeneration && editor.activeKey === owner
+    && view.value === "api" && apiSubView.value === subView && !isHome.value && !onlineMode.value;
+  suggestionEntry = { isCurrent, trigger };
   try {
-    await ai.fetchSuggestions();
+    await ai.fetchSuggestions(undefined, undefined, isCurrent);
   } catch (e) {
-    reportError(e);
+    if (isCurrent()) reportError(e);
   }
 }
 
@@ -932,6 +988,133 @@ const selectedProjectContext = computed(() => {
   return locator ? { root: workspace.root, locator } : null;
 });
 const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
+const localProjectTools = computed(() => {
+  const tab = activeLocalProjectTab.value;
+  if (isHome.value || onlineMode.value || !tab || !workspace.opened || tab.workspaceRef.dir !== workspace.root) return null;
+  const project = workspace.findProject(tab.projectLocator);
+  return project ? { root: workspace.root, project, key: projectSessionKey(workspace.root, project.locator) } : null;
+});
+const localProjectToolsKey = computed(() => localProjectTools.value?.key ?? "");
+const localTool = ref<"assets" | "mock" | null>(null);
+const lastLocalTool = ref<"assets" | "mock">("assets");
+const mockPanelMounted = ref(false);
+const assetsPanelMounted = ref(false);
+const localToolTitle = computed(() => lastLocalTool.value === "assets" ? t("contract.projectAssets") : t("mockPanel.title"));
+const assetTarget = ref<ProjectAssetTarget | null>(null);
+const sharedCredentialStatusRevision = ref(0);
+const assetLoadError = ref("");
+const assetReadyKey = ref("");
+let assetRequest: { key: string; pending: Promise<void> } | undefined;
+let localToolTrigger: HTMLElement | undefined;
+
+function refreshSharedCredentialStatus(owner: string | undefined) {
+  if (owner && owner === localProjectToolsKey.value) sharedCredentialStatusRevision.value += 1;
+}
+
+function ensureProjectAssets(root: string, project: ProjectLocator, refresh = false): Promise<void> {
+  const key = projectSessionKey(root, project);
+  if (root !== workspace.root || key !== localProjectToolsKey.value) return Promise.resolve();
+  if (!refresh && assetReadyKey.value === key) return Promise.resolve();
+  if (!refresh && assetRequest?.key === key) return assetRequest.pending;
+  const pending = assets.load(project).then(() => {
+    if (assetRequest?.pending === pending && localProjectToolsKey.value === key) assetReadyKey.value = key;
+  }).finally(() => {
+    if (assetRequest?.pending === pending) assetRequest = undefined;
+  });
+  assetRequest = { key, pending };
+  return pending;
+}
+
+async function refreshLocalProject() {
+  const scope = localProjectTools.value;
+  await workspace.refresh();
+  if (!scope || localProjectToolsKey.value !== scope.key || (!assetReadyKey.value && !assetRequest)) return;
+  await ensureProjectAssets(scope.root, scope.project.locator, true);
+}
+
+function projectToolFocus() {
+  return document.querySelector<HTMLElement>('[data-testid="project-tools"]');
+}
+
+function closeLocalTool(restoreToProject = false) {
+  if (!localTool.value) return;
+  if (localTool.value === "assets" && !restoreToProject) refreshSharedCredentialStatus(localProjectToolsKey.value);
+  const trigger = localToolTrigger;
+  localToolTrigger = undefined;
+  localTool.value = null;
+  void nextTick(() => {
+    if (localTool.value) return;
+    const selected = document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
+    if (restoreToProject) {
+      if (document.activeElement === document.body) selected?.focus({ preventScroll: true });
+      return;
+    }
+    const visibleTrigger = trigger?.isConnected && !trigger.closest('[style*="display: none"]');
+    (visibleTrigger ? trigger : projectToolFocus() ?? selected)?.focus({ preventScroll: true });
+  });
+}
+
+async function openLocalTool(tool: "assets" | "mock", target: ProjectAssetTarget | null = null, trigger?: HTMLElement) {
+  const scope = localProjectTools.value;
+  if (!scope) return;
+  if (syncOpen.value) {
+    syncOpen.value = false;
+    synchronization.setVisible(false);
+  }
+  localToolTrigger = trigger;
+  assetTarget.value = target;
+  assetLoadError.value = "";
+  lastLocalTool.value = tool;
+  localTool.value = tool;
+  if (tool === "mock") mockPanelMounted.value = true;
+  if (tool === "assets") {
+    assetsPanelMounted.value = true;
+    try { await ensureProjectAssets(scope.root, scope.project.locator); }
+    catch (error) {
+      if (localProjectToolsKey.value === scope.key && localTool.value === "assets") {
+        assetLoadError.value = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+}
+
+function locateProjectAsset(target: ProjectAssetTarget, trigger: HTMLElement) {
+  const scope = localProjectTools.value;
+  const tab = activeRequestTab.value;
+  const owner = tab?.project ?? editor.locator;
+  if (!scope || !owner || (tab && tab.root !== scope.root)
+    || !sameProjectLocator(owner, scope.project.locator)) return;
+  void openLocalTool("assets", target, trigger);
+}
+
+function rememberMockDraft(value: { text: string; revision: string; port: number } | null, key: string) {
+  if (!mockPanelMounted.value || localProjectToolsKey.value !== key) return;
+  if (value) mockDrafts.set(key, value);
+  else mockDrafts.delete(key);
+}
+
+function viewProjectModel(id: string, trigger: HTMLElement) {
+  locateProjectAsset({ kind: "model", id }, trigger);
+}
+
+watch(localProjectToolsKey, () => {
+  closeLocalTool(true);
+  mockPanelMounted.value = false;
+  assetsPanelMounted.value = false;
+  assetTarget.value = null;
+  assetRequest = undefined;
+  assetReadyKey.value = "";
+  assets.deactivate();
+}, { flush: "sync" });
+watch(localProjectToolsKey, () => {
+  const scope = localProjectTools.value;
+  const owner = activeRequestTab.value?.project ?? editor.locator;
+  if (!scope || !owner || !sameProjectLocator(scope.project.locator, owner)) return;
+  void ensureProjectAssets(scope.root, scope.project.locator).catch((error) => {
+    if (localProjectToolsKey.value === scope.key) reportError(error);
+  });
+});
+
 const syncOpen = ref(false);
 const syncScope = computed<SyncScope | null>(() => {
   if (isHome.value) return null;
@@ -940,7 +1123,7 @@ const syncScope = computed<SyncScope | null>(() => {
 });
 const synchronization = createSynchronizationStore(apicc, async () => {
   if (syncScope.value?.kind === 'online') { await online.execution.load(); if (online.execution.error) throw Error(online.execution.error); }
-  else await workspace.refresh();
+  else await refreshLocalProject();
 });
 const syncModules = computed(() => syncScope.value?.kind === 'online' ? (online.execution.project?.collections ?? []).map(collection => ({ id: collection.id, name: collection.name })) : syncScope.value?.kind === 'local' ? (workspace.findProject(syncScope.value.locator)?.children ?? []).flatMap(node => node.kind === 'collection' ? [{ id: node.locator.collectionId, name: node.label }] : []) : []);
 const syncScopeKey = computed(() => JSON.stringify(syncScope.value));
@@ -951,8 +1134,12 @@ const projectOnlineTarget = computed(() => {
       || normalizeOnlineBaseUrl(tab.workspaceRef.baseUrl) !== normalizeOnlineBaseUrl(target.baseUrl)) return null;
   return target;
 });
-const projectToolsKey = computed(() => JSON.stringify([tabs.activeTabId, syncScopeKey.value, projectOnlineTarget.value]));
+const projectToolsKey = computed(() => JSON.stringify([tabs.activeTabId, syncScopeKey.value, projectOnlineTarget.value, localProjectToolsKey.value]));
 const projectToolItems = computed(() => [
+  ...(localProjectTools.value ? [
+    { key: "assets", label: t("contract.projectAssets"), testId: "project-assets-entry" },
+    { key: "mock", label: t("mockPanel.title"), testId: "project-mock-entry" },
+  ] : []),
   ...(syncScope.value ? [{ key: "sync", label: t("sync.title"), testId: "sync-entry" }] : []),
   ...(projectOnlineTarget.value ? [
     ...(online.profiles.some((profile) => profile.baseUrl === projectOnlineTarget.value?.baseUrl) ? [
@@ -965,16 +1152,19 @@ const projectToolItems = computed(() => [
     { key: "exit", label: t("online.exitOnline"), disabled: online.migrating, testId: "project-online-exit" },
   ] : []),
 ]);
-const directDirectorySync = computed(() => useDirectoryTools.value && projectToolItems.value.length === 1
-  && projectToolItems.value[0]?.key === "sync");
 function openSyncPanel() {
   if (!syncScope.value) return;
+  closeLocalTool(true);
   syncOpen.value = true;
   void nextTick(() => document.querySelector<HTMLElement>('[data-testid="sync-panel"]')?.focus({ preventScroll: true }));
 }
 const openedProjectToolsKey = ref<string | null>(null);
 function selectProjectTool(action: string) {
   if (openedProjectToolsKey.value !== projectToolsKey.value || !projectToolItems.value.some((item) => item.key === action)) return;
+  if (action === "assets" || action === "mock") {
+    void openLocalTool(action, null, projectToolFocus() ?? undefined);
+    return;
+  }
   if (action === "sync") openSyncPanel();
   const target = projectOnlineTarget.value;
   if (!target) return;
@@ -986,7 +1176,7 @@ function closeSyncPanel(restoreToProject = false) {
   syncOpen.value = false;
   synchronization.setVisible(false);
   void nextTick(() => {
-    const trigger = restoreToProject ? null : document.querySelector<HTMLElement>('[data-testid="project-tools"], .directory-project-tools [data-testid="sync-entry"]');
+    const trigger = restoreToProject ? null : projectToolFocus();
     const selected = document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]');
     (trigger ?? selected)?.focus({ preventScroll: true });
   });
@@ -1004,7 +1194,7 @@ watch(projectToolsKey, () => {
 watch(useDirectoryTools, () => {
   const restoreFocus = projectToolsMenu.value?.hasFocus();
   projectToolsMenu.value?.close(false);
-  if (restoreFocus) void nextTick(() => document.querySelector<HTMLElement>('[data-testid="project-tools"], .directory-project-tools [data-testid="sync-entry"]')?.focus());
+  if (restoreFocus) void nextTick(() => projectToolFocus()?.focus());
 });
 watch(() => online.execution.view?.assets.version, version => { synchronization.assetVersion = version ?? '0'; }, { immediate: true });
 onBeforeUnmount(() => { synchronization.setVisible(false); synchronization.activate(null); });
@@ -1068,6 +1258,7 @@ watch(
   () => { historyNavigationGeneration.value += 1; },
   { flush: "sync" },
 );
+watch(historyNavigationGeneration, invalidateSuggestionEntry, { flush: "post" });
 
 async function createFreeRequestModule(tab: RequestTab, name: string): Promise<ApiParentLocator> {
   if (tab.source.kind !== "free" || workspace.readOnly || workspace.root !== tab.root
@@ -1379,8 +1570,6 @@ const testScenarios = computed(() => {
 });
 const stressEnvs = computed(() => selectedProjectLocator.value ? workspace.findProject(selectedProjectLocator.value)?.envs ?? [] : []);
 
-// 导入向导显隐（M10 归接口模块）：向导 close 事件由模板内联 importOpen=false 处理。
-
 const selectedProjectStressPolicy = computed(() => {
   return selectedProjectLocator.value ? workspace.findProject(selectedProjectLocator.value)?.stressPolicy : undefined;
 });
@@ -1405,6 +1594,51 @@ const selectedCollectionLocator = computed<CollectionLocator | null>(() => {
   const selected = tree.selected;
   return selected?.source === "local" ? collectionOfLocalNode(selected) : null;
 });
+
+const directoryImportTarget = computed(() => {
+  const scope = localProjectTools.value;
+  if (!scope || workspace.readOnly || !directoryVisible.value) return null;
+  const selected = selectedCollectionLocator.value;
+  const collection = selected && sameProjectLocator(selected, scope.project.locator)
+    ? scope.project.children.find((node) => node.kind === "collection" && node.locator.collectionId === selected.collectionId)
+    : undefined;
+  return {
+    key: JSON.stringify([scope.key, collection?.id ?? null]),
+    scopeKey: scope.key,
+    project: { ...scope.project.locator },
+    projectName: scope.project.label,
+    collection: collection?.kind === "collection" ? { ...collection.locator } : null,
+    collectionName: collection?.label,
+  };
+});
+const moduleImportTarget = ref<NonNullable<typeof directoryImportTarget.value> | null>(null);
+const moduleImportTargetCurrent = computed(() => {
+  const target = moduleImportTarget.value;
+  const scope = localProjectTools.value;
+  return !!target && !!scope && target.scopeKey === scope.key && !workspace.readOnly
+    && (!target.collection || scope.project.children.some((node) =>
+      node.kind === "collection" && node.locator.collectionId === target.collection?.collectionId));
+});
+
+function openDirectoryImport(targetKey: string) {
+  const target = directoryImportTarget.value;
+  if (!target || target.key !== targetKey) return;
+  moduleImportW.reset();
+  moduleImportTarget.value = target;
+}
+
+function closeDirectoryImport(restoreFocus = true) {
+  if (!moduleImportTarget.value) return;
+  moduleImportW.reset();
+  moduleImportTarget.value = null;
+  if (restoreFocus) void nextTick(() => {
+    if (moduleImportTarget.value) return;
+    document.querySelector<HTMLElement>('[data-testid="directory-create"], [data-testid="rail-directory"]')?.focus({ preventScroll: true });
+  });
+}
+watch(moduleImportTargetCurrent, (current) => {
+  if (!current) closeDirectoryImport(false);
+}, { flush: "sync" });
 
 // —— 工作流设计器的绑定级联索引（M2-B 任务 4 / 审查修复竞态）——
 // 树 DTO 不含用例目录：按当前项目逐接口 apiGet 补齐（wfBindings 注入式取数），
@@ -1478,21 +1712,54 @@ const viewerPct = computed(() => clampResponsePercent(viewerPreference.value ?? 
 const responseHeight = computed(() => splitHeight.value ? `${splitHeight.value * viewerPct.value / 100}px` : `${viewerPct.value}%`);
 const compactApiTools = computed(() => debugWidth.value < 680);
 const apiHead = ref<HTMLElement>();
-const apiHeadMenu = ref<InstanceType<typeof ActionMenu>>();
 const requestSection = ref<HTMLElement>();
 const responseSection = ref<HTMLElement>();
+const responseToggle = ref<HTMLButtonElement>();
+const legacyResponseExpanded = ref(false);
+const responseState = computed(() => activeRequestTab.value ? debug.requestTabState(activeRequestTab.value) : null);
+const responseExpanded = computed({
+  get: () => responseState.value?.responseExpanded ?? legacyResponseExpanded.value,
+  set: (value: boolean) => {
+    if (responseState.value) responseState.value.responseExpanded = value;
+    else legacyResponseExpanded.value = value;
+  },
+});
 const splitDrag = ref<{ id: number; y: number; percent: number; divider: HTMLElement }>();
-const apiTools = computed(() => [
-  { key: "history", label: t("debugLoop.historyTitle"), testId: "debug-history-open" },
-  { key: "import", label: t("api.import"), testId: "api-import-btn" },
-  { key: "suggest", label: t("ai.suggestBtn"), disabled: !editor.apiId || ai.suggestLoading, testId: "ai-suggest-btn" },
-  { key: "models", label: t("aiSettings.manageModels"), testId: "ai-manage-models" },
-]);
-function selectApiTool(key: string) {
-  if (key === "history") historyOpen.value = true;
-  else if (key === "import") importOpen.value = true;
-  else if (key === "suggest") void onAiSuggest();
-  else if (key === "models") ai.configDialogOpen = true;
+let responseNavigation = 0;
+watch([view, apiSubView, historyNavigationGeneration], () => { responseNavigation += 1; }, { flush: "sync" });
+watch(() => editor.activeKey, () => { if (!activeRequestTab.value) legacyResponseExpanded.value = false; });
+
+function captureResponseExpansion() {
+  const navigation = responseNavigation;
+  const state = responseState.value;
+  const owner = editor.activeKey;
+  return () => {
+    if (responseNavigation === navigation && view.value === "api" && apiSubView.value === "debug" && !isHome.value
+      && responseState.value === state && (state !== null || owner === editor.activeKey)) responseExpanded.value = true;
+  };
+}
+
+function openDebugHistory(trigger?: HTMLElement) {
+  historyTrigger = trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
+  historyOpen.value = true;
+}
+
+function closeDebugHistory() {
+  historyOpen.value = false;
+}
+
+function restoreHistoryFocus() {
+  const trigger = historyTrigger;
+  if (historyOpen.value) return;
+  historyTrigger = undefined;
+  if (trigger?.isConnected && !trigger.closest('[style*="display: none"]')) trigger.focus({ preventScroll: true });
+  else (document.querySelector<HTMLElement>('[data-testid="debug-history-open"]')
+    ?? document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]'))?.focus({ preventScroll: true });
+}
+
+function toggleResponse() {
+  responseExpanded.value = !responseExpanded.value;
+  if (!responseExpanded.value && shortDebug.value) void nextTick(() => responseToggle.value?.focus({ preventScroll: true }));
 }
 function measureDebugLayout() {
   const split = debugSplit.value;
@@ -1509,11 +1776,6 @@ watch([debugSplit, apiHead], ([split, head]) => {
   if (split) debugResize.observe(split);
   if (head) debugResize.observe(head);
 }, { flush: "post" });
-watch(compactApiTools, () => {
-  if (!apiHeadMenu.value?.hasFocus()) return;
-  apiHeadMenu.value.close(false);
-  void nextTick(() => apiHead.value?.querySelector<HTMLElement>('[data-testid="debug-history-open"]')?.focus());
-});
 onMounted(() => {
   window.addEventListener("resize", measureDebugLayout);
   window.addEventListener("blur", endSplitDrag);
@@ -1524,7 +1786,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("blur", endSplitDrag);
   endSplitDrag();
 });
-watch([debugSplit, shortDebug, () => activeRequestTab.value?.tabId], endSplitDrag);
+watch([debugSplit, shortDebug, responseExpanded, () => activeRequestTab.value?.tabId], endSplitDrag);
 
 function onDividerDown(event: PointerEvent) {
   if (event.button !== 0 || shortDebug.value || !splitHeight.value) return;
@@ -1550,7 +1812,7 @@ function onDividerKey(event: KeyboardEvent) {
   viewerPreference.value = event.key === "Enter" ? null : clampResponsePercent(values[event.key]!);
 }
 function focusDebugSection(section: HTMLElement | undefined) {
-  section?.scrollIntoView({ block: "start" });
+  section?.scrollIntoView?.({ block: "start" });
   section?.focus({ preventScroll: true });
 }
 </script>
@@ -1566,6 +1828,27 @@ function focusDebugSection(section: HTMLElement | undefined) {
       <div v-if="syncOpen && syncScope" class="sync-workbench" @keydown.esc.stop="closeSyncPanel()">
         <SyncPanel :store="synchronization" :modules="syncModules" :api="apicc" :contract-project-id="syncScope.kind === 'online' ? online.execution.project?.id : syncScope.locator.projectId" :read-only="syncScope.kind === 'local' && workspace.readOnly" @close="closeSyncPanel()" />
       </div>
+      <a-modal v-if="(localTool || mockPanelMounted || assetsPanelMounted) && localProjectTools" :open="!!localTool" :footer="null" :mask-closable="false"
+        :focus-trigger-after-close="false" :width="920" class="local-project-tool" @cancel="closeLocalTool()">
+        <template #title><span data-testid="project-tool-title">{{ localToolTitle }} · {{ localProjectTools.project.label }}</span></template>
+        <div class="project-tool-content" data-testid="local-project-tool">
+          <div v-if="assetsPanelMounted" v-show="lastLocalTool === 'assets'">
+            <ProjectAssetsPanel v-if="assetReadyKey === localProjectToolsKey" :key="localProjectToolsKey" direct :target="assetTarget"
+              :assets="assets" :api="apicc" :read-only="workspace.readOnly" :credential-context-key="localProjectToolsKey"
+              @credential-changed="refreshSharedCredentialStatus" />
+            <div v-else-if="assetLoadError" role="alert">
+              <p>{{ assetLoadError }}</p>
+              <a-button @click="openLocalTool('assets', assetTarget, localToolTrigger)">{{ t('projectTools.retry') }}</a-button>
+            </div>
+            <p v-else role="status">{{ t("projectTools.loadingAssets") }}</p>
+          </div>
+          <MockPanel v-if="mockPanelMounted" v-show="lastLocalTool === 'mock'" embedded :active="localTool === 'mock'"
+            :key="localProjectToolsKey" :api="apicc" :root="localProjectTools.root"
+            :locator="localProjectTools.project.locator" :read-only="workspace.readOnly" :draft-memory="mockDrafts.get(localProjectToolsKey)"
+            @draft="rememberMockDraft"
+            @new-free-request="openFreeRequestTab(); closeLocalTool()" />
+        </div>
+      </a-modal>
       <div :ref="setWorkbenchBody" class="body">
         <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
              在线模式全禁用 -->
@@ -1612,6 +1895,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :module-memory="moduleMemory"
             :filter="treeFilter"
             show-create-in-header
+            :import-target-key="directoryImportTarget?.key"
             :compact="compactDirectory"
             :hidden="!directoryVisible"
             :active-project-locator="activeProjectLocator"
@@ -1619,6 +1903,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :readonly="onlineMode"
             :empty-text="onlineMode ? t('online.treeEmpty') : undefined"
             @select="onSelect"
+            @import-interfaces="openDirectoryImport"
           >
             <template #search>
               <a-input ref="treeSearch" v-model:value="treeFilter" size="small" allow-clear data-testid="tree-search"
@@ -1626,13 +1911,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             </template>
           </SideTree>
           <div v-if="projectToolItems.length && useDirectoryTools" class="directory-project-tools">
-            <template v-if="directDirectorySync">
-              <span class="project-tools-label">{{ t("workbench.projectTools") }}</span>
-              <button type="button" class="directory-sync" data-testid="sync-entry" @click="openSyncPanel">
-                <SyncOutlined /> {{ t("sync.title") }}
-              </button>
-            </template>
-            <ActionMenu v-else ref="projectToolsMenu" test-id="project-tools" :label="t('workbench.projectTools')" :items="projectToolItems"
+            <ActionMenu ref="projectToolsMenu" test-id="project-tools" :label="t('workbench.projectTools')" :items="projectToolItems"
               @opened="openedProjectToolsKey = projectToolsKey" @select="selectProjectTool">
               <EllipsisOutlined /> {{ t("workbench.projectTools") }}
             </ActionMenu>
@@ -1709,65 +1988,50 @@ function focusDebugSection(section: HTMLElement | undefined) {
                 </a-radio-button>
               </a-radio-group>
               <span class="head-spacer"></span>
-              <!-- AI 入口（M6-C 任务 1）自 debug-ai-bar 收编于接口头部：全子视图可达 -->
-              <a-space v-if="!compactApiTools" :size="6">
-                <a-button size="small" data-testid="debug-history-open" @click="historyOpen = true">{{ t("debugLoop.historyTitle") }}</a-button>
-                <a-button size="small" data-testid="api-import-btn" @click="importOpen = true">
-                  {{ t("api.import") }}
-                </a-button>
-                <a-button
-                  size="small"
-                  data-testid="ai-suggest-btn"
-                  :disabled="!editor.apiId"
-                  :loading="ai.suggestLoading"
-                  @click="onAiSuggest"
-                >
-                  {{ t("ai.suggestBtn") }}
-                </a-button>
-                <a-button size="small" data-testid="ai-manage-models" @click="ai.configDialogOpen = true">
-                  {{ t("aiSettings.manageModels") }}
-                </a-button>
-              </a-space>
-              <ActionMenu v-else ref="apiHeadMenu" test-id="api-tools" :label="t('requestWorkbench.apiTools')" :items="apiTools" @select="selectApiTool">
-                <EllipsisOutlined /> {{ t("requestWorkbench.apiTools") }}
-              </ActionMenu>
+              <a-button v-if="apiSubView === 'design'" size="small" data-testid="debug-history-open"
+                @click="openDebugHistory($event.currentTarget as HTMLElement)">{{ t("debugLoop.historyTitle") }}</a-button>
             </div>
-            <!-- 导入向导（M10 归接口模块；轨二 module 模式）：打开时替代子视图区域——
-                 产物集合并入当前项目（baseUrl 进模块变量、不造环境），无落点选择 -->
-            <ImportWizard
-              v-if="importOpen"
-              class="panel-view"
-              mode="module"
-              :target-project-locator="activeProjectLocator"
-              :target-collection-locator="selectedCollectionLocator"
-              :import-w="importW"
-              :plugins="plugins"
-              :report-error="reportError"
-              @close="importOpen = false"
-            />
-            <div v-else-if="apiSubView === 'debug'" ref="debugSplit" class="debug-split" data-testid="debug-split" :class="{ 'short-debug': shortDebug }">
+            <a-modal v-if="moduleImportTarget && moduleImportTargetCurrent" :open="true" :footer="null"
+              :title="t('projectTools.importInterfaces')" :mask-closable="false" :focus-trigger-after-close="false"
+              :width="860" @cancel="closeDirectoryImport()">
+              <ImportWizard mode="module" :target-project-locator="moduleImportTarget.project"
+                :target-project-name="moduleImportTarget.projectName" :target-collection-locator="moduleImportTarget.collection"
+                :target-collection-name="moduleImportTarget.collectionName" :import-w="moduleImportW"
+                :plugins="plugins" :report-error="reportError" @close="closeDirectoryImport()" />
+            </a-modal>
+            <div v-if="apiSubView === 'debug'" ref="debugSplit" class="debug-split" data-testid="debug-split"
+              :class="{ 'short-debug': shortDebug && responseExpanded, 'response-collapsed': !responseExpanded }">
               <div ref="requestSection" class="editor-pane" data-testid="editor-pane" tabindex="-1">
-                <button v-if="shortDebug" type="button" class="debug-jump" @click="focusDebugSection(responseSection)">{{ t("responseWorkbench.goToResponse") }}</button>
+                <button v-if="shortDebug && responseExpanded" type="button" class="debug-jump" @click="focusDebugSection(responseSection)">{{ t("responseWorkbench.goToResponse") }}</button>
                 <RequestEditor
                   :editor="editor"
                   :debug="debug"
                   :api="apicc"
                   :assets="activeRequestTab?.source.kind === 'asset' ? assets : undefined"
+                  :models="assets.models"
                   :project-locator="activeRequestTab?.project ?? null"
                   :request-tab="activeRequestTab"
                   :environment-selection="environmentSelection"
                   :environment-loading="!!activeRequestTab && !environmentSelection"
                   :request-path="requestPath"
+                  :view-model="localProjectTools ? viewProjectModel : undefined"
+                  :view-project-asset="localProjectTools ? locateProjectAsset : undefined"
+                  :shared-credential-status-revision="sharedCredentialStatusRevision"
+                  :suggest-cases="onAiSuggest"
+                  :suggesting-cases="ai.suggestLoading"
+                  :compact-suggest="compactApiTools"
+                  :capture-response-expansion="captureResponseExpansion"
+                  project-tools
                   :has-drafts="activeRequestTab ? requestHasDrafts(activeRequestTab.tabId) : editor.dirty"
                   :project-node="activeRequestTab ? workspace.findProject(activeRequestTab.project) : null"
                   :create-free-module="createFreeRequestModule"
                   :save-free-request="saveFreeRequestAsApi"
                   @new-free-request="openFreeRequestTab"
-                  @collaboration-history="historyOpen = true"
+                  @collaboration-history="openDebugHistory"
                 />
               </div>
               <div
-                v-if="!shortDebug"
+                v-if="!shortDebug && responseExpanded"
                 class="split-divider"
                 data-testid="split-divider"
                 role="separator"
@@ -1786,18 +2050,31 @@ function focusDebugSection(section: HTMLElement | undefined) {
                 @keydown="onDividerKey"
                 @dblclick="viewerPreference = null"
               ></div>
-              <div ref="responseSection" class="viewer-pane" data-testid="viewer-pane" tabindex="-1" :style="shortDebug ? undefined : { height: responseHeight }">
-                <button v-if="shortDebug" type="button" class="debug-jump" @click="focusDebugSection(requestSection)">{{ t("responseWorkbench.backToRequest") }}</button>
+              <div ref="responseSection" class="viewer-pane" data-testid="viewer-pane" tabindex="-1"
+                :style="responseExpanded && !shortDebug ? { height: responseHeight } : undefined">
+                <button v-if="shortDebug && responseExpanded" type="button" class="debug-jump" @click="focusDebugSection(requestSection)">{{ t("responseWorkbench.backToRequest") }}</button>
                 <ResponseViewer
-                  :result="activeRequestTab ? debug.requestTabState(activeRequestTab).result : debug.result"
-                  :sending="activeRequestTab ? debug.requestTabState(activeRequestTab).sending : debug.sending"
-                  :error="activeRequestTab ? debug.requestTabState(activeRequestTab).error : debug.error"
-                  :tab-state="activeRequestTab ? debug.requestTabState(activeRequestTab) : null"
+                  :result="responseState ? responseState.result : debug.result"
+                  :sending="responseState ? responseState.sending : debug.sending"
+                  :error="responseState ? responseState.error : debug.error"
+                  :tab-state="responseState"
+                  :expanded="responseExpanded"
                   :api="apicc"
-                />
+                >
+                  <template #actions>
+                    <button type="button" class="response-header-action" data-testid="debug-history-open"
+                      :aria-label="t('debugLoop.historyTitle')" :title="t('debugLoop.historyTitle')"
+                      @click="openDebugHistory($event.currentTarget as HTMLElement)">{{ t(compactApiTools ? "responseWorkbench.history" : "debugLoop.historyTitle") }}</button>
+                    <button ref="responseToggle" type="button" class="response-header-action response-toggle" data-testid="response-expand-toggle"
+                      :aria-label="t(responseExpanded ? 'responseWorkbench.collapseResponse' : 'responseWorkbench.expandResponse')"
+                      :aria-expanded="responseExpanded" @click="toggleResponse">{{ t(responseExpanded ? "responseWorkbench.collapse" : "responseWorkbench.expand") }}</button>
+                  </template>
+                </ResponseViewer>
               </div>
             </div>
-            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :workspace="workspace" :assets="assets" :report-error="reportError" :read-only="workspace.readOnly" />
+            <DesignPanel v-else class="panel-view" :editor="editor" :design="design" :workspace="workspace" :assets="assets"
+              :view-model="localProjectTools ? viewProjectModel : undefined" :suggest-cases="onAiSuggest"
+              :suggesting-cases="ai.suggestLoading" :report-error="reportError" :read-only="workspace.readOnly" />
           </template>
           <EnvPanel
             v-else-if="view === 'envs'"
@@ -1922,9 +2199,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
       </div>
     </ConfirmDialog>
     <!-- AI 配置对话框与建议抽屉（M6-C 任务 1）：接口头部入口按钮置显隐/拉取 -->
-    <AiConfigDialog :ai="ai" />
-    <AiSuggestionsDrawer :ai="ai" />
-    <DebugHistory :ai="ai" :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @collaboration="chooseCollaborationTarget" @close="historyOpen = false" />
+    <AiConfigDialog :ai="ai" :for-suggestion="aiSettingsForSuggestion" />
+    <AiSuggestionsDrawer :ai="ai" :open-case-settings="openSuggestionSettings" />
+    <DebugHistory :ai="ai" :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @collaboration="chooseCollaborationTarget" @close="closeDebugHistory" @after-close="restoreHistoryFocus" />
     <aside v-if="pendingCollaborationSource" class="collaboration-drawer" role="dialog" data-testid="collaboration-target-picker"><h2>{{ t('collaboration.chooseTarget') }}</h2><p>{{ t('collaboration.localNoNetwork') }}</p><p v-if="!online.loggedIn || !online.projects.length">{{ t('collaboration.connectTarget') }}</p><select v-model="collaborationTargetId" data-testid="collaboration-target"><option value="">{{ t('collaboration.chooseTarget') }}</option><option v-for="project in online.projects" :key="project.id" :value="project.id">{{ online.activeName }} · {{ online.activeWorkspace?.name }} / {{ project.name }}</option></select><button :disabled="!online.executionContext(collaborationTargetId)" data-testid="collaboration-prepare-local" @click="prepareLocalCollaboration().catch(reportError)">{{ t('collaboration.prepareLocal') }}</button><button @click="pendingCollaborationSource = null">{{ t('collaboration.close') }}</button></aside>
     <aside v-if="collaboration.visible" class="collaboration-drawer" role="dialog" :aria-label="t('collaboration.title')"><button @click="collaboration.close().catch(reportError)">{{ t('collaboration.close') }}</button><CollaborationPanel :collaboration="collaboration" :saved="online.execution.view ? { revision: online.execution.view.assets.version, manifestHash: online.execution.view.assets.manifestHash } : undefined" :dirty="online.editorDirty || onlineProjectAdapter.editor.dirty || onlineProjectAdapter.testing.dirty || onlineProjectAdapter.workflowDesign.dirty" /></aside>
   </a-layout>
@@ -1935,6 +2212,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
 .exit-impact { max-height: min(240px, 48vh); overflow: auto; overflow-wrap: anywhere; }
 .online-context-unavailable { padding: 16px; }
 .sync-workbench{position:fixed;inset:54px 12px 12px max(12px,9vw);z-index:1040;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;min-width:0;overflow:hidden}
+.project-tool-content { max-height: min(70vh, 720px); overflow: auto; min-width: 0; }
 .collaboration-drawer{position:fixed;inset:24px 24px 24px max(24px,20vw);z-index:1050;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;padding:16px;overflow:auto;min-width:0}
 html, body, #app { height: 100%; margin: 0; }
 .app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
@@ -1952,10 +2230,6 @@ html, body, #app { height: 100%; margin: 0; }
 .side-col { flex: 1; min-height: 0; }
 .directory-project-tools { padding: 6px 8px; border-top: 1px solid var(--border); }
 .directory-project-tools > button { width: 100%; justify-content: flex-start; }
-.project-tools-label { display: block; padding: 0 6px; color: var(--text-muted); font-size: 11px; }
-.directory-sync { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
-.directory-sync:hover { background: var(--active-weak); }
-.directory-sync:focus-visible { outline-offset: -2px; }
 .rail-project-tools { width: 100%; }
 .directory-overlay { position: absolute; z-index: 12; left: 56px; inset-block: 0; width: min(248px, calc(100% - 56px)); box-shadow: 3px 0 12px rgb(20 35 61 / 18%); }
 @media (max-width: 1023px) { .sider-col-wrap:not(.directory-overlay) { width: 208px; } }
@@ -1977,6 +2251,10 @@ html, body, #app { height: 100%; margin: 0; }
 .split-divider:hover, .split-divider:focus-visible { background: var(--active-weak); outline: 2px solid var(--accent); outline-offset: -2px; }
 .viewer-pane { flex: none; box-sizing: border-box; }
 .viewer-pane > .viewer { flex: 1; }
+.response-collapsed .viewer-pane { height: 36px; }
+.response-header-action { min-height: 26px; flex: none; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.response-header-action:hover { background: var(--active-weak); }
+.response-toggle { min-width: 56px; }
 .debug-split.short-debug { display: block; overflow-y: auto; }
 .short-debug .editor-pane { min-height: 225px; max-height: min(540px, 100vh); }
 .short-debug .viewer-pane { height: max(270px, 60vh); margin-top: 8px; }

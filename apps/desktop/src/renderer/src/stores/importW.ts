@@ -127,9 +127,9 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
           if (result.committed && workspace) {
             try {
               await workspace.refresh();
-              this.refreshError = "";
+              if (contextIsCurrent(context)) this.refreshError = "";
             } catch (error) {
-              this.refreshError = error instanceof Error ? error.message : String(error);
+              if (contextIsCurrent(context)) this.refreshError = error instanceof Error ? error.message : String(error);
             }
           }
           return result;
@@ -138,19 +138,23 @@ export function useImportWizardStore(api: ApiccApi, workspace?: {
         }
       },
       async refreshAfterCommit(): Promise<void> {
-        if (!this.applyResult?.committed || !workspace) return;
+        const context = this.previewContext;
+        if (!this.applyResult?.committed || !workspace || !context || !contextIsCurrent(context)) return;
         try {
           await workspace.refresh();
-          this.refreshError = "";
+          if (contextIsCurrent(context)) this.refreshError = "";
         } catch (error) {
-          this.refreshError = error instanceof Error ? error.message : String(error);
+          if (contextIsCurrent(context)) this.refreshError = error instanceof Error ? error.message : String(error);
           throw error;
         }
       },
       async undo(): Promise<void> {
-        if (!this.applyResult?.undoToken) throw new Error("没有可用的本次会话撤销句柄。");
-        await api.importUndo({ undoToken: this.applyResult.undoToken });
-        this.applyResult = { committed: false, summary: this.applyResult.summary };
+        const context = this.previewContext;
+        const applied = this.applyResult;
+        if (!applied?.undoToken || !context || !contextIsCurrent(context)) throw new Error("没有可用的本次会话撤销句柄。");
+        await api.importUndo({ undoToken: applied.undoToken });
+        if (!contextIsCurrent(context) || this.applyResult !== applied) return;
+        this.applyResult = { committed: false, summary: applied.summary };
         this.undone = true;
         this.refreshError = "";
         if (workspace) await workspace.refresh();

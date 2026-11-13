@@ -307,6 +307,32 @@ describe("assets store", () => {
     }
   });
 
+  it("clears old project assets while a different project's list is pending", async () => {
+    const fixture = await contractAssetFixture();
+    const second = await fixture.api.nodeCreate({ kind: "project", parent: fixture.group.locator, name: "Different project" });
+    if (second.kind !== "project") throw new Error("Expected a project");
+    const assets = useAssetsStore(fixture.api, () => ({ root: fixture.root, readOnly: false }));
+    await assets.load(fixture.projectLocator);
+    await assets.createModel(modelInput);
+    expect(assets.models).toHaveLength(1);
+    const modelList = fixture.api.modelList.bind(fixture.api);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    fixture.api.modelList = async (locator) => {
+      if (locator.projectId === second.locator.projectId) await gate;
+      return modelList(locator);
+    };
+    const loading = assets.load(second.locator);
+    try {
+      expect(assets.projectLocator).toEqual(second.locator);
+      expect(assets.models).toEqual([]);
+      expect(assets.components).toEqual([]);
+    } finally {
+      release();
+      await loading;
+    }
+  });
+
   it("rejects writes in a read-only workspace before calling the API", async () => {
     const fixture = await contractAssetFixture();
     const assets = useAssetsStore(fixture.api, () => ({ root: fixture.root, readOnly: true }));

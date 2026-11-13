@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createAiInvocationHost, resolveAiInvocation, prepareAiContext, inspectAiContextChoices, runAiAssistance, createCredentialOutputSanitizer, type AiContextChoices, type AiContextPreview, type AiResolvedInvocation, type AiResolvedCredentials, type AiBusinessResult } from "@apicc/core";
 import { AiApplicationProtectionSchema } from "@apicc/core/schema";
+import { AiConfigurationError } from "@apicc/core/ai/config";
 import type { CapturedAiSource } from "./sources.js";
 
 type PreviewRecord = { id: string; selection: AiPrepareInput["selection"]; context: CapturedAiSource; preview: AiContextPreview; resolved: AiResolvedInvocation; revision: number };
@@ -132,6 +133,10 @@ export function createDesktopAiRuntime(options: { personal: DesktopAiPersonal; s
         const record: ChoicesRecord = { id: randomUUID(), input, context, resolved, revision: document.revision, ...catalog(metadata), cursors: {} };
         state.choices = record;
         return publicChoices(record);
+      } catch (error) {
+        // Electron invoke forwards Error.message and drops custom fields.
+        if (error instanceof AiConfigurationError && error.code === "missing-model") throw new Error(error.code);
+        throw error;
       } finally { if (state.preparing === abort) state.preparing = undefined; }
     },
     async readChoicesPage(input: AiChoicesPageInput, owner: object): Promise<AiChoicesPageDto> {

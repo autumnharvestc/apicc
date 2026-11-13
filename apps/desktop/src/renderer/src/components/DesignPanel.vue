@@ -25,6 +25,9 @@ const props = defineProps<{
   design: ReturnType<typeof useDesignStore>;
   workspace: ReturnType<typeof useWorkspaceStore>;
   assets?: { models: ModelAsset[]; components: ComponentAsset[] };
+  viewModel?: (modelId: string, trigger: HTMLElement) => void;
+  suggestCases?: (trigger: HTMLElement) => void;
+  suggestingCases?: boolean;
   reportError?: (e: unknown) => void;
   readOnly?: boolean;
 }>();
@@ -202,6 +205,8 @@ function treeOptions(root: LocalTreeNodeDTO | null, kind: "collection" | "api"):
       <div class="toolbar">
         <a-button size="small" type="primary" data-testid="design-save" :disabled="readOnly" @click="onSave">{{ t("design.save") }}</a-button>
         <a-button size="small" data-testid="design-export" @click="onExport">{{ t("design.export") }}</a-button>
+        <a-button v-if="suggestCases" size="small" data-testid="ai-suggest-btn" :disabled="readOnly"
+          :aria-disabled="readOnly || suggestingCases" @click="!suggestingCases && suggestCases($event.currentTarget as HTMLElement)">{{ t("ai.suggestBtn") }}</a-button>
         <span v-if="saved" class="saved" data-testid="design-saved">{{ t("design.saved") }}</span>
         <span class="toolbar-spacer"></span>
         <a-button size="small" :type="activeView === 'contract' ? 'primary' : 'default'" data-testid="design-contract-tab" @click="setView('contract')">{{ t('design.contractTab') }}</a-button>
@@ -253,6 +258,7 @@ function treeOptions(root: LocalTreeNodeDTO | null, kind: "collection" | "api"):
             :key="design.sessionIdentity ?? 'no-session'"
             :editor="editor"
             :assets="assets"
+            :view-model="viewModel"
             :draft-scope="'contract'"
             :drafts="design.activeControlDrafts"
             :read-only="readOnly"

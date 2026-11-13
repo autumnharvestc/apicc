@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { MockProjectConfigSchema } from "@apicc/core/schema";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { ProjectLocator } from "../../../shared/locations.js";
 import type { MockStatus } from "../../../shared/mock.js";
+import { projectSessionKey } from "../stores/localIdentity.js";
 
-const props = defineProps<{ api: ApiccApi; root?: string; locator: ProjectLocator; readOnly?: boolean }>();
-const emit = defineEmits<{ "new-free-request": [] }>();
+type MockDraft = { text: string; revision: string; port: number };
+const props = withDefaults(defineProps<{
+  api: ApiccApi; root?: string; locator: ProjectLocator; readOnly?: boolean;
+  active?: boolean; draftMemory?: MockDraft | null; embedded?: boolean;
+}>(), { active: true });
+const emit = defineEmits<{ "new-free-request": []; draft: [value: MockDraft | null, key: string] }>();
 const { t } = useI18n();
 const state = ref<MockStatus | null>(null);
 const draft = ref("");
@@ -28,12 +33,7 @@ type PanelContext = {
   api: ApiccApi;
 };
 
-const contextKey = computed(() => JSON.stringify([
-  props.root ?? "",
-  props.locator.workspaceId,
-  props.locator.groupId,
-  props.locator.projectId,
-]));
+const contextKey = computed(() => projectSessionKey(props.root ?? "", props.locator));
 const savedText = (config: MockStatus["config"]): string => JSON.stringify(config ?? { formatVersion: 1, seed: "apicc-mock", enabledContractIds: [], rules: [] }, null, 2);
 const hasUnsavedDraft = computed(() => !!state.value && (!state.value.config || draft.value !== savedText(state.value.config)));
 const draftIsStale = computed(() => hasUnsavedDraft.value && !!draftBaseRevision.value
@@ -50,6 +50,7 @@ const addressUrl = computed(() => {
   return `http://${host}:${address.port}`;
 });
 const canReload = computed(() => !!state.value?.address && ["running", "invalid"].includes(state.value.status));
+let refreshAfterOperation = false;
 
 function captureContext(): PanelContext {
   return {
@@ -66,7 +67,7 @@ function isCurrent(context: PanelContext): boolean {
 
 function adopt(next: MockStatus, context: PanelContext, resetDraft = false): void {
   if (!isCurrent(context)) return;
-  const preserveDraft = hasUnsavedDraft.value;
+  const preserveDraft = hasUnsavedDraft.value || (!state.value && !!draftBaseRevision.value);
   state.value = next;
   if (resetDraft || !preserveDraft) {
     draft.value = savedText(next.config);
@@ -75,7 +76,7 @@ function adopt(next: MockStatus, context: PanelContext, resetDraft = false): voi
 }
 
 async function refresh(context = captureContext()): Promise<void> {
-  if (!isCurrent(context)) return;
+  if (!props.active || !isCurrent(context)) return;
   if (busy.value) return;
   if (refreshes.has(context.generation)) return;
   refreshes.set(context.generation, context);
@@ -83,26 +84,38 @@ async function refresh(context = captureContext()): Promise<void> {
   error.value = "";
   try {
     const next = await context.api.mockGet(context.locator);
-    adopt(next, context);
+    if (props.active && refreshes.get(context.generation) === context) adopt(next, context);
   } catch (cause) {
-    if (isCurrent(context)) error.value = cause instanceof Error ? cause.message : String(cause);
+    if (props.active && isCurrent(context) && refreshes.get(context.generation) === context) {
+      error.value = cause instanceof Error ? cause.message : String(cause);
+    }
   } finally {
-    if (isCurrent(context)) refreshing.value = false;
-    refreshes.delete(context.generation);
+    if (refreshes.get(context.generation) === context) {
+      if (isCurrent(context)) refreshing.value = false;
+      refreshes.delete(context.generation);
+    }
   }
 }
 
 watch(contextKey, () => {
   contextGeneration += 1;
   state.value = null;
-  draft.value = "";
-  draftBaseRevision.value = "";
+  draft.value = props.draftMemory?.text ?? "";
+  draftBaseRevision.value = props.draftMemory?.revision ?? "";
+  port.value = props.draftMemory?.port ?? 0;
   busy.value = null;
   refreshing.value = false;
   error.value = "";
   feedback.value = "";
+  refreshAfterOperation = false;
   void refresh(captureContext());
 }, { immediate: true });
+watch([draft, draftBaseRevision, port, state], () => {
+  if (!state.value) return;
+  emit("draft", hasUnsavedDraft.value || port.value !== 0
+    ? { text: draft.value, revision: draftBaseRevision.value, port: port.value }
+    : null, contextKey.value);
+});
 
 async function runOperation(
   kind: string,
@@ -111,7 +124,7 @@ async function runOperation(
 ): Promise<void> {
   const context = captureContext();
   const current = state.value;
-  if (props.readOnly || busy.value || !current || !isCurrent(context)) return;
+  if (!props.active || props.readOnly || busy.value || !current || !isCurrent(context)) return;
   busy.value = kind;
   error.value = "";
   feedback.value = "";
@@ -121,7 +134,13 @@ async function runOperation(
   } catch (cause) {
     if (isCurrent(context)) error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
-    if (isCurrent(context) && busy.value === kind) busy.value = null;
+    if (isCurrent(context) && busy.value === kind) {
+      busy.value = null;
+      if (refreshAfterOperation) {
+        refreshAfterOperation = false;
+        void refresh(context);
+      }
+    }
   }
 }
 
@@ -179,21 +198,30 @@ async function copyAddress(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  refreshTimer = setInterval(() => {
-    if (state.value && !busy.value && !refreshing.value) void refresh();
-  }, 2_000);
-});
-
-onUnmounted(() => {
+function stopPolling() {
+  if (refreshTimer !== undefined) clearInterval(refreshTimer);
+  refreshTimer = undefined;
+}
+watch(() => props.active, (active) => {
+  stopPolling();
+  if (!active) {
+    refreshes.clear();
+    refreshing.value = false;
+    return;
+  }
+  if (busy.value) refreshAfterOperation = true;
+  void refresh();
+  refreshTimer = setInterval(() => { void refresh(); }, 2_000);
+}, { immediate: true, flush: "sync" });
+onBeforeUnmount(() => {
   contextGeneration += 1;
-  if (refreshTimer) clearInterval(refreshTimer);
+  stopPolling();
 });
 </script>
 
 <template>
   <section class="mock-panel" data-testid="mock-panel">
-    <header><h3>{{ t("mockPanel.title") }}</h3><span v-if="state?.simulated" data-testid="mock-simulated">{{ t("mockPanel.simulated") }}</span></header>
+    <header v-if="!embedded || state?.simulated"><h3 v-if="!embedded">{{ t("mockPanel.title") }}</h3><span v-if="state?.simulated" data-testid="mock-simulated">{{ t("mockPanel.simulated") }}</span></header>
     <label class="mock-label" for="mock-config">{{ t("mockPanel.config") }}</label>
     <p v-if="hasUnsavedDraft" class="mock-note" data-testid="mock-unsaved">{{ t("mockPanel.unsaved") }}</p>
     <p v-if="state" class="mock-note" data-testid="mock-start-saved-note">{{ t("mockPanel.savedSemantics") }}</p>
@@ -213,7 +241,7 @@ onUnmounted(() => {
     <details data-testid="mock-advanced"><summary>{{ t('desktopPresentation.advanced') }}</summary>
     <textarea id="mock-config" v-model="draft" data-testid="mock-config" :disabled="props.readOnly || busy !== null || !state" rows="8" spellcheck="false"></textarea>
     </details>
-    <p v-if="!parsedConfig.success" class="mock-error" data-testid="mock-config-error">{{ t("mockPanel.invalidJson") }}</p>
+    <p v-if="state && !parsedConfig.success" class="mock-error" data-testid="mock-config-error">{{ t("mockPanel.invalidJson") }}</p>
     <div v-if="state && !state.config" class="mock-note">{{ t("mockPanel.noConfiguration") }}</div>
     <div class="mock-controls">
       <button type="button" data-testid="mock-save" :disabled="props.readOnly || busy !== null || !state || !parsedConfig.success || draftIsStale" @click="saveConfig">{{ t("mockPanel.save") }}</button>

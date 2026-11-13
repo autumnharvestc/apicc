@@ -10,6 +10,7 @@ const props = defineProps<{
   assets: { components: ComponentAsset[]; models: ModelAsset[] };
   readOnly?: boolean;
   contextKey?: string;
+  viewModel?: (modelId: string, trigger: HTMLElement) => void;
   /** Optional identity-scoped JSON value drafts used by the formal Design view. */
   draftScope?: string;
   drafts?: Record<string, { value: string; error: string }>;
@@ -329,7 +330,7 @@ function exampleAddTestId(index: number, media: string): string {
         </div>
         <div v-for="(content, media) in definition(response)!.content" :key="media" class="media">
           <header><strong>{{ media }}</strong><button type="button" :disabled="readOnly || response.kind !== 'inline'" @click="removeMedia(response, media)">×</button></header>
-          <SchemaEditor :model-value="content.schema" :models="assets.models" :read-only="readOnly || response.kind !== 'inline'" :draft-scope="draftScope ? `${draftScope}.response.${response.id}.${ownerSegment(media)}.schema` : undefined" :drafts="drafts" @update:model-value="setSchema(response, content, media, $event as SchemaNode | undefined)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="forwardMoveControlDrafts" />
+          <SchemaEditor :model-value="content.schema" :models="assets.models" :read-only="readOnly || response.kind !== 'inline'" :view-model="viewModel" :draft-scope="draftScope ? `${draftScope}.response.${response.id}.${ownerSegment(media)}.schema` : undefined" :drafts="drafts" @update:model-value="setSchema(response, content, media, $event as SchemaNode | undefined)" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="forwardMoveControlDrafts" />
           <div v-for="(example, exampleIndex) in content.examples" :key="example.id" class="example">
             <input v-if="example.kind === 'inline'" :value="example.name" :disabled="readOnly || response.kind !== 'inline'" :placeholder="t('contract.exampleName')" @input="setExampleName(response, example, ($event.target as HTMLInputElement).value)" />
             <span v-else>{{ exampleRefName(example) }}</span>

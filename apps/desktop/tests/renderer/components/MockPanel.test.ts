@@ -261,4 +261,26 @@ describe("project Mock panel", () => {
     wrapper.unmount();
     vi.useRealTimers();
   });
+
+  it("pauses polling while hidden, then revalidates without replacing the live draft or stopping the server", async () => {
+    vi.useFakeTimers();
+    const { wrapper, api } = mountPanel({ initial: status({ status: "running" }) });
+    try {
+      await flushPromises();
+      const draft = JSON.stringify({ ...config, seed: "hidden-draft" }, null, 2);
+      await wrapper.get('[data-testid="mock-config"]').setValue(draft);
+      await wrapper.setProps({ active: false });
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(api.mockGet).toHaveBeenCalledTimes(1);
+      expect(api.mockStop).not.toHaveBeenCalled();
+      await wrapper.setProps({ active: true });
+      await flushPromises();
+      expect(api.mockGet).toHaveBeenCalledTimes(2);
+      expect((wrapper.get('[data-testid="mock-config"]').element as HTMLTextAreaElement).value).toBe(draft);
+      expect(wrapper.get('[data-testid="mock-status"]').attributes("data-status")).toBe("running");
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
+  });
 });

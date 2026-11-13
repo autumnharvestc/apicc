@@ -71,6 +71,20 @@ function memStorage(): Storage {
 
 
 describe("AiConfigDialog safe settings contract (migrated existing coverage)", () => {
+  it("R7 starts the suggestions setup on existing case-suggestion purpose binding", async () => {
+    const { ai, read, networkActions } = await mountSafeDialog({ open: false, forSuggestion: true });
+    await ai.writeSettings({ operation: "preferences", expectedRevision: read().revision, bindings: [] });
+    ai.configDialogOpen = true;
+    await flushPromises();
+    expect((expectBody("budget-layer").element as HTMLSelectElement).value).toBe("binding");
+    expect((expectBody("budget-purpose").element as HTMLSelectElement).value).toBe("case-suggestion");
+    await expectBody("budget-model").setValue("model-b");
+    await expectBody("budget-save").trigger("click");
+    await flushPromises();
+    expect(read().bindings).toEqual([expect.objectContaining({ purpose: "case-suggestion", modelProfileId: "model-b" })]);
+    expect(networkActions).toEqual([]);
+  });
+
   it('P3d jumps to configuration sections without replacing drafts, saving or making network calls', async () => {
     const { ai, read, networkActions } = await mountSafeDialog();
     const before = read(), hash = location.hash;
@@ -236,6 +250,7 @@ describe("F7e T10 readable personal configuration", () => {
 async function mountSafeDialog(options: {
   backend?: "available" | "unavailable"; locale?: "zh-CN" | "en";
   open?: boolean;
+  forSuggestion?: boolean;
   catalog?: AiProviderTemplate[]; templateSource?: { id: string; revision: number };
   legacyAvailable?: boolean;
 } = {}) {
@@ -246,7 +261,7 @@ async function mountSafeDialog(options: {
   ai.configDialogOpen = options.open ?? true;
   const { i18n, setLocale } = createI18nInstance();
   setLocale(options.locale ?? "zh-CN");
-  mount(AiConfigDialog, { props: { ai }, global: { plugins: [i18n] } });
+  mount(AiConfigDialog, { props: { ai, forSuggestion: options.forSuggestion }, global: { plugins: [i18n] } });
   await flushPromises();
   return { ...fixture, ai };
 }

@@ -9,10 +9,11 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import ActionMenu from "./ActionMenu.vue";
 import { EllipsisOutlined } from "@ant-design/icons-vue";
 
-const props = withDefaults(defineProps<{ result?: DebugResult | DebugOutput | null; sending?: boolean; error?: string | null; api?: ApiccApi; tabState?: RequestTabDebugState | null }>(), {
+const props = withDefaults(defineProps<{ result?: DebugResult | DebugOutput | null; sending?: boolean; error?: string | null; api?: ApiccApi; tabState?: RequestTabDebugState | null; expanded?: boolean }>(), {
   result: null,
   sending: false,
   error: null,
+  expanded: true,
 });
 const { t, te } = useI18n();
 const viewerRoot = ref<HTMLElement | null>(null);
@@ -26,9 +27,21 @@ const tab = computed({
     if (props.tabState) props.tabState.responsePanel = value;
   },
 });
-const format = ref<"raw" | "pretty">("pretty");
-const search = ref("");
-const exchangeOrder = ref<number | null>(null);
+const localFormat = ref<"raw" | "pretty">("pretty");
+const format = computed({
+  get: () => props.tabState?.responseFormat ?? localFormat.value,
+  set: (value: "raw" | "pretty") => { if (props.tabState) props.tabState.responseFormat = value; else localFormat.value = value; },
+});
+const localSearch = ref("");
+const search = computed({
+  get: () => props.tabState?.responseSearch ?? localSearch.value,
+  set: (value: string) => { if (props.tabState) props.tabState.responseSearch = value; else localSearch.value = value; },
+});
+const localExchange = ref<number | null>(null);
+const exchangeOrder = computed({
+  get: () => props.tabState ? props.tabState.responseExchangeOrder : localExchange.value,
+  set: (value: number | null) => { if (props.tabState) props.tabState.responseExchangeOrder = value; else localExchange.value = value; },
+});
 const actionError = ref("");
 const showErrorDetail = ref(false);
 const isDebugResult = computed(() => Boolean(props.result && "exchanges" in props.result));
@@ -124,6 +137,15 @@ const terminalError = computed(() => {
   return debugResult.value?.error ?? (kind ? `${t("debugLoop.terminalFailure")}: ${labelCode("failure", kind)}` : "");
 });
 const visibleError = computed(() => props.error === "debug-environment-unavailable" ? t("environmentShortcut.unavailable") : props.error || terminalError.value);
+const compactStatus = computed(() => {
+  if (props.error) return visibleError.value;
+  if (props.sending) return t(props.result ? "responseWorkbench.previous" : "editor.sending");
+  if (terminalState.value === "aborted") return t("debugLoop.aborted");
+  if (visibleError.value) return visibleError.value;
+  if (terminalState.value) return t(`debugLoop.${terminalState.value}`);
+  if (!props.result) return t("responseWorkbench.noResult");
+  return status.value === null ? t("responseWorkbench.noHttpStatus") : "";
+});
 const caseName = computed(() => firstOutcome.value?.caseName ?? (debugResult.value?.mode === "request" ? t("debugLoop.requestMode") : "—"));
 const status = computed(() => response.value?.status ?? null);
 const responseTime = computed(() => selectedExchange.value?.durationMs ?? legacyResult.value?.response?.timeMs ?? null);
@@ -182,29 +204,34 @@ function activeScroller(): HTMLElement | null {
 
 watch([currentOwner, () => props.result], () => {
   projectionEpoch += 1;
-  exchangeOrder.value = debugResult.value?.exchanges.at(-1)?.order ?? null;
+  if (!props.tabState) localExchange.value = null;
   actionError.value = "";
   showErrorDetail.value = false;
 }, { immediate: true, flush: "sync" });
 
-watch([currentOwner, () => props.result, displayTab, exchangeOrder], async ([owner, result, panel, exchange], previous) => {
+const localScrollByPanel: Record<string, number> = {};
+watch([currentOwner, () => props.result, displayTab, exchangeOrder, () => props.expanded], async ([owner, result, panel, exchange, expanded], previous) => {
   const operation = ++scrollEpoch;
   renderedScroll = undefined;
   const changedOwner = owner !== previous[0];
   const newResultOrExchange = !changedOwner && (result !== previous[1] || exchange !== previous[3]);
   const state = props.tabState;
   if (newResultOrExchange && state) state.responseScrollByPanel = {};
+  if (newResultOrExchange && !state) for (const key of Object.keys(localScrollByPanel)) delete localScrollByPanel[key];
+  if (!expanded) return;
   await nextTick();
   if (operation !== scrollEpoch || currentOwner.value !== owner || props.result !== result || displayTab.value !== panel) return;
   const element = activeScroller();
   if (!element) return;
-  const saved = state?.responseScrollByPanel[panel] ?? 0;
+  measureViewer();
+  const saved = (state?.responseScrollByPanel ?? localScrollByPanel)[panel] ?? 0;
   element.scrollTop = newResultOrExchange ? 0 : saved;
   renderedScroll = { element, owner, panel };
 }, { immediate: true, flush: "post" });
 
 let resizeObserver: ResizeObserver | undefined;
 function measureViewer() {
+  if (!props.expanded) return;
   const width = viewerRoot.value?.clientWidth;
   compactTools.value = !!width && width < 590;
 }
@@ -231,11 +258,11 @@ function labelCode(group: string, code: string): string {
 }
 
 function captureResponseScroll(event: Event) {
-  const state = props.tabState;
   const target = event.target;
-  if (!state || !renderedScroll || renderedScroll.owner !== currentOwner.value || renderedScroll.panel !== displayTab.value
+  if (!props.expanded || !renderedScroll || renderedScroll.owner !== currentOwner.value || renderedScroll.panel !== displayTab.value
     || target !== renderedScroll.element) return;
-  state.responseScrollByPanel[renderedScroll.panel] = renderedScroll.element.scrollTop;
+  const positions = props.tabState?.responseScrollByPanel ?? localScrollByPanel;
+  positions[renderedScroll.panel] = renderedScroll.element.scrollTop;
 }
 
 function headerRowKey(_record: unknown, index?: number): number { return index ?? 0; }
@@ -248,6 +275,7 @@ function exchangeLabel(exchange: NonNullable<typeof selectedExchange.value>): st
 }
 
 function selectExchange(order: number) {
+  if (!props.expanded) return;
   if (order === exchangeOrder.value) return;
   projectionEpoch += 1;
   actionError.value = "";
@@ -343,11 +371,19 @@ function prettyXml(source: string): string | null {
 </script>
 
 <template>
-  <section ref="viewerRoot" class="viewer" data-testid="response-viewer" :aria-label="t('responseWorkbench.title')" @scroll.capture="captureResponseScroll">
+  <section ref="viewerRoot" class="viewer" :class="{ 'viewer-collapsed': !expanded }" data-testid="response-viewer" :aria-label="t('responseWorkbench.title')" @scroll.capture="captureResponseScroll">
     <header class="response-summary">
+      <div class="response-summary-row">
       <div class="meta" aria-live="polite">
         <h3>{{ t("responseWorkbench.title") }}</h3>
+        <template v-if="!expanded">
+          <span v-if="compactStatus" class="compact-status" :class="{ 'compact-error': error || (!sending && visibleError) }" :title="compactStatus" data-testid="response-compact-status">{{ compactStatus }}</span>
+          <span v-if="!error && status !== null" :class="`compact-http-${statusColor}`" class="compact-http" data-testid="response-status">HTTP {{ status }}</span>
+          <span v-if="!error && responseTime !== null" class="compact-time">{{ responseTimeLabel }}</span>
+        </template>
+        <template v-else>
         <span v-if="sending" class="response-busy">{{ t(result ? "responseWorkbench.previous" : "editor.sending") }}</span>
+        <span v-else-if="error && result" class="response-busy">{{ t("responseWorkbench.previousResult") }}</span>
         <a-tag v-if="status !== null" :color="statusColor" data-testid="response-status">HTTP {{ status }}</a-tag>
         <span v-else-if="result" class="notes">{{ t("responseWorkbench.noHttpStatus") }}</span>
         <span v-if="result" data-testid="response-time">{{ t("response.time") }} {{ responseTimeLabel }}</span>
@@ -355,18 +391,21 @@ function prettyXml(source: string): string | null {
         <a-tag v-if="firstOutcome || debugResult" :color="terminalState === 'passed' ? 'success' : terminalState === 'failed' ? 'error' : 'default'" data-testid="response-outcome">{{ terminalState ? t(`debugLoop.${terminalState}`) : t("debugLoop.unknown") }}</a-tag>
         <span v-if="firstOutcome" class="response-case-name" :title="caseName" data-testid="response-case-name">{{ caseName }}</span>
         <button v-if="debugResult && exchanges.length > 1" type="button" class="summary-button" data-testid="exchange-select-label" @click="tab = 'exchanges'">{{ t("debugLoop.exchanges") }} {{ exchangeOrder ?? selectedExchange?.order }}</button>
+        </template>
       </div>
-      <div v-if="visibleError" class="response-error" role="alert" :title="visibleError" :data-testid="error ? 'response-error' : 'response-terminal-error'">
+      <div v-if="$slots.actions" class="response-actions"><slot name="actions" /></div>
+      </div>
+      <div v-if="expanded && visibleError" class="response-error" role="alert" :title="visibleError" :data-testid="error ? 'response-error' : 'response-terminal-error'">
         <span>{{ visibleError }}</span>
         <button type="button" class="summary-button" :aria-expanded="result ? undefined : showErrorDetail"
           @click="result ? tab = 'exchanges' : showErrorDetail = !showErrorDetail">{{ t("responseWorkbench.details") }}</button>
       </div>
     </header>
-    <div v-if="!result" data-testid="response-empty" class="response-empty">
+    <div v-if="!result" v-show="expanded" data-testid="response-empty" class="response-empty">
       <p v-if="showErrorDetail && visibleError" class="detail-error">{{ visibleError }}</p>
       <p v-else>{{ t(sending ? 'editor.sending' : 'response.empty') }}</p>
     </div>
-    <a-tabs v-else v-model:active-key="displayTab" class="resp-tabs">
+    <a-tabs v-else v-show="expanded" v-model:active-key="displayTab" class="resp-tabs">
       <a-tab-pane key="exchanges">
         <template #tab><span data-testid="response-tab-exchanges">{{ t("debugLoop.exchanges") }}</span></template>
         <div v-if="debugResult" class="exchange-list" data-testid="response-exchanges">
@@ -403,7 +442,7 @@ function prettyXml(source: string): string | null {
           <a-button v-if="search" size="small" data-testid="response-search-clear" @click="clearSearch">{{ t("responseWorkbench.clear") }}</a-button>
           <a-button size="small" data-testid="response-copy" @click="copyProjected(projectedBodyText)">{{ t("debugLoop.copy") }}</a-button>
           <a-button v-if="!compactTools" size="small" data-testid="response-download" @click="saveProjected">{{ t("debugLoop.downloadProjected") }}</a-button>
-          <ActionMenu v-else :label="t('responseWorkbench.more')" :items="downloadItems" @select="saveProjected"><EllipsisOutlined /></ActionMenu>
+          <ActionMenu v-else :label="t('responseWorkbench.more')" :items="downloadItems" :hidden="!expanded" @select="saveProjected"><EllipsisOutlined /></ActionMenu>
         </div>
         <details v-if="projectionNotes.length" class="response-notes" data-testid="response-projection-note">
           <summary>{{ t("debugLoop.projectionNotes") }} · {{ projectionNotes[0] }}</summary>
@@ -475,8 +514,19 @@ function prettyXml(source: string): string | null {
 .console-entry:last-child { border-bottom: 0; }.console-level { font-size: 12px; font-weight: 600; color: var(--text-muted); }.console-error { color: var(--fail); }
 .console-message { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace,Consolas,monospace; font-size: 12px; }.console > .notes { padding: 12px; }
 .viewer { display: flex; flex-direction: column; gap: 3px; padding: 8px 12px 12px; height: 100%; min-height: 0; box-sizing: border-box; overflow: hidden; background: var(--bg); }
+.viewer-collapsed { padding-block: 3px; }
 .response-summary { flex: none; min-width: 0; }
+.response-summary-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; min-width: 0; }
+.response-summary-row .meta { min-width: 0; }
+.response-actions { display: flex; align-items: center; flex: none; gap: 6px; }
 .response-summary h3 { margin: 0 4px 0 0; font-size: 15px; }
+.viewer-collapsed .meta { flex-wrap: nowrap; overflow: hidden; }
+.viewer-collapsed .meta h3, .compact-http, .compact-time { flex: none; white-space: nowrap; }
+.compact-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact-error, .compact-http-error { color: var(--fail); }
+.compact-http-success { color: var(--pass); }
+.compact-http-warning { color: var(--workbench-method-post); }
+.compact-http-processing { color: var(--accent); }
 .response-case-name { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .response-busy { color: var(--text-muted); }
 .response-empty { display: grid; place-items: center; flex: 1; min-height: 0; overflow: auto; color: var(--text-muted); }

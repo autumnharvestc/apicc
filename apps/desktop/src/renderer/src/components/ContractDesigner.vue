@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Input as AInput } from "ant-design-vue";
 import type { ApiRequest, ComponentAsset, ModelAsset, MultipartEntry, ParameterBinding } from "@apicc/core";
 import type { SchemaNode } from "@apicc/core/schema";
-import type { useEditorStore } from "../stores/editor.js";
+import type { ParameterListKey, useEditorStore } from "../stores/editor.js";
 import type { DesignControlDraft } from "../stores/design.js";
 import SchemaEditor from "./SchemaEditor.vue";
 import ResponseEditor from "./ResponseEditor.vue";
@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<{
   draftScope: string;
   drafts: Record<string, DesignControlDraft>;
   readOnly?: boolean;
+  viewModel?: (modelId: string, trigger: HTMLElement) => void;
 }>(), { assets: () => ({ models: [], components: [] }), readOnly: false });
 const emit = defineEmits<{
   "update:controlDraft": [path: string, value: string, error: string | null];
@@ -111,6 +112,10 @@ function groupBindings(key: (typeof parameterGroups)[number]["key"]): ParameterB
   return current ? current[key] : [];
 }
 
+function editParameterValue(key: ParameterListKey, binding: ParameterBinding, event: Event) {
+  if (request.value) props.editor.setParameterValue(request.value, key, binding, (event.target as HTMLInputElement).value);
+}
+
 function addParameter(key: (typeof parameterGroups)[number]["key"]) {
   if (props.readOnly || !request.value) return;
   groupBindings(key).push({ kind: "inline", id: crypto.randomUUID(), name: "", schema: { kind: "scalar", type: "string" }, required: false, enabled: true, description: "", value: "" });
@@ -142,7 +147,7 @@ function bindParameter(key: (typeof parameterGroups)[number]["key"], index: numb
       required: component?.definition.required ?? false,
       enabled: previous.enabled !== false,
       description: component?.definition.description ?? "",
-      value: previous.value ?? "",
+      ...(previous.value === undefined ? {} : { value: previous.value }),
     });
     return;
   }
@@ -151,7 +156,7 @@ function bindParameter(key: (typeof parameterGroups)[number]["key"], index: numb
   clearControlDrafts(`${parameterDraftScope(key, previous)}.schema`);
   list.splice(index, 1, {
     kind: "componentRef", id: previous.id, componentId: component.id, expectedKind: "parameter",
-    value: previous.value ?? "", enabled: previous.enabled !== false,
+    ...(previous.value === undefined ? {} : { value: previous.value }), enabled: previous.enabled !== false,
   });
 }
 
@@ -230,15 +235,15 @@ function authComponents() {
           </select>
           <template v-if="binding.kind === 'inline'">
             <input v-model="binding.name" :placeholder="t('design.parameter.name')" :data-testid="`design-parameter-name-${group.key}-${index}`" />
-            <input v-model="binding.value" :placeholder="t('design.parameter.value')" :data-testid="`design-parameter-value-${group.key}-${index}`" />
             <input v-model="binding.description" :placeholder="t('design.description')" :data-testid="`design-parameter-description-${group.key}-${index}`" />
             <label><input v-model="binding.required" type="checkbox" :data-testid="`design-parameter-required-${group.key}-${index}`" />{{ t('contract.required') }}</label>
             <SchemaEditor :model-value="binding.schema" :models="assets.models" :read-only="readOnly" :draft-scope="`${parameterDraftScope(group.key, binding)}.schema`" :drafts="drafts" @update:model-value="binding.schema = $event || { kind: 'scalar', type: 'string' }" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="forwardMoveControlDrafts" />
           </template>
           <template v-else>
             <span>{{ parameterComponentName(group.location, binding.componentId) }}</span>
-            <input v-model="binding.value" :placeholder="t('design.parameter.value')" />
           </template>
+          <input :value="binding.value ?? ''" :placeholder="t('design.parameter.value')" :data-testid="`design-parameter-value-${group.key}-${index}`"
+            @input="editParameterValue(group.key, binding, $event)" />
           <label class="enabled-field"><input :checked="binding.enabled !== false" type="checkbox" :data-testid="`design-parameter-enabled-${group.key}-${index}`" :aria-label="t('design.enabled')" @change="setParameterEnabled(binding, $event)" />{{ t('design.enabled') }}</label>
           <button type="button" :disabled="readOnly" :aria-label="t('design.parameter.remove')" @click="removeParameter(group.key, binding)">×</button>
         </div>
@@ -258,7 +263,7 @@ function authComponents() {
         <label>{{ t('editor.bodyKind') }}<select :value="request.body.kind" data-testid="design-body-kind" @change="setBodyKind(($event.target as HTMLSelectElement).value)"><option v-for="kind in bodyKinds" :key="kind" :value="kind">{{ t(`contract.body.${kind}`) }}</option></select></label>
         <template v-if="request.body.kind === 'json' || request.body.kind === 'xml' || request.body.kind === 'text'">
           <label>{{ t('design.bodyContent') }}<textarea v-model="request.body.content" data-testid="design-body-content" /></label>
-          <SchemaEditor :model-value="request.body.schema" :models="assets.models" :read-only="readOnly" :draft-scope="`${draftScope}.request.body.schema`" :drafts="drafts" @update:model-value="setBodySchema" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="forwardMoveControlDrafts" />
+          <SchemaEditor :model-value="request.body.schema" :models="assets.models" :read-only="readOnly" :view-model="viewModel" :draft-scope="`${draftScope}.request.body.schema`" :drafts="drafts" @update:model-value="setBodySchema" @update:control-draft="forwardControlDraft" @clear:control-drafts="clearControlDrafts" @move:control-drafts="forwardMoveControlDrafts" />
         </template>
         <template v-else-if="request.body.kind === 'graphql'"><label>{{ t('design.graphqlQuery') }}<textarea v-model="request.body.query" /></label><label>{{ t('design.graphqlVariables') }}<textarea v-model="request.body.variables" /></label><label>{{ t('design.graphqlOperationName') }}<input v-model="request.body.operationName" data-testid="design-graphql-operation-name" /></label></template>
         <template v-else-if="request.body.kind === 'binary'"><label>{{ t('design.filePath') }}<input v-model="request.body.file.path" /></label><label>{{ t('design.contentType') }}<input v-model="request.body.contentType" /></label></template>
@@ -276,6 +281,7 @@ function authComponents() {
       :draft-scope="`${draftScope}.responses`"
       :drafts="drafts"
       :read-only="readOnly"
+      :view-model="viewModel"
       @update:control-draft="forwardControlDraft"
       @clear:control-drafts="clearControlDrafts"
       @move:control-drafts="forwardMoveControlDrafts"
