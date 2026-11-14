@@ -2,7 +2,7 @@
 // 注：渲染层组件测试用文件级 pragma 指定 jsdom 环境；a-modal 传送门渲染于
 // document.body（见 components.test.ts 文件头说明），对话框内元素用 body 作用域查询；
 // a-select 下拉展开在 jsdom 中不稳定，统一经组件实例 update:value 驱动（chooseSelect）。
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { mount, flushPromises, enableAutoUnmount, DOMWrapper, type VueWrapper } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
@@ -48,6 +48,11 @@ async function chooseEnv(wrapper: VueWrapper, envId: string): Promise<void> {
   await wrapper.find(`[data-testid="env-item-${envId}"]`).trigger("click");
 }
 
+async function chooseAction(wrapper: VueWrapper, trigger: string, action: string) {
+  await wrapper.get(`[data-testid="${trigger}"]`).trigger("click");
+  await expectBody(action).trigger("click");
+}
+
 function findSeedProject(workspace: ReturnType<typeof useWorkspaceStore>): LocalProjectTreeNodeDTO {
   const candidate = workspace.tree?.children
     .flatMap((group) => group.kind === "group" ? group.children : [])
@@ -76,6 +81,7 @@ async function mountEnvPanel(props: Record<string, unknown> = {}) {
   await envs.load(projectNode.locator);
   const { i18n } = createI18nInstance();
   const wrapper = mount(EnvPanel, {
+    attachTo: document.body,
     props: { envs, workspace, projectLocator: projectNode.locator, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
@@ -138,7 +144,12 @@ describe("EnvPanel", () => {
 
   it("新建环境：modal 输入名称确认后创建并选中", async () => {
     const { wrapper, envs } = await mountEnvPanel();
-    await wrapper.find('[data-testid="env-new"]').trigger("click");
+    const menuTrigger = wrapper.get('[data-testid="env-create-menu"]');
+    await menuTrigger.trigger("keydown", { key: "ArrowDown" });
+    expect(document.activeElement).toBe(expectBody("env-new").element);
+    expect(expectBody("env-derive").attributes("disabled")).toBeDefined();
+    expect(expectBody("env-derive").text()).toContain("请先新建父环境");
+    await expectBody("env-new").trigger("click");
     await flushPromises();
     await expectBody("env-name-input").setValue("sit");
     const originalCreate = envs.create.bind(envs);
@@ -164,7 +175,7 @@ describe("EnvPanel", () => {
     let creates = 0;
     const create = api.envCreate.bind(api);
     api.envCreate = async (input) => { creates++; return create(input); };
-    await wrapper.find('[data-testid="env-new"]').trigger("click");
+    await chooseAction(wrapper, "env-create-menu", "env-new");
     await flushPromises();
     await expectBody("env-name-input").setValue("stale-root");
     workspace.root = `${root}-copy`;
@@ -173,7 +184,7 @@ describe("EnvPanel", () => {
     expect(creates).toBe(0);
   });
 
-  it("变量保存的第二次baseUrl写入在第一次await后root变化时取消", async () => {
+  it("已排队打开复制根时阻止基础 URL 写入，即使工作区根还未更新", async () => {
     const { wrapper, api, workspace, envs, projectNode } = await mountEnvPanel();
     const created = await envs.create({ locator: projectNode.locator, name: "deferred" });
     await flushPromises();
@@ -184,23 +195,36 @@ describe("EnvPanel", () => {
     const started = new Promise<void>((resolve) => { startSave = resolve; });
     const gate = new Promise<void>((resolve) => { finishSave = resolve; });
     const saveVars = api.envVarsSave.bind(api);
-    let baseUrlWrites = 0;
-    const saveBaseUrls = api.envBaseUrlsSave.bind(api);
+    const saveBaseUrls = vi.spyOn(api, "envBaseUrlsSave");
     api.envVarsSave = async (locator, variables) => {
       startSave();
       await gate;
       return saveVars(locator, variables);
     };
-    api.envBaseUrlsSave = async (locator, baseUrls) => {
-      baseUrlWrites++;
-      return saveBaseUrls(locator, baseUrls);
+    let finishOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => { finishOpen = resolve; });
+    const wsOpen = api.wsOpen.bind(api);
+    api.wsOpen = async (root) => {
+      await openGate;
+      return wsOpen(root);
     };
-    await wrapper.find('[data-testid="env-vars-save"]').trigger("click");
+    const root = workspace.root;
+    await wrapper.get('[data-testid="env-vars-save"]').trigger("click");
     await started;
-    workspace.root = `${workspace.root}-copy`;
-    finishSave();
-    await flushPromises();
-    expect(baseUrlWrites).toBe(0);
+    const opening = workspace.open(`${root}-copy`);
+    try {
+      expect(workspace.root).toBe(root);
+      expect(workspace.hasPendingOpen()).toBe(true);
+      finishSave();
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="env-save-error"]').text()).toContain("模块基础 URL 有待保存"));
+      expect(saveBaseUrls).not.toHaveBeenCalled();
+    } finally {
+      finishSave();
+      finishOpen();
+      await opening;
+    }
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="env-pane-globals-vars"]').exists()).toBe(true));
+    expect(wrapper.find('[data-testid="env-global-vars-saved"]').exists()).toBe(false);
   });
 
   it("从现有环境派生：选择父环境后 extends 透传父环境名", async () => {
@@ -213,7 +237,7 @@ describe("EnvPanel", () => {
       captured = input;
       return original(input);
     };
-    await wrapper.find('[data-testid="env-derive"]').trigger("click");
+    await chooseAction(wrapper, "env-create-menu", "env-derive");
     await flushPromises();
     chooseSelect(wrapper, "env-parent-select", dev.id);
     await expectBody("env-name-input").setValue("sit");
@@ -224,7 +248,7 @@ describe("EnvPanel", () => {
     expect(captured!.name).toBe("sit");
   });
 
-  it("变量行编辑与保存：行缓冲经 saveVars 落盘，切换环境即重置", async () => {
+  it("变量行编辑与保存：切换环境保留各自的内容", async () => {
     const { wrapper, api, envs, projectNode } = await mountEnvPanel();
     const dev = await envs.create({ locator: projectNode.locator, name: "dev" });
     const devItem = envs.envs.find((item) => item.id === dev.id)!;
@@ -283,12 +307,24 @@ describe("EnvPanel", () => {
     expect((wrapper.findAll('[data-testid="env-var-value"]')[0]!.element as HTMLInputElement).value).toBe("http://s");
   });
 
-  it("删除选中环境：确认对话框放行后移除", async () => {
+  it("删除菜单绑定行目标，取消回焦，删除其他环境保留当前草稿", async () => {
     const { wrapper, envs, projectNode } = await mountEnvPanel();
     const dev = await envs.create({ locator: projectNode.locator, name: "dev" });
+    const sit = await envs.create({ locator: projectNode.locator, name: "待删除环境的完整名称" });
     await chooseEnv(wrapper, dev.id);
     await flushPromises();
-    await wrapper.find('[data-testid="env-delete"]').trigger("click");
+    await wrapper.get('[data-testid="env-var-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-var-key"]').setValue("keep");
+    const more = wrapper.get(`[data-testid="env-more-${sit.id}"]`);
+    await more.trigger("keydown", { key: "ArrowDown" });
+    const remove = expectBody("env-delete");
+    expect(document.activeElement).toBe(remove.element);
+    await remove.trigger("click");
+    expect(document.body.textContent).toContain(sit.name);
+    await expectBody("dialog-cancel").trigger("click");
+    expect(document.activeElement).toBe(more.element);
+    expect(envs.selectedEnvId).toBe(dev.id);
+    await chooseAction(wrapper, `env-more-${sit.id}`, "env-delete");
     const originalRemove = envs.remove.bind(envs);
     let removeTask: ReturnType<typeof originalRemove> | null = null;
     envs.remove = (...args) => {
@@ -302,8 +338,153 @@ describe("EnvPanel", () => {
     } finally {
       envs.remove = originalRemove;
     }
-    expect(envs.envs.map((e) => e.name)).not.toContain("dev");
+    expect(envs.envs.map((e) => e.name)).not.toContain(sit.name);
+    expect(envs.selectedEnvId).toBe(dev.id);
+    expect(wrapper.get<HTMLInputElement>('[data-testid="env-var-key"]').element.value).toBe("keep");
+    await vi.waitFor(() => expect(document.activeElement).toBe(wrapper.get(`[data-testid="env-item-${dev.id}"]`).element));
+
+    await chooseAction(wrapper, `env-more-${dev.id}`, "env-delete");
+    await expectBody("dialog-confirm").trigger("click");
+    await vi.waitFor(() => expect(envs.envs).toHaveLength(0));
     expect(envs.selectedEnvId).toBeNull();
+    await vi.waitFor(() => expect(document.activeElement).toBe(wrapper.get('[data-testid="env-tab-globals-vars"]').element));
+  });
+
+  it("只读工作区可浏览环境与全局配置，编辑和删除入口禁用", async () => {
+    const { wrapper, workspace, envs, projectLocator } = await mountEnvPanel();
+    const env = await envs.create({ locator: projectLocator, name: "dev" });
+    workspace.readOnly = true;
+    await chooseEnv(wrapper, env.id);
+    expect(wrapper.get('[data-testid="env-vars-save"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="env-baseurl-input"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get(`[data-testid="env-more-${env.id}"]`).attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("只读");
+    await wrapper.get('[data-testid="env-tab-globals-params"]').trigger("click");
+    expect(wrapper.get('[data-testid="env-pane-globals-params"]').text()).toContain("请求头");
+    expect(wrapper.get('[data-testid="env-create-menu"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("空全局变量添加后聚焦名称，切换参数页保留草稿和参数启用状态", async () => {
+    const { wrapper, api, projectLocator } = await mountEnvPanel();
+    expect(wrapper.get('[data-testid="env-pane-globals-vars"]').text()).toContain("暂无全局变量");
+    await wrapper.get('[data-testid="env-global-var-add"]').trigger("click");
+    const name = wrapper.get<HTMLInputElement>('[data-testid="env-global-var-key"]');
+    const value = wrapper.get<HTMLInputElement>('[data-testid="env-global-var-value"]');
+    expect(document.activeElement).toBe(name.element);
+    expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("无待保存更改");
+    await name.setValue(" region ");
+    await value.setValue("east");
+    await wrapper.get('[data-testid="env-tab-globals-params"]').trigger("click");
+    await wrapper.get('[data-testid="env-global-query-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-global-query-key"]').setValue(" q ");
+    await wrapper.get('[data-testid="env-global-query-value"]').setValue(" search ");
+    await wrapper.get('input[data-testid="env-global-query-enabled"]').setValue(false);
+    await wrapper.get('[data-testid="env-global-params-save"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="env-global-params-saved"]').text()).toBe("已保存"));
+    expect((await api.globalsGet(projectLocator)).query).toEqual([{ key: "q", value: " search ", enabled: false }]);
+
+    await wrapper.get('[data-testid="env-tab-globals-vars"]').trigger("click");
+    expect(wrapper.get<HTMLInputElement>('[data-testid="env-global-var-key"]').element.value).toBe(" region ");
+    expect(wrapper.get<HTMLInputElement>('[data-testid="env-global-var-value"]').element.value).toBe("east");
+    expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("未保存");
+    await wrapper.get('[data-testid="env-global-vars-save"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="env-global-vars-saved"]').text()).toBe("已保存"));
+    expect(await api.globalsGet(projectLocator)).toMatchObject({
+      variables: { region: "east" },
+      query: [{ key: "q", value: " search ", enabled: false }],
+    });
+  });
+
+  it("基础 URL 写入失败后显示待保存步骤，重试成功并保留并行编辑", async () => {
+    const { wrapper, api, envs, projectLocator } = await mountEnvPanel();
+    const dev = await envs.create({ locator: projectLocator, name: "dev" });
+    await envs.create({ locator: projectLocator, name: "sit" });
+    await chooseEnv(wrapper, dev.id);
+    await wrapper.get('[data-testid="env-var-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-var-key"]').setValue("region");
+    await wrapper.get('[data-testid="env-var-value"]').setValue("east");
+    const url = wrapper.get('[data-testid="env-baseurl-input"]');
+    await url.setValue("https://example.test/east");
+    const saveVars = vi.spyOn(api, "envVarsSave");
+    const actualSaveUrls = api.envBaseUrlsSave.bind(api);
+    const saveUrls = vi.spyOn(api, "envBaseUrlsSave").mockRejectedValueOnce(new Error("disk fault"));
+    await wrapper.get('[data-testid="env-vars-save"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="env-save-error"]').text()).toContain("环境变量已保存，模块基础 URL 保存失败：disk fault"));
+    expect(wrapper.find('[data-testid="env-vars-saved"]').exists()).toBe(false);
+
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    saveUrls.mockImplementationOnce(async (...args) => {
+      await gate;
+      return actualSaveUrls(...args);
+    });
+    try {
+      const save = wrapper.get('[data-testid="env-vars-save"]');
+      await save.trigger("click");
+      expect(save.attributes("disabled")).toBeDefined();
+      await save.trigger("click");
+      expect(saveUrls).toHaveBeenCalledTimes(2);
+      await wrapper.get('[data-testid="env-var-value"]').setValue("west");
+      await chooseEnv(wrapper, envs.envs.find((env) => env.name === "sit")!.id);
+      expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("无待保存更改");
+      finish();
+      await vi.waitFor(() => expect(envs.envs.find((env) => env.id === dev.id)?.baseUrls).toMatchObject({
+        [url.attributes("data-collection-id")!]: "https://example.test/east",
+      }));
+      expect(wrapper.find('[data-testid="env-vars-saved"]').exists()).toBe(false);
+      await chooseEnv(wrapper, dev.id);
+      expect(wrapper.get<HTMLInputElement>('[data-testid="env-var-value"]').element.value).toBe("west");
+      expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("未保存");
+      expect(saveVars).toHaveBeenCalledTimes(1);
+      await wrapper.get('[data-testid="env-var-value"]').setValue("east");
+      expect(wrapper.get('[data-testid="env-vars-saved"]').text()).toBe("已保存");
+      await wrapper.get('[data-testid="env-baseurl-input"]').setValue("https://example.test/new");
+      expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("未保存");
+      await wrapper.get('[data-testid="env-baseurl-input"]').setValue("https://example.test/east");
+      expect(wrapper.get('[data-testid="env-vars-saved"]').text()).toBe("已保存");
+    } finally {
+      finish();
+    }
+  });
+
+  it("旧配置中的空白按写入规则比较，切模块重挂后保留草稿和进行中的写入", async () => {
+    const { wrapper, api, workspace, envs, projectLocator } = await mountEnvPanel();
+    const env = await envs.create({ locator: projectLocator, name: "preview" });
+    const locator = { ...projectLocator, environmentId: env.id };
+    const collectionId = wrapper.get('[data-testid="env-baseurl-input"]').attributes("data-collection-id")!;
+    await api.envBaseUrlsSave(locator, { [collectionId]: " " });
+    await api.envVarsSave(locator, { " region ": "east" });
+    await envs.load(projectLocator);
+    expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("无待保存更改");
+    await wrapper.get('[data-testid="env-var-value"]').setValue("west");
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const originalSave = api.envVarsSave.bind(api);
+    const save = vi.spyOn(api, "envVarsSave").mockImplementationOnce(async (...args) => {
+      await gate;
+      return originalSave(...args);
+    });
+    await wrapper.get('[data-testid="env-vars-save"]').trigger("click");
+
+    try {
+      wrapper.unmount();
+      const { i18n } = createI18nInstance();
+      const returned = mount(EnvPanel, {
+        props: { envs, workspace, projectLocator, reportError: () => {} },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(returned.get<HTMLInputElement>('[data-testid="env-var-value"]').element.value).toBe("west");
+      expect(returned.get('[data-testid="env-save-status"]').text()).toBe("正在保存");
+      const pending = returned.get('[data-testid="env-vars-save"]');
+      expect(pending.attributes("disabled")).toBeDefined();
+      await pending.trigger("click");
+      expect(save).toHaveBeenCalledTimes(1);
+      finish();
+      await vi.waitFor(() => expect(returned.get('[data-testid="env-vars-saved"]').text()).toBe("已保存"));
+    } finally {
+      finish();
+    }
   });
 
   it("重挂水合（immediate watch）：挂载时选中态已在 store，首帧即水合已存变量", async () => {
@@ -335,7 +516,7 @@ describe("EnvPanel", () => {
     const errors: unknown[] = [];
     const { wrapper, api } = await mountEnvPanel({ reportError: (e: unknown) => { errors.push(e); } });
     api.envCreate = async () => { throw new Error("boom"); };
-    await wrapper.find('[data-testid="env-new"]').trigger("click");
+    await chooseAction(wrapper, "env-create-menu", "env-new");
     await flushPromises();
     await expectBody("env-name-input").setValue("x");
     await expectBody("env-modal-confirm").trigger("click");

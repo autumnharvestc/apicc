@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 注：pinia/vue 响应式需要 DOM 环境，渲染层 store 测试用文件级 pragma 指定 jsdom。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { EnvironmentLocator } from "../../../src/shared/locations.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
@@ -133,5 +133,80 @@ describe("envs store", () => {
       settle(true);
       await removal;
     }
+  });
+
+  it("创建回执晚于切换项目时，不用旧项目刷新覆盖正在加载的新项目", async () => {
+    const { api, envs, group, projectNode } = await seeded();
+    const other = await api.nodeCreate({ kind: "project", parent: group.locator, name: "other" });
+    if (other.kind !== "project") throw new Error("Expected a project");
+    let finishCreate!: () => void;
+    let finishLoad!: () => void;
+    const createGate = new Promise<void>((resolve) => { finishCreate = resolve; });
+    const loadGate = new Promise<void>((resolve) => { finishLoad = resolve; });
+    const originalCreate = api.envCreate.bind(api);
+    const originalGlobals = api.globalsGet.bind(api);
+    vi.spyOn(api, "envCreate").mockImplementation(async (input) => {
+      const created = await originalCreate(input);
+      await createGate;
+      return created;
+    });
+    const read = vi.spyOn(api, "globalsGet").mockImplementation(async (locator) => {
+      if (locator.projectId === other.locator.projectId) await loadGate;
+      return originalGlobals(locator);
+    });
+    const creation = envs.create({ locator: projectNode.locator, name: "pending" });
+    const loading = envs.load(other.locator);
+    try {
+      finishCreate();
+      await creation;
+      expect(read.mock.calls).toEqual([[other.locator]]);
+    } finally {
+      finishLoad();
+      await loading;
+    }
+    expect(envs.projectLocator).toEqual(other.locator);
+    expect(envs.selectedEnvironment).toBeNull();
+    expect(envs.envs).toEqual([]);
+  });
+
+  it("写入回执早于旧清单返回时，重新读同一项目且保留已确认值", async () => {
+    const { api, envs, projectNode } = await seeded();
+    const dev = await envs.create({ locator: projectNode.locator, name: "dev" });
+    const locator = environmentLocator(projectNode.locator, dev.id);
+    const originalTree = api.treeGet.bind(api);
+    let finishLoad!: () => void;
+    let readSnapshot!: () => void;
+    const loadGate = new Promise<void>((resolve) => { finishLoad = resolve; });
+    const snapshotReady = new Promise<void>((resolve) => { readSnapshot = resolve; });
+    const read = vi.spyOn(api, "treeGet").mockImplementationOnce(async () => {
+      const stale = await originalTree();
+      readSnapshot();
+      await loadGate;
+      return stale;
+    });
+    const loading = envs.load(projectNode.locator);
+    try {
+      await snapshotReady;
+      await envs.saveVars(locator, { region: "north" });
+    } finally {
+      finishLoad();
+      await loading;
+    }
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(envs.selectedEnv?.variables).toEqual({ region: "north" });
+  });
+
+  it("返回同一项目后只报告最新加载的读取失败", async () => {
+    const { api, envs, projectNode } = await seeded();
+    let failStale!: (error: Error) => void;
+    const stale = new Promise<never>((_resolve, reject) => { failStale = reject; });
+    const read = vi.spyOn(api, "treeGet").mockImplementationOnce(() => stale);
+    const older = envs.load(projectNode.locator);
+    await envs.load(projectNode.locator);
+    failStale(new Error("older load failed"));
+    await expect(older).resolves.toBeUndefined();
+    expect(envs.projectLocator).toEqual(projectNode.locator);
+    read.mockRejectedValueOnce(new Error("current load failed"));
+    await expect(envs.load(projectNode.locator)).rejects.toThrow("current load failed");
   });
 });

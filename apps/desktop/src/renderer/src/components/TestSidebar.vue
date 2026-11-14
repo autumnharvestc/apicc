@@ -34,31 +34,37 @@ const search = ref("");
 const searchInput = ref<HTMLInputElement | null>(null);
 function clearSearch() { search.value = ""; searchInput.value?.focus(); }
 const visibleScenarios = computed(() => props.scenarios.filter(item => matches(item.name)));
-const matches = (name: string) => name.toLocaleLowerCase().includes(search.value.toLocaleLowerCase());
+const query = computed(() => search.value.trim().toLocaleLowerCase());
+const matches = (name: string) => name.toLocaleLowerCase().includes(query.value);
 const testingCurrent = computed(() => {
   const actual = props.testing?.view?.context.project; const selected = props.activeProjectLocator;
   return props.testing?.current && actual && selected && actual.workspaceId === selected.workspaceId && actual.groupId === selected.groupId && actual.projectId === selected.projectId;
 });
 
-const apis = computed(() => {
+const modules = computed(() => {
   const project = props.activeProjectLocator ? props.workspace.findProject(props.activeProjectLocator) : null;
-  const result: Array<{ id: string; key: string; label: string; collection: string; locator: ApiLocator }> = [];
-  const visit = (node: LocalTreeNodeDTO, collection: string) => {
-    if (node.kind === "api") result.push({
-      id: node.id, key: node.key, label: node.label, collection,
-      locator: { ...node.locator, folderIds: [...node.locator.folderIds] },
-    });
-    for (const child of node.children ?? []) visit(child, node.kind === "collection" ? node.label : collection);
-  };
-  for (const child of project?.children ?? []) visit(child, "");
-  return result.filter(item => matches(item.label));
+  return (project?.children ?? []).filter((node) => node.kind === "collection").map((module) => {
+    const apis: Array<{ key: string; label: string; path: string; method?: string; locator: ApiLocator }> = [];
+    const visit = (node: LocalTreeNodeDTO, folders: string[]) => {
+      if (node.kind === "api") {
+        const path = [...folders, node.label].join(" / ");
+        if (matches(path) || matches(module.label)) apis.push({
+          key: node.key, label: node.label, path, method: node.method ?? (node.protocol === "websocket" ? "WS" : undefined),
+          locator: { ...node.locator, folderIds: [...node.locator.folderIds] },
+        });
+      }
+      const childrenPath = node.kind === "folder" ? [...folders, node.label] : folders;
+      for (const child of node.children ?? []) visit(child, childrenPath);
+    };
+    visit(module, []);
+    return { key: module.key, label: module.label, apis };
+  }).filter((module) => module.apis.length);
 });
 
 function sameApi(left: ApiLocator | null, right: ApiLocator): boolean {
   return !!left && localTreeNodeKey({ source: "local", kind: "api", locator: left }) === localTreeNodeKey({ source: "local", kind: "api", locator: right });
 }
 
-const moduleNames = computed(() => [...new Set(apis.value.map((a) => a.collection))]);
 async function editAsset(action: () => unknown | Promise<unknown>) { try { await action(); } catch (error) { props.reportError(error); } }
 </script>
 
@@ -72,6 +78,7 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
         type="button"
         class="anchor-item"
         :class="{ active: pane === 'api-cases' }"
+        :aria-current="pane === 'api-cases' ? 'page' : undefined"
         data-testid="test-tab-api-cases"
         @click="emit('update:pane', 'api-cases')"
       >
@@ -81,38 +88,39 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
         type="button"
         class="anchor-item"
         :class="{ active: pane === 'scenario' }"
+        :aria-current="pane === 'scenario' ? 'page' : undefined"
         data-testid="test-tab-scenario"
         @click="emit('update:pane', 'scenario')"
       >
         {{ t("test.scenarios") }}
       </button>
-      <button type="button" class="anchor-item" :class="{active: pane === 'suites'}" data-testid="test-tab-suites" @click="emit('update:pane','suites')">{{ t('testing.suites') }}</button>
-      <button type="button" class="anchor-item" :class="{active: pane === 'datasets'}" data-testid="test-tab-datasets" @click="emit('update:pane','datasets')">{{ t('testing.datasets') }}</button>
+      <button type="button" class="anchor-item" :class="{active: pane === 'suites'}" :aria-current="pane === 'suites' ? 'page' : undefined" data-testid="test-tab-suites" @click="emit('update:pane','suites')">{{ t('testing.suites') }}</button>
+      <button type="button" class="anchor-item" :class="{active: pane === 'datasets'}" :aria-current="pane === 'datasets' ? 'page' : undefined" data-testid="test-tab-datasets" @click="emit('update:pane','datasets')">{{ t('testing.datasets') }}</button>
     </div>
     <div class="fixed-actions"><div class="search-field"><input ref="searchInput" v-model="search" :placeholder="t('testing.search')" :aria-label="t('testing.search')" /><button type="button" class="search-clear" data-testid="test-search-clear" :style="{ visibility: search ? 'visible' : 'hidden' }" :aria-label="t('testPresentation.clearSearch')" :title="t('testPresentation.clearSearch')" @click="clearSearch">×</button></div><button v-if="pane === 'datasets'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newDataset(t('testing.newDataset')))">{{ t('testing.newDataset') }}</button><button v-if="pane === 'suites'" :disabled="!testingCurrent || testing?.readOnly" @click="editAsset(() => testing?.newSuite(t('testing.newSuite')))">{{ t('testing.newSuite') }}</button></div>
 
     <div class="test-list" data-testid="test-navigation-list">
       <template v-if="pane === 'api-cases'">
-        <div v-for="m in moduleNames" :key="m" class="group-block">
-          <div class="group-name">{{ m }}</div>
-          <button
-            v-for="a in apis.filter((x) => x.collection === m)"
-            :key="a.key" :title="a.label"
-            type="button"
-            class="api-item"
-            :class="{ active: sameApi(activeApiLocator, a.locator) }"
-            :data-testid="`test-api-${encodeURIComponent(a.key)}`"
-            @click="emit('pick-api', a.locator)"
-          >
-            {{ a.label }}
-          </button>
+        <div v-for="module in modules" :key="module.key" class="group-block">
+          <div class="group-name">{{ module.label }}</div>
+          <a-tooltip v-for="a in module.apis" :key="a.key" :title="`${module.label} / ${a.path}`" :trigger="['hover', 'focus']" placement="right">
+            <button type="button" class="api-item api-detail" :class="{ active: sameApi(activeApiLocator, a.locator) }"
+              :title="`${module.label} / ${a.path}`"
+              :aria-current="sameApi(activeApiLocator, a.locator) ? 'true' : undefined"
+              :data-testid="`test-api-${encodeURIComponent(a.key)}`" @click="emit('pick-api', a.locator)">
+              <span v-if="a.method" class="method" :data-method="a.method">{{ a.method }}</span>
+              <span class="api-name">{{ a.label }}</span>
+            </button>
+          </a-tooltip>
         </div>
-        <span v-if="apis.length === 0" class="muted" data-testid="test-no-apis">{{ search ? t('testPresentation.noMatches') : t("test.noApis") }}</span>
+        <span v-if="!modules.length" class="muted" data-testid="test-no-apis">{{ query ? t('testPresentation.noMatches') : t("test.noApis") }}</span>
       </template>
 
       <template v-else-if="pane === 'scenario'">
         <div v-for="w in visibleScenarios" :key="JSON.stringify(w.locator)" class="scenario-row" :data-testid="`test-scenario-${encodeURIComponent(JSON.stringify(w.locator))}`">
-          <span class="scenario-name" :title="w.name">{{ w.name }}</span>
+          <a-tooltip :title="w.name" :trigger="['hover', 'focus']" placement="right">
+            <span tabindex="0" class="scenario-name" :title="w.name">{{ w.name }}</span>
+          </a-tooltip>
           <a-tooltip :title="t('stress.workbench.title')">
             <a-button size="small" type="text" data-testid="test-scenario-stress" @click.stop="emit('stress-workflow', w.locator)">{{ t("case.stress") }}</a-button>
           </a-tooltip>
@@ -132,5 +140,37 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
 
 <style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
-.test-side { width: 240px; min-width: 0; display: flex; flex-direction: column; flex: 1; min-height: 0; border-right: 1px solid var(--border); background: var(--bg); overflow: hidden; }.side-head { flex: none; padding: 14px 14px 0; }.side-title { font-weight: 600; font-size: 13px; }.anchors { flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px; }.anchor-item { text-align: left; font-size: 12px; }.anchor-item.active, .api-item.active { background: var(--active-weak); color: var(--accent); border-color: var(--accent); }.fixed-actions { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; border-bottom: 1px solid var(--border); }.search-field { position: relative; }.search-field input { width: 100%; padding-right: 32px; }.search-clear { position: absolute; right: 1px; top: 1px; bottom: 1px; padding: 0 8px; min-height: 0; border: 0; background: transparent; }.test-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }.group-block { margin: 6px 0; }.group-name { font-weight: 600; color: var(--text-muted); padding: 8px; font-size: 12px; overflow-wrap: anywhere; }.api-item { display: block; width: 100%; text-align: left; border-color: transparent; padding: 8px 10px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.scenario-row { display: flex; align-items: center; gap: 4px; padding: 6px; border-radius: 6px; }.scenario-row:hover { background: var(--hover); }.scenario-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }.muted { display: block; color: var(--text-muted); font-size: 12px; padding: 20px 8px; text-align: center; }
+.test-side {
+  width: clamp(154px, 24vw, 240px); min-width: 0; min-height: 0; flex: 1;
+  display: flex; flex-direction: column; overflow: hidden;
+  border-right: 1px solid var(--border); background: var(--workbench-form-navigation);
+}
+.side-head { flex: none; padding: 14px 14px 0; }
+.side-title { font-weight: 600; font-size: 17px; }
+.anchors { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; padding: 12px; }
+.anchor-item { overflow-wrap: anywhere; padding: 5px; font-size: 12px; background: transparent; }
+.anchor-item.active, .api-item.active { background: var(--workbench-form-selected); color: var(--accent); }
+.anchor-item.active { border-color: var(--accent); }
+.fixed-actions { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px; border-bottom: 1px solid var(--border); }
+.search-field { position: relative; }
+.search-field input { width: 100%; padding-right: 28px; }
+.search-clear { position: absolute; right: 1px; top: 1px; bottom: 1px; padding: 0 8px; min-height: 0; border: 0; background: transparent; }
+.test-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; scrollbar-color: var(--text-muted) var(--workbench-form-navigation); }
+.group-block { margin: 4px 0; }
+.group-block + .group-block { border-top: 1px solid var(--border); }
+.group-name { font-weight: 600; padding: 8px; overflow-wrap: anywhere; }
+.api-item { display: block; width: 100%; text-align: start; border-color: transparent; padding: 6px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; }
+.api-detail { display: flex; gap: 5px; align-items: center; border-inline-start: 3px solid transparent; }
+.api-detail.active { border-inline-start-color: var(--accent); }
+.api-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.method { flex: 0 0 43px; font-size: 11px; font-weight: 600; color: var(--accent); }
+.method[data-method="GET"] { color: var(--pass); }
+.method[data-method="DELETE"] { color: var(--fail); }
+.scenario-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px; border-radius: 6px; }
+.scenario-row:hover { background: var(--hover); }
+.scenario-name { flex: 1 1 80%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.muted { display: block; color: var(--text-muted); font-size: 12px; padding: 16px 8px; text-align: center; }
+@media (max-width: 780px) {
+  .anchors { grid-template-columns: 1fr; padding-block: 8px; }
+}
 </style>

@@ -660,8 +660,9 @@ const railGate = computed(() => ({
   apiSelected: !!editor.apiId || !!editor.activeFreeSession,
 }));
 const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId || !!editor.activeFreeSession }));
-// 主页项目卡片高亮（任务 5 D）：该项目签存在且激活（从 tabs store 算，不再看树选中）
-const homeActiveProjectId = computed(() => activeLocalProjectTab.value?.projectLocator.projectId ?? null);
+const homeOpenLocalProjectKeys = computed(() => new Set(
+  tabs.tabs.filter(isLocalProjectTab).map((tab) => projectSessionKey(tab.workspaceRef.dir, tab.projectLocator)),
+));
 // 主页在线项目卡片高亮（终审 Important 1 ②）：活跃签为在线签时的 projectId
 const homeActiveOnlineProjectId = computed(() => {
   const tab = tabs.activeTab;
@@ -786,9 +787,15 @@ const treeFilter = computed({
 // 导入向导（M10 归接口模块）：显隐状态
 
 watch(() => envs.envs, (environments) => {
-  if (envs.root && envs.projectLocator) {
-    editor.refreshProjectEnvironments(envs.root, envs.projectLocator,
-      environments.map(({ id, name, locator }) => ({ id, name, locator })));
+  const root = envs.root;
+  const locator = envs.projectLocator;
+  if (!root || root !== workspace.root || !locator || workspace.hasPendingOpen()) return;
+  editor.refreshProjectEnvironments(root, locator,
+    environments.map(({ id, name, locator: environmentLocator }) => ({ id, name, locator: environmentLocator })));
+  const project = workspace.findProject(locator);
+  const known = new Map(project?.envs.map(({ id, name }) => [id, name]));
+  if (project && (known.size !== environments.length || environments.some(({ id, name }) => known.get(id) !== name))) {
+    void workspace.refresh().catch((error) => { if (workspace.root === root) reportError(error); });
   }
 });
 
@@ -1678,17 +1685,47 @@ function openOnlineProjectFromHome(projectId: string) {
 
 // —— 测试模块（M11）：压测上下文 + 场景清单 + 侧栏选接口载入编辑器 ——
 const testStressOpen = ref(false);
+let testStressIntent = 0;
+const testApiLoad = ref<{ key: string; loading: boolean; error: string }>();
+const testApiTarget = computed(() => {
+  const context = selectedProjectContext.value;
+  if (!context || context.root !== workspace.root || workspace.hasPendingOpen()) return null;
+  const tab = activeRequestTab.value;
+  if (tab) return tab.source.kind === "asset" ? tab.source.locator : null;
+  const locator = moduleMemory.test.apiLocator ?? editor.locator;
+  return locator && sameProjectLocator(locator, context.locator) ? locator : null;
+});
+const testApiReady = computed(() => {
+  const locator = testApiTarget.value;
+  return !!locator && editor.activeKey === apiSessionKey(workspace.root, locator) && editor.activeFreeId === null;
+});
+const canOperateTestCase = () => testApiReady.value;
+watch([testApiTarget, view, () => moduleMemory.test.pane], () => {
+  testStressIntent++;
+  const target = testApiTarget.value;
+  if (!target || apiSessionKey(workspace.root, target) !== testApiLoad.value?.key) testApiLoad.value = undefined;
+}, { flush: "sync" });
 watch(() => JSON.stringify([workspace.root, isHome.value, onlineMode.value, selectedProjectLocator.value]), () => {
   stress.clear(); testStressOpen.value = false;
 });
 
 async function onTestStress(caseId: string) {
-  if (!editor.locator || !selectedProjectLocator.value) return;
+  const locator = testApiTarget.value;
+  const project = selectedProjectContext.value;
+  if (!testApiReady.value || !locator || !project) return;
+  const intent = ++testStressIntent;
+  const targetKey = apiSessionKey(project.root, locator);
+  const environmentName = debug.selectedEnvName;
+  const environment = editor.envs.find((env) => env.name === environmentName)?.id;
   stress.form.caseId = caseId;
   stress.form.envName = debug.selectedEnvName; // 与调试共享项目环境选中态
   try {
-    await stress.openWorkbench(selectedProjectLocator.value, { kind: 'case', collectionId: editor.locator.collectionId, apiId: editor.locator.apiId, caseId });
-    if (stress.plan && debug.selectedEnvName) stress.plan.environmentId = editor.envs.find(env => env.name === debug.selectedEnvName)?.id;
+    await stress.openWorkbench(project.locator, { kind: 'case', collectionId: locator.collectionId, apiId: locator.apiId, caseId });
+    const plan = stress.plan;
+    const planned = plan?.target;
+    if (!plan || intent !== testStressIntent || view.value !== "test" || !testApiReady.value || targetKey !== editor.activeKey
+      || planned?.kind !== "case" || planned.collectionId !== locator.collectionId || planned.apiId !== locator.apiId || planned.caseId !== caseId) return;
+    if (environmentName) plan.environmentId = environment;
     testStressOpen.value = !!stress.planOwner;
   } catch (e) { reportError(e); }
 }
@@ -1710,7 +1747,12 @@ function onTestPickApi(locator: ApiLocator) {
   const node = findLocalNodeByKey(localTreeNodeKey({ source: "local", kind: "api", locator }));
   if (!node || node.kind !== "api") return;
   selectDirectoryNode(node);
-  loadApiIntoEditor(locator).catch(reportError);
+  const key = apiSessionKey(workspace.root, locator);
+  testApiLoad.value = { key, loading: true, error: "" };
+  const owner = testApiLoad.value;
+  void loadApiIntoEditor(locator).catch((error: unknown) => {
+    if (testApiLoad.value === owner) owner.error = error instanceof Error ? error.message : String(error);
+  }).finally(() => { if (testApiLoad.value === owner) owner.loading = false; });
 }
 
 /** 场景清单（活动项目工作流摘要）：测试侧栏数据源。 */
@@ -1998,7 +2040,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @new-free-request="openFreeRequestTab(); closeLocalTool()" />
         </div>
       </a-modal>
-      <div :ref="setWorkbenchBody" class="body">
+      <div :ref="setWorkbenchBody" class="body" :class="{ 'form-workbench': (view === 'envs' || view === 'test') && !isHome && !onlineMode }">
         <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
              在线模式全禁用 -->
         <ModuleRail
@@ -2083,7 +2125,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
           <TestSidebar
             :workspace="workspace"
             :active-project-locator="selectedProjectLocator"
-            :active-api-locator="editor.locator"
+            :active-api-locator="testApiTarget"
             :pane="moduleMemory.test.pane"
             :scenarios="testScenarios"
             :testing="testing"
@@ -2119,7 +2161,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :plugins="plugins"
             :report-error="reportError"
             :open-project="openProjectFromHome"
-            :active-project-locator="activeLocalProjectTab?.projectLocator ?? null"
+            :open-local-project-keys="homeOpenLocalProjectKeys"
             :open-online-workspace="openOnlineWorkspaceFromHome"
             :open-online-project="openOnlineProjectFromHome"
             :active-online-project-id="homeActiveOnlineProjectId"
@@ -2293,6 +2335,11 @@ function focusDebugSection(section: HTMLElement | undefined) {
               v-else
               class="panel-view"
               :editor="editor"
+              :interface-ready="testApiReady"
+              :can-operate="canOperateTestCase"
+              :interface-loading="!!testApiTarget && testApiLoad?.key === apiSessionKey(workspace.root, testApiTarget) && testApiLoad.loading"
+              :interface-error="testApiTarget && testApiLoad?.key === apiSessionKey(workspace.root, testApiTarget) ? testApiLoad.error : ''"
+              :interface-path="testApiTarget ? apiParentPath(testApiTarget) : undefined"
               :debug="debug"
               :cases="cases"
               :envs="envs"
@@ -2397,6 +2444,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
 html, body, #app { height: 100%; margin: 0; }
 .app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
 .body { position: relative; flex: 1; display: flex; min-height: 0; overflow: hidden; background: var(--workbench-background); }
+.form-workbench { --workbench-rail: var(--workbench-form-rail); }
 .sider-col-wrap {
   width: 248px;
   flex-shrink: 0;

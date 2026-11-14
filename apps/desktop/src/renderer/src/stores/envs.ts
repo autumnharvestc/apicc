@@ -21,6 +21,11 @@ function sameProject(left: ProjectLocator, right: ProjectLocator): boolean {
 
 /** Environment loads and mutations are pinned to a directory root and full workspace/group/project identity. */
 export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceContext = () => ({ root: "", readOnly: false })) {
+  let requested: { root: string; locator: ProjectLocator } | null = null;
+  const wantsProject = (root: string, locator: ProjectLocator) =>
+    requested?.root === root && sameProject(requested.locator, locator);
+  let recordedWrite = 0;
+
   return defineStore("envs", {
     state: () => ({
       root: null as string | null,
@@ -29,6 +34,7 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
       selectedEnvironment: null as EnvironmentLocator | null,
       globals: { variables: {}, query: [], headers: [], cookies: [], body: [] } as ProjectGlobalSettings,
       loadToken: 0,
+      loadedRevision: 0,
     }),
     getters: {
       selectedEnvId(): string | null { return this.selectedEnvironment?.environmentId ?? null; },
@@ -38,15 +44,33 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
       },
     },
     actions: {
+      isCurrentProject(root: string, locator: ProjectLocator): boolean {
+        return getContext().root === root && this.root === root && !!this.projectLocator
+          && sameProject(this.projectLocator, locator) && wantsProject(root, locator);
+      },
       assertWritable(): void {
         if (getContext().readOnly) throw new Error("工作区处于只读模式，不能修改环境");
       },
       async load(locator: ProjectLocator): Promise<void> {
         const fixed = copyProject(locator);
         const root = getContext().root;
+        requested = { root, locator: fixed };
         const token = ++this.loadToken;
-        const [tree, globals] = await Promise.all([api.treeGet(), api.globalsGet(fixed)]);
-        if (token !== this.loadToken || getContext().root !== root) return;
+        const read = () => Promise.all([api.treeGet(), api.globalsGet(fixed)]);
+        const isLatest = () => token === this.loadToken && getContext().root === root;
+        let snapshot: Awaited<ReturnType<typeof read>>;
+        try {
+          let writeAtRead: number;
+          do {
+            writeAtRead = recordedWrite;
+            snapshot = await read();
+          } while (isLatest() && writeAtRead !== recordedWrite);
+        } catch (error) {
+          if (!isLatest()) return;
+          throw error;
+        }
+        if (!isLatest()) return;
+        const [tree, globals] = snapshot;
         const group = tree.source === "local" && tree.kind === "root"
           ? tree.children.find((node) => node.kind === "group" && node.locator.workspaceId === fixed.workspaceId && node.locator.groupId === fixed.groupId)
           : undefined;
@@ -54,6 +78,7 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
           ? group.children.find((node) => node.kind === "project" && node.locator.workspaceId === fixed.workspaceId
             && node.locator.groupId === fixed.groupId && node.locator.projectId === fixed.projectId)
           : undefined;
+        const changedRoot = this.root !== root;
         this.root = root;
         this.projectLocator = fixed;
         this.envs = project?.kind === "project" ? project.envs.map((env) => ({
@@ -65,10 +90,11 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
           locator: { ...env.locator },
         })) : [];
         this.globals = globals;
-        if (this.selectedEnvironment && (!sameProject(projectOf(this.selectedEnvironment), fixed)
+        if (this.selectedEnvironment && (changedRoot || !sameProject(projectOf(this.selectedEnvironment), fixed)
           || !this.envs.some((item) => item.locator.environmentId === this.selectedEnvironment!.environmentId))) {
           this.selectedEnvironment = null;
         }
+        this.loadedRevision++;
       },
       select(locator: EnvironmentLocator | null): void {
         this.selectedEnvironment = locator ? { ...locator } : null;
@@ -78,8 +104,12 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
         const root = getContext().root;
         const fixed = copyProject(input.locator);
         const env = await api.envCreate({ ...input, locator: fixed });
-        if (getContext().root !== root || !this.projectLocator || !sameProject(this.projectLocator, fixed)) return env;
-        await this.load(fixed);
+        recordedWrite++;
+        if (!this.isCurrentProject(root, fixed)) return env;
+        const refresh = this.load(fixed);
+        const loadToken = this.loadToken;
+        await refresh;
+        if (this.loadToken !== loadToken || !this.isCurrentProject(root, fixed)) return env;
         const created = this.envs.find((item) => item.id === env.id);
         this.select(created?.locator ?? null);
         return env;
@@ -89,37 +119,47 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
         const root = getContext().root;
         const fixed = { ...locator };
         const saved = await api.envVarsSave(fixed, { ...variables });
-        if (root !== getContext().root || this.root !== root || !this.projectLocator || !sameProject(this.projectLocator, projectOf(fixed))) return;
-        const item = this.envs.find((entry) => entry.locator.environmentId === fixed.environmentId);
-        if (item) item.variables = { ...saved.variables };
+        recordedWrite++;
+        if (this.isCurrentProject(root, fixed)) {
+          const item = this.envs.find((entry) => entry.locator.environmentId === fixed.environmentId);
+          if (item) item.variables = { ...saved.variables };
+        }
+        return saved.variables;
       },
       async saveBaseUrls(locator: EnvironmentLocator, baseUrls: Record<string, string>) {
         this.assertWritable();
         const root = getContext().root;
         const fixed = { ...locator };
         const saved = await api.envBaseUrlsSave(fixed, { ...baseUrls });
-        if (root !== getContext().root || this.root !== root || !this.projectLocator || !sameProject(this.projectLocator, projectOf(fixed))) return;
-        const item = this.envs.find((entry) => entry.locator.environmentId === fixed.environmentId);
-        if (item) item.baseUrls = { ...(saved.baseUrls ?? {}) };
+        recordedWrite++;
+        const confirmed = saved.baseUrls ?? {};
+        if (this.isCurrentProject(root, fixed)) {
+          const item = this.envs.find((entry) => entry.locator.environmentId === fixed.environmentId);
+          if (item) item.baseUrls = { ...confirmed };
+        }
+        return confirmed;
       },
       async saveGlobals(locator: ProjectLocator, globals: ProjectGlobalSettings) {
         this.assertWritable();
         const root = getContext().root;
         const fixed = copyProject(locator);
         const saved = await api.globalsSave(fixed, globals);
-        if (root === getContext().root && this.root === root && this.projectLocator && sameProject(this.projectLocator, fixed)) this.globals = saved;
+        recordedWrite++;
+        if (this.isCurrentProject(root, fixed)) this.globals = saved;
+        return saved;
       },
-      async remove(locator: EnvironmentLocator, confirm: ConfirmFn): Promise<void> {
+      async remove(locator: EnvironmentLocator, confirm: ConfirmFn, isCurrent: () => boolean = () => true): Promise<void> {
         this.assertWritable();
         const root = getContext().root;
         const fixed = { ...locator };
         if (!(await confirm(`delete:${fixed.environmentId}`))) return;
         // Confirmation is asynchronous; do not redirect an operation captured in one root
         // into whichever workspace became active while the dialog was open.
-        if (getContext().root !== root) return;
+        if (!isCurrent() || !this.isCurrentProject(root, fixed)) return;
         this.assertWritable();
         await api.nodeDelete({ kind: "environment", locator: fixed });
-        if (root !== getContext().root || !this.projectLocator || !sameProject(this.projectLocator, projectOf(fixed))) return;
+        recordedWrite++;
+        if (!this.isCurrentProject(root, fixed)) return;
         if (this.selectedEnvironment?.environmentId === fixed.environmentId
           && sameProject(projectOf(this.selectedEnvironment), projectOf(fixed))) this.selectedEnvironment = null;
         await this.load(projectOf(fixed));

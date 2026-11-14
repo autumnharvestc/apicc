@@ -238,7 +238,7 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const plugins = createPluginsStore({ api });
   const { i18n } = createI18nInstance();
   const wrapper = mount(component, {
-    attachTo: component === SideTree ? document.body : undefined,
+    attachTo: component === SideTree || component === HomeView ? document.body : undefined,
     props: { api, workspace, tree, editor, debug, workflowDesign, online, tabs, importW, plugins, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
@@ -2106,18 +2106,30 @@ describe("ConfirmDialog", () => {
   });
 });
 
-describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至主页）", () => {
-  it("打开本地目录：经 wsPickDirectory+wsOpen 后显示工作区名", async () => {
-    const { wrapper, workspace } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
-    await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
+describe("HomeView", () => {
+  it("从工作区菜单打开另一目录后，回到全部项目并清除原分组搜索", async () => {
+    const { wrapper, workspace, api } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
+    const pick = vi.spyOn(api, "wsPickDirectory").mockResolvedValue("/tmp/another-workspace");
+    await wrapper.get(".group-select").trigger("click");
+    await wrapper.get('input[data-testid="home-project-search"]').setValue("示例");
+    const menu = wrapper.get('[data-testid="home-workspace-more"]');
+    await menu.trigger("keydown", { key: "ArrowDown" });
+    const open = expectBody("home-open-dir");
+    expect(document.activeElement).toBe(open.element);
+    await open.trigger("click");
     await flushPromises();
+    expect(pick).toHaveBeenCalledOnce();
+    expect(workspace.root).toBe("/tmp/another-workspace");
     expect(workspace.opened).toBe(true);
-    expect(wrapper.text()).toContain("内存工作区");
+    expect(wrapper.get('[data-testid="home-content-title"]').text()).toBe("全部项目");
+    expect(wrapper.get('[data-testid="home-side-local"]').attributes("aria-current")).toBe("page");
   });
 
   it("新建本地目录先弹名称输入对话框，可取消", async () => {
     const { wrapper } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
-    await wrapper.find('[data-testid="home-new-dir"]').trigger("click");
+    const menu = wrapper.get('[data-testid="home-workspace-more"]');
+    await menu.trigger("click");
+    await expectBody("home-new-dir").trigger("click");
     await flushPromises();
     expect(bodyHas("dialog-input")).toBe(true);
     await expectBody("dialog-cancel").trigger("click");
@@ -2130,13 +2142,59 @@ describe("HomeView（M9-C：本地目录 打开/新建 入口自 TopBar 迁至�
     const errors: unknown[] = [];
     const { wrapper, api } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {}, reportError: (e: unknown) => { errors.push(e); } });
     api.wsOpen = async () => { throw new Error("打不开"); };
-    await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
+    await wrapper.get('[data-testid="home-workspace-more"]').trigger("click");
+    await expectBody("home-open-dir").trigger("click");
     await flushPromises();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("打不开");
   });
 
+  it("分组菜单操作绑定触发行，保留当前分组并说明非空分组不能删除", async () => {
+    const { wrapper, workspace, tree, api } = await mountWith(HomeView, { openProject: () => {}, openOnlineWorkspace: () => {}, openOnlineProject: () => {} });
+    const root = workspace.tree!;
+    const selected = seededProjectAndApi(workspace).project.locator;
+    const selectedGroup = root.children.find((group) => group.id === selected.groupId)!;
+    const other = await tree.createNode({ kind: "group", parent: root.locator, name: "待处理的分组" });
+    if (other.kind !== "group") throw new Error("Expected a group");
+    const rows = wrapper.findAll('[data-testid="home-side-group"]');
+    const selectedRow = rows.find((row) => row.text() === selectedGroup.label)!;
+    const otherRow = rows.find((row) => row.text() === other.label)!;
+    await selectedRow.get(".group-select").trigger("click");
+    await selectedRow.get('[data-testid="home-group-more"]').trigger("click");
+    const disabledDelete = expectBody("home-delete-group");
+    expect(disabledDelete.attributes("disabled")).toBeDefined();
+    expect(disabledDelete.text()).toContain("请先删除分组下全部项目");
+    await expectBody("home-rename-group").trigger("keydown", { key: "Escape" });
 
+    const more = otherRow.get('[data-testid="home-group-more"]');
+    await more.trigger("keydown", { key: "ArrowDown" });
+    const rename = expectBody("home-rename-group");
+    expect(document.activeElement).toBe(rename.element);
+    await rename.trigger("keydown", { key: "Escape" });
+    expect(document.activeElement).toBe(more.element);
+    expect(bodyHas("home-rename-group")).toBe(false);
+
+    const renameNode = vi.spyOn(api, "nodeRename");
+    await more.trigger("click");
+    await expectBody("home-rename-group").trigger("click");
+    await expectBody("dialog-input").setValue("分组新名称");
+    await expectBody("dialog-confirm").trigger("click");
+    await vi.waitFor(() => expect(otherRow.get(".group-select").text()).toBe("分组新名称"));
+    expect(renameNode).toHaveBeenCalledWith({ kind: "group", locator: other.locator }, "分组新名称");
+    expect(selectedRow.get(".group-select").attributes("aria-current")).toBe("page");
+
+    const deleteNode = vi.spyOn(api, "nodeDelete");
+    await more.trigger("click");
+    await expectBody("home-delete-group").trigger("click");
+    expect(document.body.textContent).toContain("分组新名称");
+    expect(document.body.textContent).toContain("仅空分组可删除");
+    const cancel = expectBody("dialog-cancel");
+    (cancel.element as HTMLElement).focus();
+    await cancel.trigger("click");
+    expect(document.activeElement).toBe(more.element);
+    expect(deleteNode).not.toHaveBeenCalled();
+    expect(selectedRow.get(".group-select").attributes("aria-current")).toBe("page");
+  });
 });
 
 // —— M2-D3 任务 2：压测面板与报告展示（简报裁定 A/B/C/D） ——

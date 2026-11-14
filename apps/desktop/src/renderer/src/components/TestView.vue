@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
@@ -32,15 +32,36 @@ const props = defineProps<{
   reportError: (e: unknown) => void;
   readOnly?: boolean;
   ai?: import('../stores/ai.js').AiStore;
+  interfacePath?: string;
+  interfaceReady?: boolean;
+  interfaceLoading?: boolean;
+  interfaceError?: string;
+  canOperate?: () => boolean;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evidence", identity: import("@apicc/core").EvidenceIdentity): void }>();
 const { t } = useI18n();
 const requestTab = computed(() => props.editor.activeKey
   ? props.debug.requestTabForSession(props.editor.activeKey) : null);
 const requestTabState = computed(() => requestTab.value ? props.debug.requestTabState(requestTab.value) : null);
-const result = computed(() => requestTabState.value ? requestTabState.value.result : props.debug.result);
-const sending = computed(() => requestTabState.value ? requestTabState.value.sending : props.debug.sending);
-const error = computed(() => requestTabState.value ? requestTabState.value.error : props.debug.error);
+const currentCase = computed(() => {
+  const api = props.editor.api;
+  const identity = requestTabState.value ? requestTabState.value.selectedCase : props.cases.selectedCase;
+  return api?.cases.find((item) => item.id === identity?.caseId && item.scope === identity.scope) ?? api?.cases[0];
+});
+const run = computed(() => currentCase.value ? props.debug.caseRunFor(props.editor, { caseId: currentCase.value.id, scope: currentCase.value.scope }) : undefined);
+const runError = computed(() => {
+  const error = run.value?.error;
+  return error && /is not effective in the selected environment|is not the current effective case scope/.test(error)
+    ? t("testWorkbench.scopeUnavailable") : error;
+});
+const resultRegion = ref<HTMLElement>();
+
+function showResult() {
+  void nextTick(() => {
+    resultRegion.value?.scrollIntoView?.({ block: "start" });
+    resultRegion.value?.focus({ preventScroll: true });
+  });
+}
 
 </script>
 
@@ -50,12 +71,15 @@ const error = computed(() => requestTabState.value ? requestTabState.value.error
     <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
     <template v-else-if="pane === 'api-cases'">
-      <EmptyState v-if="!editor.api" :text="t('test.pickApi')" />
+      <p v-if="interfaceReady === false && interfaceError" class="interface-error" role="alert">{{ t("testWorkbench.loadApiFailed", { error: interfaceError }) }}</p>
+      <EmptyState v-else-if="interfaceReady === false || !editor.api" :text="t(interfaceLoading ? 'testWorkbench.loadingApi' : 'test.pickApi')" />
       <template v-else>
-        <CasePanel :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" @stress="(caseId: string) => emit('stress', caseId)">
+        <CasePanel workbench :can-operate="canOperate" :interface-path="interfacePath" :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" @stress="(caseId: string) => emit('stress', caseId)" @show-result="showResult">
           <template #after-cases>
-            <div v-if="result" class="result" data-testid="test-result">
-              <ResponseViewer :result="result" :sending="sending" :error="error" :tab-state="requestTabState" />
+            <div v-if="run" ref="resultRegion" class="result" data-testid="test-result" tabindex="-1" role="region" :aria-label="t('testWorkbench.result')">
+              <p class="result-environment"><strong>{{ t("testWorkbench.runEnvironment") }}</strong>
+                {{ run.result?.run.envName ?? run.environmentName ?? t("testWorkbench.defaultEnvironment") }}</p>
+              <ResponseViewer :key="run.result?.runId ?? 'pending'" :result="run.result" :sending="run.pending" :error="runError" />
             </div>
           </template>
         </CasePanel>
@@ -70,6 +94,10 @@ const error = computed(() => requestTabState.value ? requestTabState.value.error
 </template>
 
 <style scoped>
-.test-view { height: 100%; min-height: 0; min-width: 0; box-sizing: border-box; overflow: auto; background: var(--bg); }
+.test-view { height: 100%; min-height: 0; min-width: 0; box-sizing: border-box; overflow: auto; background: var(--bg); container-type: inline-size; }
 .result { min-width: 0; margin-top: 4px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--subtle); }
+.result:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.result-environment { margin: 0 0 8px; color: var(--text-muted); overflow-wrap: anywhere; }
+.result-environment strong { margin-inline-end: 4px; }
+.interface-error { padding: 12px; color: var(--fail); overflow-wrap: anywhere; }
 </style>

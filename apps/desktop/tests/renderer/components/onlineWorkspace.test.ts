@@ -235,6 +235,123 @@ describe('online execution readable projection', () => {
       expect(name.element.value).toBe('Unsaved load profile');
     } finally { wrapper.unmount(); adapter.stop(); }
   });
+  it('saves online environment variables and URLs through successive versions and gates the Viewer', async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const envId = crypto.randomUUID();
+    const moduleId = project.collections[0]!.id;
+    project.environments = [{ id: envId, name: 'Integration', variables: { region: 'before' }, baseUrls: { [moduleId]: 'https://before.invalid' } }];
+    const api = createMemoryApi();
+    const viewOf = (saved: typeof project, version: string) => ({ project: saved, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1' as const, contractProjectId: saved.id, version, manifestHash: 'a'.repeat(64), files: [] } });
+    const writes: Extract<OnlineExecutionInput, { operation: 'saveProject' }>[] = [];
+    api.onlineExecution = async (input) => {
+      if (input.operation !== 'saveProject') throw new Error('Unexpected operation');
+      writes.push(input);
+      return viewOf(input.project, String(writes.length + 1));
+    };
+    const online = createOnlineStore({ api });
+    const execution = online.execution;
+    execution.activate(EXECUTION_CONTEXT);
+    execution.project = project;
+    execution.saved = JSON.stringify(project);
+    execution.view = viewOf(project, '1');
+    execution.setVisible(true);
+    online.activeWorkspaceId = EXECUTION_CONTEXT.scope.workspaceId;
+    online.sessions[EXECUTION_CONTEXT.scope.workspaceId] = {
+      workspace: { id: EXECUTION_CONTEXT.scope.workspaceId, name: 'Team', myRole: 'EDITOR' },
+      projects: [{ id: EXECUTION_CONTEXT.scope.projectId, name: project.name, myRole: 'EDITOR' }],
+      tree: null, buffers: {}, activeEditorPath: null,
+    };
+    const canEdit = () => online.canEdit(`${EXECUTION_CONTEXT.scope.projectId}/project.yaml`);
+    const adapter = createOnlineProjectAdapter(execution, api, () => !canEdit(), () => true);
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
+    const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+    try {
+      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('onlineExecution.panes.environments'))!.trigger('click');
+      await flushPromises();
+      await wrapper.get(`[data-testid="env-item-${envId}"]`).trigger('click');
+      await wrapper.get('[data-testid="env-var-value"]').setValue('confirmed');
+      await wrapper.get('[data-testid="env-baseurl-input"]').setValue('https://confirmed.invalid');
+      await wrapper.get('[data-testid="env-vars-save"]').trigger('click');
+      const feedback = () => wrapper.get('[data-testid="env-panel"]').findAll('[role="alert"], [role="status"]').map(item => item.text()).join(' | ');
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="env-vars-saved"]').exists(), `${writes.length} writes. ${feedback()}`).toBe(true));
+      expect(writes.map(write => write.expectedVersion)).toEqual(['1', '2']);
+      expect(writes[0]?.project.environments[0]).toMatchObject({ variables: { region: 'confirmed' }, baseUrls: { [moduleId]: 'https://before.invalid' } });
+      expect(execution.project?.environments[0]).toMatchObject({ variables: { region: 'confirmed' }, baseUrls: { [moduleId]: 'https://confirmed.invalid' } });
+      online.sessions[EXECUTION_CONTEXT.scope.workspaceId]!.projects[0]!.myRole = 'VIEWER';
+      await flushPromises();
+      expect(wrapper.get('[data-testid="env-vars-save"]').attributes('disabled')).toBeDefined();
+      expect(wrapper.get(`[data-testid="env-more-${envId}"]`).attributes('disabled')).toBeDefined();
+      expect(writes).toHaveLength(2);
+    } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
+  });
+  it('preserves online case override, inherit, save and the project execution entry', async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const asset = project.collections[0]!.apis[0]!;
+    const originalCase = asset.cases[0]!;
+    const envId = crypto.randomUUID();
+    project.environments = [{ id: envId, name: 'Remote preview', variables: {}, baseUrls: {} }];
+    const api = createMemoryApi();
+    const viewOf = (saved: typeof project, version: number) => ({ project: saved, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1' as const, contractProjectId: saved.id, version: String(version), manifestHash: String(version).repeat(64), files: [] } });
+    const writes: Extract<OnlineExecutionInput, { operation: 'saveProject' }>[] = [];
+    let run: Extract<OnlineExecutionInput, { operation: 'run' }> | undefined;
+    api.onlineExecution = async (input) => {
+      if (input.operation === 'saveProject') {
+        writes.push(input);
+        return viewOf(input.project, writes.length + 1);
+      }
+      if (input.operation === 'run') {
+        run = input;
+        return failureResult(input.runId);
+      }
+      throw new Error('Unexpected operation');
+    };
+    const online = createOnlineStore({ api });
+    const execution = online.execution;
+    execution.activate(EXECUTION_CONTEXT);
+    execution.project = project;
+    execution.saved = JSON.stringify(project);
+    execution.view = viewOf(project, 1);
+    execution.setVisible(true);
+    online.activeWorkspaceId = EXECUTION_CONTEXT.scope.workspaceId;
+    online.sessions[EXECUTION_CONTEXT.scope.workspaceId] = {
+      workspace: { id: EXECUTION_CONTEXT.scope.workspaceId, name: 'Team', myRole: 'EDITOR' },
+      projects: [{ id: EXECUTION_CONTEXT.scope.projectId, name: project.name, myRole: 'EDITOR' }],
+      tree: null, buffers: {}, activeEditorPath: null,
+    };
+    const canEdit = () => online.canEdit(`${EXECUTION_CONTEXT.scope.projectId}/project.yaml`);
+    const adapter = createOnlineProjectAdapter(execution, api, () => !canEdit(), () => true);
+    const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
+    const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+    const savedCase = (nth: number) => writes[nth]?.project.collections[0]?.apis[0]?.cases.find(item => item.id === originalCase.id && item.scope === originalCase.scope);
+    const runButton = () => wrapper.findAll('button').find(item => item.text() === i18n.global.t('onlineExecution.runCase'))!;
+    try {
+      await wrapper.get('[data-testid="online-execution-environment"]').setValue(envId);
+      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('onlineExecution.panes.cases'))!.trigger('click');
+      const selectApi = wrapper.findAll('select').find(select => select.find(`option[value="${asset.contract.id}"]`).exists())!;
+      await selectApi.setValue(asset.contract.id);
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="case-request-copy-default"]').exists()).toBe(true));
+      await wrapper.get('[data-testid="case-row"]').trigger('click');
+      await wrapper.get('[data-testid="case-request-copy-default"]').trigger('click');
+      expect(runButton().attributes('disabled')).toBeDefined();
+      await wrapper.get('[data-testid="case-save"]').trigger('click');
+      await vi.waitFor(() => expect(runButton().attributes('disabled')).toBeUndefined());
+      expect(savedCase(0)?.requestOverride).toEqual(asset.contract.request);
+
+      await wrapper.get('[data-testid="case-request-inherit"]').trigger('click');
+      await wrapper.get('[data-testid="case-save"]').trigger('click');
+      await vi.waitFor(() => expect(runButton().attributes('disabled')).toBeUndefined());
+      expect(writes.map(write => write.expectedVersion)).toEqual(['1', '2']);
+      expect(savedCase(1)).toBeDefined();
+      expect(savedCase(1)?.requestOverride).toBeUndefined();
+      await runButton().trigger('click');
+      await vi.waitFor(() => expect(run).toMatchObject({ operation: 'run', environmentId: envId, expectedVersion: '3', target: { kind: 'debug', invocation: { mode: 'case', case: { apiId: asset.contract.id, caseId: originalCase.id, scope: originalCase.scope } } } }));
+      online.sessions[EXECUTION_CONTEXT.scope.workspaceId]!.projects[0]!.myRole = 'VIEWER';
+      await flushPromises();
+      expect(wrapper.get('[data-testid="case-save"]').attributes('disabled')).toBeDefined();
+      expect(wrapper.get('[data-testid="case-request-copy-default"]').attributes('disabled')).toBeDefined();
+      expect(runButton().attributes('disabled')).toBeDefined();
+    } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
+  });
   it('selecting another online API and back through the existing dropdown preserves the first API draft', async () => {
     const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
     const collection = project.collections[0]!;

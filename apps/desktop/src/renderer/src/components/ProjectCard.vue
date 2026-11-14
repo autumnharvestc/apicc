@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Dropdown as ADropdown, Menu as AMenu, MenuItem as AMenuItem } from "ant-design-vue";
+import { Tooltip as ATooltip } from "ant-design-vue";
 import { EllipsisOutlined } from "@ant-design/icons-vue";
+import ActionMenu from "./ActionMenu.vue";
 
 /**
  * 项目卡片（主页右栏网格；轨三）：色块头像（按项目 id 确定性生成颜色，纯 CSS 零素材——
  * 素材许可合规约束）+ 项目名 + 更多菜单（修改名称/克隆项目/移动项目/删除项目）。
- * 卡片组件预留标签插槽位（tags slot）：标签数据模型后置，先留扩展点（轨三澄清④）。
  * 点击卡片主体 = 打开项目。
  */
 const props = defineProps<{
   projectId: string;
   projectName: string;
+  groupName?: string;
+  opened?: boolean;
   active?: boolean;
   /** 纯展示卡片（终审 Important 1 ②主页在线项目卡片）：重命名/克隆/移动/删除是本地目录
    * 管理动作，在线项目无对应能力——隐藏「更多」菜单，卡片点击=打开（成签）。 */
@@ -26,6 +28,21 @@ const emit = defineEmits<{
   (e: "remove"): void;
 }>();
 const { t } = useI18n();
+const groupDescriptionId = useId();
+const actions = computed(() => [
+  { key: "rename", label: t("home.renameProject"), testId: "project-menu-rename" },
+  { key: "clone", label: t("home.cloneProject"), testId: "project-menu-clone" },
+  { key: "move", label: t("home.moveProject"), testId: "project-menu-move" },
+  { key: "remove", label: t("home.deleteProject"), testId: "project-menu-delete", danger: true },
+]);
+
+function onAction(key: string) {
+  if (props.plain) return;
+  if (key === "rename") emit("rename");
+  if (key === "clone") emit("clone");
+  if (key === "move") emit("move");
+  if (key === "remove") emit("remove");
+}
 
 const AVATAR_COLORS = ["#5b8ff9", "#5ad8a6", "#f6bd16", "#e8684a", "#6dc8ec", "#9270ca", "#ff9d4d", "#f08bb4"];
 const avatarColor = computed(() => {
@@ -44,41 +61,33 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
     @click="emit('open')"
   >
     <div class="card-top">
-      <span class="avatar" :style="{ background: avatarColor }">{{ avatarChar }}</span>
-      <span v-if="!plain" class="card-actions" @click.stop>
-        <a-dropdown :trigger="['click']">
-          <a-button size="small" type="text" data-testid="project-card-more" :aria-label="t('tree.moreActions')" :title="t('tree.moreActions')">
-            <EllipsisOutlined />
-          </a-button>
-          <template #overlay>
-            <a-menu>
-              <a-menu-item key="rename" data-testid="project-menu-rename" @click="emit('rename')">
-                {{ t("home.renameProject") }}
-              </a-menu-item>
-              <a-menu-item key="clone" data-testid="project-menu-clone" @click="emit('clone')">
-                {{ t("home.cloneProject") }}
-              </a-menu-item>
-              <a-menu-item key="move" data-testid="project-menu-move" @click="emit('move')">
-                {{ t("home.moveProject") }}
-              </a-menu-item>
-              <a-menu-item key="delete" danger data-testid="project-menu-delete" @click="emit('remove')">
-                {{ t("home.deleteProject") }}
-              </a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
-      </span>
+      <span class="avatar" aria-hidden="true" :style="{ background: avatarColor }">{{ avatarChar }}</span>
+      <span v-if="opened" class="card-opened" :title="t('home.projectOpened')">{{ t("home.projectOpened") }}</span>
     </div>
-    <button type="button" class="card-name" :title="projectName" @click.stop="emit('open')">{{ projectName }}</button>
-    <!-- 标签插槽位（轨三澄清④：标签后置，仅留扩展点） -->
-    <div class="card-tags">
-      <slot name="tags" />
-    </div>
+    <a-tooltip :title="projectName" :trigger="['hover', 'focus']">
+      <button
+        type="button"
+        class="card-name"
+        :title="projectName"
+        :aria-describedby="groupName ? groupDescriptionId : undefined"
+        @click.stop="emit('open')"
+      ><span>{{ projectName }}</span></button>
+    </a-tooltip>
+    <a-tooltip v-if="groupName" :title="groupName" :trigger="['hover', 'focus']" placement="bottom">
+      <span :id="groupDescriptionId" class="project-group" :title="groupName" tabindex="0">{{ groupName }}</span>
+    </a-tooltip>
+    <slot name="tags" />
+    <span v-if="!plain" class="card-actions" @click.stop>
+      <ActionMenu test-id="project-card-more" :label="t('home.projectActions', { name: projectName })" :items="actions" @select="onAction">
+        <EllipsisOutlined />
+      </ActionMenu>
+    </span>
   </div>
 </template>
 
 <style scoped>
 .project-card {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
@@ -86,11 +95,11 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
   width: 200px;
   max-width: 100%;
   box-sizing: border-box;
-  min-height: 116px;
+  min-height: 124px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   text-align: left;
 }
 .project-card:hover, .project-card:focus-within {
@@ -103,11 +112,12 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
 }
 .card-top {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
+  padding-inline-end: 24px;
 }
 .avatar {
+  flex: none;
   width: 34px;
   height: 34px;
   border-radius: 8px;
@@ -125,26 +135,43 @@ const avatarChar = computed(() => (props.projectName || "?").slice(0, 1).toUpper
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  padding: 2px 0;
+  padding: 0;
   width: 100%;
+  min-height: 36px;
+  align-content: start;
   border-radius: 3px;
   font-weight: 600;
   font-size: 13px;
+  line-height: 18px;
+}
+.card-name span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.card-actions {
+  position: absolute;
+  top: 8px;
+  inset-inline-end: 8px;
+  opacity: 0;
+  pointer-events: none;
+}
+.project-card:hover .card-actions, .project-card:focus-within .card-actions, .card-actions:has([aria-expanded="true"]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) { .card-actions { opacity: 1; pointer-events: auto; } }
+.project-group, .card-opened {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 13px;
 }
-.card-actions {
-  opacity: 0;
-}
-.project-card:hover .card-actions, .project-card:focus-within .card-actions {
-  opacity: 1;
-}
-@media (hover: none) { .card-actions { opacity: 1; } }
-.card-tags {
-  min-height: 4px;
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+.card-opened {
+  font-size: 11px;
 }
 </style>

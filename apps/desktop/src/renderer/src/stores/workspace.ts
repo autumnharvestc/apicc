@@ -1,4 +1,5 @@
 import { createPinia, defineStore } from "pinia";
+import { ref } from "vue";
 import type { ContractWorkspace, LoadProblem, StressTargetPolicy } from "@apicc/core";
 import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { ApiccApi, OpenResult } from "../../../shared/types.js";
@@ -61,7 +62,7 @@ function applyOpenResult(state: WorkspaceState, result: OpenResult): void {
 export function useWorkspaceStore(api: ApiccApi) {
   let contextEpoch = 0;
   let operationQueue: Promise<void> = Promise.resolve();
-  let pendingOpenCount = 0;
+  const pendingOpenCount = ref(0);
 
   const enqueueContextOperation = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = operationQueue.then(operation, operation);
@@ -88,7 +89,7 @@ export function useWorkspaceStore(api: ApiccApi) {
     actions: {
       open(rootPath: string, isCurrent: () => boolean = () => true): Promise<void> {
         const epoch = ++contextEpoch;
-        pendingOpenCount += 1;
+        pendingOpenCount.value += 1;
         return enqueueContextOperation(async () => {
           try {
             if (epoch !== contextEpoch || !isCurrent()) return;
@@ -98,14 +99,14 @@ export function useWorkspaceStore(api: ApiccApi) {
             this.apply(result);
             this.tree = await readTree();
           } finally {
-            pendingOpenCount -= 1;
+            pendingOpenCount.value -= 1;
           }
         });
       },
 
       create(rootPath: string, name: string): Promise<void> {
         const epoch = ++contextEpoch;
-        pendingOpenCount += 1;
+        pendingOpenCount.value += 1;
         return enqueueContextOperation(async () => {
           try {
             if (epoch !== contextEpoch) return;
@@ -113,7 +114,7 @@ export function useWorkspaceStore(api: ApiccApi) {
             this.apply(result);
             this.tree = await readTree();
           } finally {
-            pendingOpenCount -= 1;
+            pendingOpenCount.value -= 1;
           }
         });
       },
@@ -143,7 +144,7 @@ export function useWorkspaceStore(api: ApiccApi) {
       },
 
       hasPendingOpen(): boolean {
-        return pendingOpenCount > 0;
+        return pendingOpenCount.value > 0;
       },
 
       projectLocatorForApi(locator: ApiLocator): ProjectLocator | null {

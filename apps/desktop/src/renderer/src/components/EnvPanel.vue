@@ -1,26 +1,50 @@
-<script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
-import { Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, Select as ASelect, Table as ATable } from "ant-design-vue";
+<script lang="ts">
 import type { KeyValuePair } from "@apicc/core";
+import type { ProjectGlobalSettings } from "../../../shared/types.js";
+
+type FailureStep = "globals" | "variables" | "baseUrls" | "interrupted";
+interface VarRow { id: string; key: string; value: string }
+interface ParamRow extends VarRow { enabled: boolean }
+interface SaveFeedback {
+  pending: boolean;
+  saved: boolean;
+  error: { step: FailureStep; message: string } | null;
+}
+interface EnvironmentDraft {
+  rows: VarRow[];
+  baseUrls: Record<string, string>;
+  confirmedVariables: Record<string, string>;
+  confirmedBaseUrls: Record<string, string>;
+  feedback: SaveFeedback;
+}
+interface ProjectDraft {
+  globals: ProjectGlobalSettings;
+  variableRows: VarRow[];
+  queryRows: ParamRow[];
+  headerRows: ParamRow[];
+  variableFeedback: SaveFeedback;
+  parameterFeedback: SaveFeedback;
+  environments: Map<string, EnvironmentDraft>;
+}
+
+// The local and online workbenches each keep their existing store when this
+// panel unmounts. Keep drafts and pending feedback with that store instance.
+const projectDrafts = new WeakMap<ReturnType<typeof useEnvsStore>, Map<string, ProjectDraft>>();
+</script>
+
+<script setup lang="ts">
+import { computed, nextTick, reactive, ref, toRaw, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, Select as ASelect, Tooltip as ATooltip } from "ant-design-vue";
+import { DeleteOutlined, EllipsisOutlined, PlusOutlined } from "@ant-design/icons-vue";
 import type { EnvironmentLocator, ProjectLocator } from "../../../shared/locations.js";
-import type { useEnvsStore } from "../stores/envs.js";
+import type { EnvItem, useEnvsStore } from "../stores/envs.js";
+import { projectSessionKey } from "../stores/localIdentity.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
+import ActionMenu from "./ActionMenu.vue";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
-/**
- * 环境管理（M9-B 重做，参考主流平台布局）：左侧锚点导航——全局（全局变量/全局参数）
- * + 环境清单（新建/派生/删除入口保留）；右侧详情——
- * - 全局变量：KV 行编辑，落 workspace.globals.variables（跨环境公用，变量链最低层）；
- * - 全局参数：query/header 两张 KV 表（含启用勾选），请求同名项以接口定义优先；
- * - 环境详情：前置 URL 表（当前项目集合清单 × URL，M9-B 按集合设置）+ 环境变量表
- *   （既有行编辑语义不变），保存 = saveVars + saveBaseUrls 双写。
- * store 经 props 注入（组合根一次装配；组件内部禁止重复调用工厂）；projectId 由
- * 组合根随树选中项目下发，变化即重载环境列表与全局设置；reportError 为组合根错误
- * 反馈通道。既有 data-testid（env-new、env-derive、env-delete、env-modal 系、env-var 系）
- * 全部保留，测试锚点零迁移成本。
- */
 const props = defineProps<{
   envs: ReturnType<typeof useEnvsStore>;
   workspace: ReturnType<typeof useWorkspaceStore>;
@@ -29,545 +53,701 @@ const props = defineProps<{
 }>();
 const { t } = useI18n();
 
-function sameProject(left: ProjectLocator | null, right: ProjectLocator | null): boolean {
-  return !!left && !!right && left.workspaceId === right.workspaceId
-    && left.groupId === right.groupId && left.projectId === right.projectId;
-}
+const pane = ref("gvars");
+const drafts = computed(() => {
+  const existing = projectDrafts.get(props.envs);
+  if (existing) return existing;
+  const draftMap = reactive(new Map<string, ProjectDraft>());
+  projectDrafts.set(props.envs, draftMap);
+  return draftMap;
+});
+const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
+const loadedKey = computed(() => props.envs.root !== null && props.envs.projectLocator
+  ? projectSessionKey(props.envs.root, props.envs.projectLocator) : "");
+const contextReady = computed(() => !!projectKey.value && projectKey.value === loadedKey.value);
+const scope = computed(() => contextReady.value ? drafts.value.get(projectKey.value) : undefined);
+const collections = computed(() => {
+  const project = props.projectLocator ? props.workspace.findProject(props.projectLocator) : null;
+  return (project?.children ?? []).filter((node) => node.kind === "collection").map((node) => ({ id: node.id, name: node.label }));
+});
+const projectName = computed(() => props.projectLocator ? props.workspace.findProject(props.projectLocator)?.label : undefined);
+const environmentList = computed(() => contextReady.value ? props.envs.envs : []);
+const currentEnvironment = computed(() => environmentList.value.find((env) => env.id === pane.value));
+const environmentDraft = computed(() => currentEnvironment.value ? scope.value?.environments.get(currentEnvironment.value.id) : undefined);
+const variableRows = computed(() => environmentDraft.value?.rows ?? scope.value?.variableRows ?? []);
+const variableTestPrefix = computed(() => environmentDraft.value ? "env-var" : "env-global-var");
+const loadError = ref("");
 
 function contextIsCurrent(root: string, locator: ProjectLocator): boolean {
-  return props.workspace.root === root
-    && sameProject(props.projectLocator, locator)
-    && props.envs.root === root
-    && sameProject(props.envs.projectLocator, locator);
+  return projectSessionKey(root, locator) === projectKey.value && props.envs.isCurrentProject(root, locator)
+    && !props.workspace.hasPendingOpen();
 }
 
 async function loadEnvs() {
-  const root = props.workspace.root;
+  const key = projectKey.value;
   const locator = props.projectLocator ? { ...props.projectLocator } : null;
+  loadError.value = "";
   if (!locator) return;
   try {
     await props.envs.load(locator);
-  } catch (e) {
-    if (contextIsCurrent(root, locator)) props.reportError(e);
+  } catch (error) {
+    if (key === projectKey.value) loadError.value = errorMessage(error);
   }
 }
-watch(() => JSON.stringify([props.workspace.root, props.projectLocator]), loadEnvs, { immediate: true });
-
-// —— 左侧导航选择：全局变量 / 全局参数 / 某环境（值为环境 id） ——
-// selectedEnvId 程序性变化（创建后自动选中、重挂水合、删除清空）时 pane 跟随：
-// 置空回全局变量页；用户点击导航条目不受扰（值不变不触发）。
-type Pane = "gvars" | "gparams" | string;
-const pane = ref<Pane>("gvars");
-const selectedEnv = computed(() => props.envs.selectedEnv);
-watch(
-  () => props.envs.selectedEnvId,
-  (id) => {
-    pane.value = id ?? "gvars";
-  },
-  { immediate: true },
-);
-
-// 当前项目的集合清单（前置 URL 表的「模块」列，M9-B 按集合设置）：取树中所属项目的集合子节点。
-const collections = computed(() => {
-  const project = props.projectLocator ? props.workspace.findProject(props.projectLocator) : null;
-  return (project?.children ?? [])
-    .filter((n) => n.kind === "collection")
-    .map((c) => ({ id: c.id, name: c.label }));
-});
-
-// —— 全局变量/全局参数行编辑缓冲 ——
-interface VarRow { id: string; key: string; value: string }
-interface ParamRow { id: string; key: string; value: string; enabled: boolean }
 
 function recordToRows(record: Record<string, string>): VarRow[] {
-  return Object.entries(record ?? {}).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }));
-}
-function paramsToRows(list: KeyValuePair[] | undefined): ParamRow[] {
-  return (list ?? []).map((kv) => ({ id: crypto.randomUUID(), key: kv.key, value: kv.value, enabled: kv.enabled }));
-}
-const gvarRows = ref<VarRow[]>([]);
-const gqueryRows = ref<ParamRow[]>([]);
-const gheaderRows = ref<ParamRow[]>([]);
-watch(
-  () => props.envs.globals,
-  (g) => {
-    gvarRows.value = recordToRows(g?.variables);
-    gqueryRows.value = paramsToRows(g?.query);
-    gheaderRows.value = paramsToRows(g?.headers);
-  },
-  { immediate: true, deep: true },
-);
-
-const gvarsSaved = ref(false);
-function addGvarRow() {
-  gvarRows.value.push({ id: crypto.randomUUID(), key: "", value: "" });
-}
-async function saveGlobalVars() {
-  const root = props.workspace.root;
-  const locator = props.projectLocator ? { ...props.projectLocator } : null;
-  if (!locator || !contextIsCurrent(root, locator)) return;
-  const variables: Record<string, string> = {};
-  for (const row of gvarRows.value) {
-    const key = row.key.trim();
-    if (key) variables[key] = row.value;
-  }
-  try {
-    await props.envs.saveGlobals(locator, { ...props.envs.globals, variables });
-    if (!contextIsCurrent(root, locator)) return;
-    gvarsSaved.value = true;
-  } catch (e) {
-    props.reportError(e);
-  }
+  return Object.entries(record).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }));
 }
 
-const gparamsSaved = ref(false);
-function addParamRow(list: ParamRow[]) {
-  list.push({ id: crypto.randomUUID(), key: "", value: "", enabled: true });
+function paramsToRows(list: KeyValuePair[]): ParamRow[] {
+  return list.map((item) => ({ id: crypto.randomUUID(), ...item }));
 }
-async function saveGlobalParams() {
-  const root = props.workspace.root;
-  const locator = props.projectLocator ? { ...props.projectLocator } : null;
-  if (!locator || !contextIsCurrent(root, locator)) return;
-  const toParams = (rows: ParamRow[]): KeyValuePair[] =>
-    rows.filter((r) => r.key.trim()).map((r) => ({ key: r.key.trim(), value: r.value, enabled: r.enabled }));
-  try {
-    await props.envs.saveGlobals(locator, {
-      ...props.envs.globals,
-      query: toParams(gqueryRows.value),
-      headers: toParams(gheaderRows.value),
+
+function normalizeVariableEntries(entries: [string, string][]): Record<string, string> {
+  return Object.fromEntries(entries.map(([key, value]) => [key.trim(), value]).filter(([key]) => key));
+}
+
+function normalizedVariables(variables: Record<string, string>): Record<string, string> {
+  return normalizeVariableEntries(Object.entries(variables));
+}
+
+function variablePayload(rows: VarRow[]): Record<string, string> {
+  return normalizeVariableEntries(rows.map(({ key, value }) => [key, value]));
+}
+
+function parameterPayload(rows: KeyValuePair[]): KeyValuePair[] {
+  return rows.filter((row) => row.key.trim()).map(({ key, value, enabled }) => ({ key: key.trim(), value, enabled }));
+}
+
+function baseUrlPayload(urls: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(urls).map(([id, value]) => [id, value.trim()]).filter(([, value]) => value));
+}
+
+function sameRecord(left: Record<string, string>, right: Record<string, string>) {
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && right[key] === left[key]);
+}
+
+function sameParams(left: KeyValuePair[], right: KeyValuePair[]) {
+  return left.length === right.length && left.every((item, i) =>
+    item.key === right[i]?.key && item.value === right[i]?.value && item.enabled === right[i]?.enabled);
+}
+
+function newFeedback(): SaveFeedback {
+  return { pending: false, saved: false, error: null };
+}
+
+function syncDrafts() {
+  if (!contextReady.value) return;
+  const key = projectKey.value;
+  const globals = props.envs.globals;
+  let projectDraft = drafts.value.get(key);
+  if (!projectDraft) {
+    drafts.value.set(key, {
+      globals,
+      variableRows: recordToRows(globals.variables),
+      queryRows: paramsToRows(globals.query),
+      headerRows: paramsToRows(globals.headers),
+      variableFeedback: newFeedback(),
+      parameterFeedback: newFeedback(),
+      environments: new Map(),
     });
-    if (!contextIsCurrent(root, locator)) return;
-    gparamsSaved.value = true;
-  } catch (e) {
-    props.reportError(e);
+    projectDraft = drafts.value.get(key)!;
+  } else if (!projectDraft.variableFeedback.pending && !projectDraft.parameterFeedback.pending) {
+    const previous = projectDraft.globals;
+    if (sameRecord(variablePayload(projectDraft.variableRows), normalizedVariables(previous.variables)) && !sameRecord(globals.variables, previous.variables)) {
+      projectDraft.variableRows = recordToRows(globals.variables);
+    }
+    if (sameParams(parameterPayload(projectDraft.queryRows), parameterPayload(previous.query)) && !sameParams(globals.query, previous.query)) {
+      projectDraft.queryRows = paramsToRows(globals.query);
+    }
+    if (sameParams(parameterPayload(projectDraft.headerRows), parameterPayload(previous.headers)) && !sameParams(globals.headers, previous.headers)) {
+      projectDraft.headerRows = paramsToRows(globals.headers);
+    }
+    projectDraft.globals = globals;
+  }
+  // Refresh clean fields from the loaded snapshot and preserve modified fields.
+  // Pending writes establish their own baselines when their responses arrive.
+  for (const env of props.envs.envs) {
+    const existing = projectDraft.environments.get(env.id);
+    if (existing) {
+      if (existing.feedback.pending) continue;
+      if (sameRecord(variablePayload(existing.rows), normalizedVariables(existing.confirmedVariables)) && !sameRecord(env.variables, existing.confirmedVariables)) {
+        existing.rows = recordToRows(env.variables);
+      }
+      if (sameRecord(baseUrlPayload(existing.baseUrls), baseUrlPayload(existing.confirmedBaseUrls)) && !sameRecord(env.baseUrls, existing.confirmedBaseUrls)) {
+        existing.baseUrls = { ...env.baseUrls };
+      }
+      existing.confirmedVariables = { ...env.variables };
+      existing.confirmedBaseUrls = { ...env.baseUrls };
+      continue;
+    }
+    projectDraft.environments.set(env.id, {
+      rows: recordToRows(env.variables),
+      baseUrls: { ...env.baseUrls },
+      confirmedVariables: { ...env.variables },
+      confirmedBaseUrls: { ...env.baseUrls },
+      feedback: newFeedback(),
+    });
+  }
+  for (const id of projectDraft.environments.keys()) {
+    if (!props.envs.envs.some((env) => env.id === id)) projectDraft.environments.delete(id);
   }
 }
 
-// —— 环境详情：前置 URL 缓冲（collectionId → url，选中环境时水合）+ 变量行缓冲（既有语义） ——
-const baseUrlRows = ref<Record<string, string>>({});
-const varRows = ref<VarRow[]>([]);
-const saved = ref(false);
-watch(
-  [() => props.envs.selectedEnvId, selectedEnv],
-  () => {
-    saved.value = false;
-    const env = selectedEnv.value;
-    baseUrlRows.value = { ...(env?.baseUrls ?? {}) };
-    varRows.value = env ? recordToRows(env.variables) : [];
-  },
-  { immediate: true, deep: true },
-);
+watch(projectKey, () => {
+  pane.value = "gvars";
+  void loadEnvs();
+}, { immediate: true });
+watch([contextReady, () => props.envs.loadedRevision], syncDrafts, { immediate: true });
+watch([contextReady, () => props.envs.selectedEnvId], ([ready, id]) => {
+  if (!ready) return;
+  if (id) pane.value = id;
+  else if (pane.value !== "gparams") pane.value = "gvars";
+}, { immediate: true });
 
-function addRow() {
-  varRows.value.push({ id: crypto.randomUUID(), key: "", value: "" });
-}
-function removeRow(index: number) {
-  varRows.value.splice(index, 1);
+function selectEnvironment(env: EnvItem) {
+  pane.value = env.id;
+  props.envs.select(env.locator);
 }
 
-/** 环境保存（M9-B）：变量 + 前置 URL 双写（同一「保存」动作，语义 = 该环境详情页整体落盘）。 */
-async function saveVars() {
-  const root = props.workspace.root;
-  const selected = props.envs.selectedEnvironment;
-  if (!selected) return;
-  const locator = { ...selected };
-  const projectLocator: ProjectLocator = { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
-  if (!contextIsCurrent(root, projectLocator)) return;
-  const variables: Record<string, string> = {};
-  for (const row of varRows.value) {
-    const key = row.key.trim();
-    if (key) variables[key] = row.value;
-  }
-  const baseUrls: Record<string, string> = {};
-  for (const [collectionId, url] of Object.entries(baseUrlRows.value)) {
-    const trimmed = url.trim();
-    if (trimmed) baseUrls[collectionId] = trimmed;
-  }
-  try {
-    await props.envs.saveVars(locator, variables);
-    // Both writes form one UI transaction. Never derive the second write's root after an await.
-    if (!contextIsCurrent(root, projectLocator)) return;
-    await props.envs.saveBaseUrls(locator, baseUrls);
-    if (!contextIsCurrent(root, projectLocator)) return;
-    saved.value = true;
-  } catch (e) {
-    props.reportError(e);
-  }
+function selectGlobalPane(next: "gvars" | "gparams") {
+  pane.value = next;
+  props.envs.select(null);
 }
 
-// —— 新建 / 从现有环境派生（共用一个 a-modal；derive 模式多父环境选择） ——
-const modal = ref<{ open: boolean; mode: "new" | "derive"; name: string; parentId: string | undefined; root: string; locator: ProjectLocator | null }>({
-  open: false,
-  mode: "new",
-  name: "",
-  parentId: undefined,
-  root: "",
-  locator: null,
+const activeDraft = computed(() => {
+  const draft = scope.value;
+  if (!draft) return null;
+  if (pane.value === "gvars") return {
+    feedback: draft.variableFeedback,
+    dirty: !sameRecord(variablePayload(draft.variableRows), normalizedVariables(draft.globals.variables)),
+    title: t("env.globalVars"), saveLabel: t("env.saveVars"), testId: "env-global-vars-save", savedId: "env-global-vars-saved",
+  };
+  if (pane.value === "gparams") return {
+    feedback: draft.parameterFeedback,
+    dirty: !sameParams(parameterPayload(draft.queryRows), parameterPayload(draft.globals.query))
+      || !sameParams(parameterPayload(draft.headerRows), parameterPayload(draft.globals.headers)),
+    title: t("env.globalParams"), saveLabel: t("env.saveParams"), testId: "env-global-params-save", savedId: "env-global-params-saved",
+  };
+  const env = environmentDraft.value;
+  return env && {
+    feedback: env.feedback,
+    dirty: !sameRecord(variablePayload(env.rows), normalizedVariables(env.confirmedVariables))
+      || !sameRecord(baseUrlPayload(env.baseUrls), baseUrlPayload(env.confirmedBaseUrls)),
+    title: currentEnvironment.value!.name, saveLabel: t("env.saveEnvironment"), testId: "env-vars-save", savedId: "env-vars-saved",
+  };
+});
+const globalsSaving = computed(() => !!(scope.value?.variableFeedback.pending || scope.value?.parameterFeedback.pending));
+const saveDisabled = computed(() => props.workspace.readOnly || !!activeDraft.value?.feedback.pending
+  || ((pane.value === "gvars" || pane.value === "gparams") && globalsSaving.value));
+const statusText = computed(() => {
+  const draft = activeDraft.value;
+  if (!draft) return "";
+  if (props.workspace.readOnly) return t("workspace.readonlyBadge");
+  if (draft.feedback.pending) return t("env.saving");
+  if ((pane.value === "gvars" || pane.value === "gparams") && globalsSaving.value) return t("env.savingGlobals");
+  if (draft.dirty) return t("env.unsaved");
+  if (draft.feedback.error) return t("env.noChanges");
+  return t(draft.feedback.saved ? "env.saved" : "env.noChanges");
+});
+const failureText = computed(() => {
+  const failure = activeDraft.value?.feedback.error;
+  if (!failure) return "";
+  const keys = {
+    globals: "env.saveFailed",
+    variables: "env.saveVariablesFailed",
+    baseUrls: "env.saveBaseUrlsFailed",
+    interrupted: "env.baseUrlsPending",
+  } as const;
+  return t(keys[failure.step], { error: failure.message });
 });
 
-function openModal(mode: "new" | "derive") {
-  modal.value = {
-    open: true,
-    mode,
-    name: "",
-    parentId: mode === "derive" ? props.envs.envs[0]?.id : undefined,
-    root: props.workspace.root,
-    locator: props.envs.projectLocator ? { ...props.envs.projectLocator } : null,
-  };
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function closeModal() {
-  modal.value = { ...modal.value, open: false };
+const detail = ref<HTMLElement>();
+function addVariable(rows: VarRow[]) {
+  const id = crypto.randomUUID();
+  rows.push({ id, key: "", value: "" });
+  void nextTick(() => detail.value?.querySelector<HTMLInputElement>(`[data-row-id="${id}"] input`)?.focus());
+}
+
+function addParameter(rows: ParamRow[]) {
+  rows.push({ id: crypto.randomUUID(), key: "", value: "", enabled: true });
+}
+
+function beginSave(feedback: SaveFeedback) {
+  feedback.pending = true;
+  feedback.saved = false;
+  feedback.error = null;
+}
+
+async function saveGlobalDraft(root: string, locator: ProjectLocator, draft: ProjectDraft, variables: boolean) {
+  if (globalsSaving.value || !contextIsCurrent(root, locator)) return;
+  const feedback = variables ? draft.variableFeedback : draft.parameterFeedback;
+  const baseline = toRaw(draft.globals);
+  const payload = variables
+    ? { ...baseline, variables: variablePayload(draft.variableRows) }
+    : { ...baseline, query: parameterPayload(draft.queryRows), headers: parameterPayload(draft.headerRows) };
+  beginSave(feedback);
+  try {
+    draft.globals = await props.envs.saveGlobals(locator, payload);
+    feedback.saved = true;
+  } catch (error) {
+    feedback.error = { step: "globals", message: errorMessage(error) };
+  } finally {
+    feedback.pending = false;
+  }
+}
+
+async function saveEnvironmentDraft(root: string, locator: EnvironmentLocator, draft: EnvironmentDraft) {
+  const feedback = draft.feedback;
+  if (feedback.pending || !contextIsCurrent(root, locator)) return;
+  const variables = variablePayload(draft.rows);
+  const baseUrls = baseUrlPayload(draft.baseUrls);
+  const retryBaseUrls = (feedback.error?.step === "baseUrls" || feedback.error?.step === "interrupted")
+    && sameRecord(variables, normalizedVariables(draft.confirmedVariables));
+  beginSave(feedback);
+  let step: FailureStep = "variables";
+  try {
+    if (!retryBaseUrls) draft.confirmedVariables = await props.envs.saveVars(locator, variables);
+    if (!contextIsCurrent(root, locator)) {
+      feedback.error = { step: "interrupted", message: "" };
+      return;
+    }
+    step = "baseUrls";
+    draft.confirmedBaseUrls = await props.envs.saveBaseUrls(locator, baseUrls);
+    feedback.saved = true;
+  } catch (error) {
+    feedback.error = { step, message: errorMessage(error) };
+  } finally {
+    feedback.pending = false;
+  }
+}
+
+function saveCurrentPane() {
+  const root = props.workspace.root;
+  const locator = props.projectLocator ? { ...props.projectLocator } : null;
+  const draft = scope.value;
+  if (saveDisabled.value || !locator || !draft) return;
+  if (pane.value === "gvars" || pane.value === "gparams") {
+    void saveGlobalDraft(root, locator, draft, pane.value === "gvars");
+  } else if (currentEnvironment.value && environmentDraft.value) {
+    void saveEnvironmentDraft(root, { ...currentEnvironment.value.locator }, environmentDraft.value);
+  }
+}
+
+const modal = ref<{ mode: "new" | "derive"; name: string; parentId: string | undefined; root: string; locator: ProjectLocator } | null>(null);
+const createItems = computed(() => [
+  { key: "new", label: t("env.newEnvironment"), testId: "env-new" },
+  {
+    key: "derive",
+    label: environmentList.value.length ? t("env.derive") : t("env.deriveNeedsParent"),
+    testId: "env-derive",
+    disabled: !environmentList.value.length,
+  },
+]);
+
+function closeCreateModal() {
+  modal.value = null;
+  void nextTick(() => nav.value?.querySelector<HTMLButtonElement>('[data-testid="env-create-menu"]')?.focus({ preventScroll: true }));
+}
+
+function openModal(mode: string) {
+  if (!props.projectLocator || !contextIsCurrent(props.workspace.root, props.projectLocator) || props.workspace.readOnly) return;
+  if (mode !== "new" && mode !== "derive") return;
+  if (mode === "derive" && !environmentList.value.length) return;
+  modal.value = {
+    mode,
+    name: "",
+    parentId: mode === "derive" ? environmentList.value[0]?.id : undefined,
+    root: props.workspace.root,
+    locator: { ...props.projectLocator },
+  };
 }
 
 async function confirmModal() {
   const target = modal.value;
+  if (!target || props.workspace.readOnly || !contextIsCurrent(target.root, target.locator)) return;
   const name = target.name.trim();
-  if (!name || !target.locator || !contextIsCurrent(target.root, target.locator)) return;
-  let extendsName: string | undefined;
-  if (target.mode === "derive") {
-    const parent = props.envs.envs.find((e) => e.id === target.parentId);
-    if (!parent) return;
-    extendsName = parent.name;
-  }
-  closeModal();
-  // 先关对话框再执行（SideTree 对话框同款收口）：拒绝统一转报组合根错误展示条。
+  if (!name) return;
+  const parent = target.mode === "derive" ? environmentList.value.find((env) => env.id === target.parentId) : undefined;
+  if (target.mode === "derive" && !parent) return;
+  closeCreateModal();
   try {
-    const env = await props.envs.create({ locator: { ...target.locator }, name, extends: extendsName });
-    if (!contextIsCurrent(target.root, target.locator)) return;
-    pane.value = env.id;
-  } catch (e) {
-    props.reportError(e);
+    const env = await props.envs.create({ locator: target.locator, name, extends: parent?.name });
+    if (contextIsCurrent(target.root, target.locator) && environmentList.value.some((item) => item.id === env.id)) pane.value = env.id;
+  } catch (error) {
+    if (contextIsCurrent(target.root, target.locator)) props.reportError(error);
   }
 }
 
-// —— 删除当前选中环境（确认对话框放行） ——
 const deleteTarget = ref<{ root: string; locator: EnvironmentLocator; name: string } | null>(null);
+const nav = ref<HTMLElement>();
+let deleteTrigger: HTMLElement | undefined;
 
-// data-* 为 HTML 透传属性，antd 按钮 props 类型未建模；经 any 索引签名断言保留测试锚点
-// （运行时 Vue 原样透传到 ok/cancel 按钮上，行为不变，见 vue-tsc 收口）。
-const okButtonProps = computed(() => ({ "data-testid": "env-modal-confirm", disabled: props.workspace.readOnly }));
-const cancelButtonProps: Record<string, any> = { "data-testid": "env-modal-cancel" };
+function openDelete(env: EnvItem) {
+  if (!contextIsCurrent(props.workspace.root, env.locator)
+    || props.workspace.readOnly || scope.value?.environments.get(env.id)?.feedback.pending) return;
+  deleteTrigger = nav.value?.querySelector<HTMLElement>(`[data-environment-menu="${env.id}"]`) ?? undefined;
+  deleteTarget.value = { root: props.workspace.root, locator: { ...env.locator }, name: env.name };
+}
+
+function restoreDeleteFocus() {
+  const trigger = deleteTrigger;
+  deleteTrigger = undefined;
+  void nextTick(() => {
+    const target = trigger?.isConnected ? trigger : nav.value?.querySelector<HTMLElement>("[aria-current='page']");
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function cancelDelete() {
+  deleteTarget.value = null;
+  restoreDeleteFocus();
+}
 
 async function onDeleteConfirm() {
   const target = deleteTarget.value;
   deleteTarget.value = null;
-  if (!target || props.workspace.readOnly || !contextIsCurrent(target.root, target.locator)) return;
+  if (!target || props.workspace.readOnly || !contextIsCurrent(target.root, target.locator)
+    || !environmentList.value.some((env) => env.id === target.locator.environmentId)
+    || scope.value?.environments.get(target.locator.environmentId)?.feedback.pending) {
+    restoreDeleteFocus();
+    return;
+  }
   try {
-    await props.envs.remove(target.locator, async () => true);
-    if (pane.value === target.locator.environmentId) pane.value = "gvars";
-  } catch (e) {
-    props.reportError(e);
+    await props.envs.remove(target.locator, async () => true, () => contextIsCurrent(target.root, target.locator));
+    if (contextIsCurrent(target.root, target.locator) && pane.value === target.locator.environmentId) pane.value = "gvars";
+  } catch (error) {
+    if (contextIsCurrent(target.root, target.locator)) props.reportError(error);
+  } finally {
+    if (contextIsCurrent(target.root, target.locator)) restoreDeleteFocus();
   }
 }
 
-function selectDeleteTarget() {
-  const env = props.envs.selectedEnv;
-  deleteTarget.value = env ? { root: props.workspace.root, locator: { ...env.locator }, name: env.name } : null;
+const okButtonProps = computed(() => ({ "data-testid": "env-modal-confirm", disabled: props.workspace.readOnly }));
+const cancelButtonProps: Record<string, unknown> = { "data-testid": "env-modal-cancel" };
+function rowActions(env: EnvItem) {
+  const pending = scope.value?.environments.get(env.id)?.feedback.pending;
+  return [{ key: "delete", label: t(pending ? "env.deleteAfterSave" : "tree.delete"), testId: "env-delete", disabled: pending, danger: true }];
 }
 </script>
 
 <template>
   <section class="env-panel" data-testid="env-panel">
     <EmptyState v-if="!projectLocator" :text="t('env.empty')" />
-    <fieldset v-else class="readonly-fieldset" :disabled="workspace.readOnly">
-    <div class="layout">
-      <!-- 左侧锚点：全局 + 环境清单 -->
-      <aside class="side">
-        <div class="side-title">{{ t("env.globalSection") }}</div>
-        <button type="button" class="side-item" :class="{ active: pane === 'gvars' }" data-testid="env-tab-globals-vars" @click="pane = 'gvars'">
+    <div v-else class="layout">
+      <aside ref="nav" class="side" :aria-label="t('env.navigation')">
+        <h2 class="side-heading">{{ t("env.globalSection") }}</h2>
+        <button type="button" class="side-item" :class="{ active: pane === 'gvars' }" :aria-current="pane === 'gvars' ? 'page' : undefined"
+          data-testid="env-tab-globals-vars" @click="selectGlobalPane('gvars')">
           {{ t("env.globalVars") }}
         </button>
-        <button type="button" class="side-item" :class="{ active: pane === 'gparams' }" data-testid="env-tab-globals-params" @click="pane = 'gparams'">
+        <button type="button" class="side-item" :class="{ active: pane === 'gparams' }" :aria-current="pane === 'gparams' ? 'page' : undefined"
+          data-testid="env-tab-globals-params" @click="selectGlobalPane('gparams')">
           {{ t("env.globalParams") }}
         </button>
-        <div class="side-title side-envs">
-          <span>{{ t("env.envSection") }}</span>
-          <span class="side-actions">
-            <a-button size="small" type="text" data-testid="env-new" @click="openModal('new')">{{ t("env.new") }}</a-button>
-            <a-button size="small" type="text" data-testid="env-derive" @click="openModal('derive')">{{ t("env.derive") }}</a-button>
-          </span>
+        <div class="environment-heading">
+          <h2 class="side-heading">{{ t("env.envSection") }}</h2>
+          <ActionMenu test-id="env-create-menu" :label="t('env.createActions')" :items="createItems"
+            :disabled="workspace.readOnly || !contextReady" @select="openModal">
+            <PlusOutlined />
+          </ActionMenu>
         </div>
-        <button
-          v-for="e in envs.envs"
-          :key="e.id"
-          type="button"
-          class="side-item"
-          :title="e.name"
-          :class="{ active: pane === e.id }"
-          :data-testid="`env-item-${e.id}`"
-          @click="pane = e.id; envs.select(e.locator)"
-        >
-          {{ e.name }}
-        </button>
-        <a-button
-          size="small"
-          danger
-          class="side-delete"
-          :disabled="!envs.selectedEnvironment || workspace.readOnly"
-          :data-env-id="envs.selectedEnvId ?? ''"
-          data-testid="env-delete"
-          @click="selectDeleteTarget"
-        >
-          {{ t("tree.delete") }}
-        </a-button>
+        <div v-if="contextReady && !environmentList.length" class="side-empty">{{ t("env.noEnvironments") }}</div>
+        <div v-for="env in environmentList" :key="env.id" class="environment-row" :class="{ active: pane === env.id }">
+          <a-tooltip :title="env.name" :trigger="['hover', 'focus']" placement="right">
+            <button type="button" class="side-item" :aria-current="pane === env.id ? 'page' : undefined"
+              :data-testid="`env-item-${env.id}`" @click="selectEnvironment(env)">{{ env.name }}</button>
+          </a-tooltip>
+          <ActionMenu class="environment-menu" :test-id="`env-more-${env.id}`" :data-environment-menu="env.id"
+            :label="t('env.rowActions', { name: env.name })" :items="rowActions(env)" :disabled="workspace.readOnly"
+            @select="openDelete(env)">
+            <EllipsisOutlined />
+          </ActionMenu>
+        </div>
       </aside>
 
-      <!-- 右侧详情 -->
-      <div class="detail">
-        <!-- 全局变量 -->
-        <div v-if="pane === 'gvars'" data-testid="env-pane-globals-vars">
-          <div class="pane-title">{{ t("env.globalVars") }}</div>
-          <a-table :scroll="{ x: 520 }"
-            :data-source="gvarRows"
-            :columns="[{ key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
-            row-key="id"
-            :pagination="false"
-            size="small"
-            data-testid="env-global-var-table"
-          >
-            <template #bodyCell="{ column, record, index }">
-              <template v-if="column.key === 'key'">
-                <a-input v-model:value="record.key" data-testid="env-global-var-key" :placeholder="t('env.varName')" />
-              </template>
-              <template v-else-if="column.key === 'value'">
-                <a-input v-model:value="record.value" data-testid="env-global-var-value" :placeholder="t('env.varValue')" />
-              </template>
-              <template v-else-if="column.key === 'actions'">
-                <a-button size="small" danger data-testid="env-global-var-delete" @click="gvarRows.splice(index, 1)">{{ t("tree.delete") }}</a-button>
-              </template>
-            </template>
-          </a-table>
-          <div class="pane-actions">
-            <a-button size="small" data-testid="env-global-var-add" @click="addGvarRow">{{ t("env.addVar") }}</a-button>
-            <a-button size="small" type="primary" data-testid="env-global-vars-save" @click="saveGlobalVars">{{ t("env.saveVars") }}</a-button>
-            <span v-if="gvarsSaved" class="saved" data-testid="env-global-vars-saved">{{ t("env.saved") }}</span>
-          </div>
-        </div>
-
-        <!-- 全局参数 -->
-        <div v-else-if="pane === 'gparams'" data-testid="env-pane-globals-params">
-          <div class="pane-title">{{ t("env.globalParams") }}</div>
-          <div class="param-block">
-            <div class="block-title">{{ t("env.queryParams") }}</div>
-            <a-table :scroll="{ x: 520 }"
-              :data-source="gqueryRows"
-              :columns="[{ key: 'enabled', title: '' }, { key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
-              row-key="id"
-              :pagination="false"
-              size="small"
-              data-testid="env-global-query-table"
-            >
-              <template #bodyCell="{ column, record, index }">
-                <template v-if="column.key === 'enabled'">
-                  <a-checkbox v-model:checked="record.enabled" data-testid="env-global-query-enabled" />
-                </template>
-                <template v-else-if="column.key === 'key'">
-                  <a-input v-model:value="record.key" data-testid="env-global-query-key" :placeholder="t('env.varName')" />
-                </template>
-                <template v-else-if="column.key === 'value'">
-                  <a-input v-model:value="record.value" data-testid="env-global-query-value" :placeholder="t('env.varValue')" />
-                </template>
-                <template v-else>
-                  <a-button size="small" danger data-testid="env-global-query-delete" @click="gqueryRows.splice(index, 1)">{{ t("tree.delete") }}</a-button>
-                </template>
-              </template>
-            </a-table>
-            <a-button size="small" data-testid="env-global-query-add" @click="addParamRow(gqueryRows)">{{ t("env.addVar") }}</a-button>
-          </div>
-          <div class="param-block">
-            <div class="block-title">{{ t("env.headerParams") }}</div>
-            <a-table :scroll="{ x: 520 }"
-              :data-source="gheaderRows"
-              :columns="[{ key: 'enabled', title: '' }, { key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
-              row-key="id"
-              :pagination="false"
-              size="small"
-              data-testid="env-global-header-table"
-            >
-              <template #bodyCell="{ column, record, index }">
-                <template v-if="column.key === 'enabled'">
-                  <a-checkbox v-model:checked="record.enabled" data-testid="env-global-header-enabled" />
-                </template>
-                <template v-else-if="column.key === 'key'">
-                  <a-input v-model:value="record.key" data-testid="env-global-header-key" :placeholder="t('env.varName')" />
-                </template>
-                <template v-else-if="column.key === 'value'">
-                  <a-input v-model:value="record.value" data-testid="env-global-header-value" :placeholder="t('env.varValue')" />
-                </template>
-                <template v-else>
-                  <a-button size="small" danger data-testid="env-global-header-delete" @click="gheaderRows.splice(index, 1)">{{ t("tree.delete") }}</a-button>
-                </template>
-              </template>
-            </a-table>
-            <a-button size="small" data-testid="env-global-header-add" @click="addParamRow(gheaderRows)">{{ t("env.addVar") }}</a-button>
-          </div>
-          <div class="pane-actions">
-            <a-button size="small" type="primary" data-testid="env-global-params-save" @click="saveGlobalParams">{{ t("env.saveVars") }}</a-button>
-            <span v-if="gparamsSaved" class="saved" data-testid="env-global-params-saved">{{ t("env.saved") }}</span>
-          </div>
-        </div>
-
-        <!-- 环境详情：前置 URL（按集合）+ 环境变量 -->
-        <div v-else data-testid="env-pane-env">
-          <template v-if="selectedEnv">
-            <div class="pane-title">{{ selectedEnv.name }}</div>
-            <div class="param-block">
-              <div class="block-title">{{ t("env.baseUrls") }}</div>
-              <EmptyState v-if="collections.length === 0" :text="t('env.noCollections')" />
-              <div v-else class="baseurl-rows" data-testid="env-baseurls-table">
-                <label v-for="c in collections" :key="c.id" class="baseurl-row">
-                  <span class="baseurl-name">{{ c.name }}</span>
-                  <a-input
-                    v-model:value="baseUrlRows[c.id]"
-                    data-testid="env-baseurl-input"
-                    :data-collection-id="c.id"
-                    :placeholder="t('env.baseUrlPlaceholder')"
-                  />
-                </label>
-              </div>
-            </div>
-            <div class="param-block">
-              <div class="block-title">{{ t("env.envVars") }}</div>
-              <a-table :scroll="{ x: 520 }"
-                :data-source="varRows"
-                :columns="[{ key: 'key', title: t('env.varName'), dataIndex: 'key' }, { key: 'value', title: t('env.varValue'), dataIndex: 'value' }, { key: 'actions', title: '' }]"
-                row-key="id"
-                :pagination="false"
-                size="small"
-                data-testid="env-var-table"
-              >
-                <template #bodyCell="{ column, record, index }">
-                  <template v-if="column.key === 'key'">
-                    <a-input v-model:value="record.key" data-testid="env-var-key" :placeholder="t('env.varName')" />
-                  </template>
-                  <template v-else-if="column.key === 'value'">
-                    <a-input v-model:value="record.value" data-testid="env-var-value" :placeholder="t('env.varValue')" />
-                  </template>
-                  <template v-else>
-                    <a-button size="small" danger data-testid="env-var-delete" @click="removeRow(index)">{{ t("tree.delete") }}</a-button>
-                  </template>
-                </template>
-              </a-table>
+      <div ref="detail" class="detail">
+        <p v-if="loadError" class="failure" role="alert">{{ t("env.loadFailed", { error: loadError }) }}</p>
+        <p v-else-if="!scope || !activeDraft" role="status">{{ t("env.loading") }}</p>
+        <template v-else>
+          <header class="pane-head">
+            <p v-if="projectName" class="pane-context">{{ projectName }} / {{ t("nav.envs") }}</p>
+            <div class="pane-summary">
+              <h1 class="pane-title">{{ activeDraft.title }}</h1>
               <div class="pane-actions">
-                <a-button size="small" data-testid="env-var-add" @click="addRow">{{ t("env.addVar") }}</a-button>
-                <a-button size="small" type="primary" data-testid="env-vars-save" @click="saveVars">{{ t("env.saveVars") }}</a-button>
-                <span v-if="saved" class="saved" data-testid="env-vars-saved">{{ t("env.saved") }}</span>
+                <span
+                  role="status" class="save-status"
+                  :class="{ dirty: activeDraft.dirty, saved: activeDraft.feedback.saved && !activeDraft.dirty && !saveDisabled }"
+                  :data-testid="activeDraft.feedback.saved && !activeDraft.dirty && !saveDisabled ? activeDraft.savedId : 'env-save-status'"
+                >{{ statusText }}</span>
+                <a-button size="small" type="primary" :data-testid="activeDraft.testId" :disabled="saveDisabled" @click="saveCurrentPane">
+                  {{ activeDraft.saveLabel }}
+                </a-button>
               </div>
             </div>
-          </template>
-          <EmptyState v-else :text="t('env.select')" />
-        </div>
+            <p v-if="failureText" class="failure" role="alert" data-testid="env-save-error">{{ failureText }}</p>
+          </header>
+
+          <div v-if="pane === 'gparams'" data-testid="env-pane-globals-params" class="pane-body">
+            <section v-for="section in [{ id: 'query', label: t('env.queryParams'), rows: scope.queryRows },
+              { id: 'header', label: t('env.headerParams'), rows: scope.headerRows }]" :key="section.id" class="table-section">
+              <div class="section-head">
+                <h2 :id="`env-${section.id}-title`">{{ section.label }}</h2>
+                <a-button type="text" size="small" :disabled="workspace.readOnly" :data-testid="`env-global-${section.id}-add`" @click="addParameter(section.rows)">
+                  <PlusOutlined /> {{ t("env.addParam") }}
+                </a-button>
+              </div>
+              <div class="table-scroll" role="region" :aria-labelledby="`env-${section.id}-title`" tabindex="0">
+                <table class="config-table" :data-testid="`env-global-${section.id}-table`">
+                  <thead>
+                    <tr><th scope="col" class="enabled-cell">{{ t("env.enabled") }}</th><th scope="col" class="name-cell">{{ t("env.paramName") }}</th>
+                      <th scope="col">{{ t("env.varValue") }}</th><th scope="col" class="action-cell"><span class="visually-hidden">{{ t("env.actions") }}</span></th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!section.rows.length"><td colspan="4" class="table-empty">{{ t("env.noParams") }}</td></tr>
+                    <tr v-for="(row, index) in section.rows" :key="row.id">
+                      <td class="enabled-cell">
+                        <a-checkbox v-model:checked="row.enabled" :aria-label="t('env.enabled')" :disabled="workspace.readOnly" :data-testid="`env-global-${section.id}-enabled`" />
+                      </td>
+                      <td>
+                        <a-input v-model:value="row.key" :disabled="workspace.readOnly" :aria-label="t('env.paramName')"
+                          :data-testid="`env-global-${section.id}-key`" :placeholder="t('env.paramName')" />
+                      </td>
+                      <td>
+                        <a-input v-model:value="row.value" :disabled="workspace.readOnly" :aria-label="t('env.varValue')"
+                          :data-testid="`env-global-${section.id}-value`" :placeholder="t('env.varValue')" />
+                      </td>
+                      <td class="action-cell">
+                        <a-button type="text" size="small" danger :disabled="workspace.readOnly" :data-testid="`env-global-${section.id}-delete`"
+                          :aria-label="t('tree.delete')" :title="t('tree.delete')" @click="section.rows.splice(index, 1)"><DeleteOutlined /></a-button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <div v-else class="pane-body" :data-testid="pane === 'gvars' ? 'env-pane-globals-vars' : 'env-pane-env'">
+            <section v-if="environmentDraft" class="table-section">
+              <div class="section-head"><h2 id="env-module-urls-title">{{ t("env.baseUrls") }}</h2></div>
+              <div v-if="collections.length" class="table-scroll" role="region" aria-labelledby="env-module-urls-title" tabindex="0">
+                <table class="config-table" data-testid="env-baseurls-table">
+                  <thead><tr><th scope="col" class="name-cell">{{ t("env.module") }}</th><th scope="col">{{ t("env.baseUrl") }}</th></tr></thead>
+                  <tbody>
+                    <tr v-for="item in collections" :key="item.id">
+                      <th scope="row">
+                        <a-tooltip :title="item.name" :trigger="['hover', 'focus']">
+                          <span class="module-name" tabindex="0">{{ item.name }}</span>
+                        </a-tooltip>
+                      </th>
+                      <td>
+                        <a-input v-model:value="environmentDraft.baseUrls[item.id]" data-testid="env-baseurl-input"
+                          :data-collection-id="item.id" :aria-label="t('env.moduleBaseUrl', { name: item.name })"
+                          :placeholder="t('env.baseUrlPlaceholder')" :disabled="workspace.readOnly" />
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="empty-copy">{{ t("env.noCollections") }}</p>
+            </section>
+            <section class="table-section">
+              <div class="section-head" v-if="environmentDraft || variableRows.length">
+                <h2 id="env-variable-title">{{ t(environmentDraft ? "env.envVars" : "env.globalVars") }}</h2>
+                <a-button
+                  size="small" type="text" :disabled="workspace.readOnly" :data-testid="`${variableTestPrefix}-add`"
+                  @click="addVariable(variableRows)"
+                ><PlusOutlined /> {{ t("env.addVar") }}</a-button>
+              </div>
+              <div v-if="variableRows.length" class="table-scroll" role="region" aria-labelledby="env-variable-title" tabindex="0">
+                <table class="config-table" :data-testid="`${variableTestPrefix}-table`">
+                  <thead><tr><th scope="col" class="name-cell">{{ t("env.varName") }}</th><th scope="col">{{ t("env.varValue") }}</th>
+                    <th scope="col" class="action-cell"><span class="visually-hidden">{{ t("env.actions") }}</span></th></tr></thead>
+                  <tbody>
+                    <tr v-for="(row, index) in variableRows" :key="row.id" :data-row-id="row.id">
+                      <td>
+                        <a-input v-model:value="row.key" :aria-label="t('env.varName')" :disabled="workspace.readOnly"
+                          :data-testid="`${variableTestPrefix}-key`" :placeholder="t('env.varName')" />
+                      </td>
+                      <td>
+                        <a-input v-model:value="row.value" :aria-label="t('env.varValue')" :disabled="workspace.readOnly"
+                          :data-testid="`${variableTestPrefix}-value`" :placeholder="t('env.varValue')" />
+                      </td>
+                      <td class="action-cell">
+                        <a-button type="text" size="small" danger :disabled="workspace.readOnly" :data-testid="`${variableTestPrefix}-delete`"
+                          :aria-label="t('tree.delete')" :title="t('tree.delete')" @click="variableRows.splice(index, 1)"><DeleteOutlined /></a-button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else class="variables-empty">
+                <p>{{ t(environmentDraft ? "env.noVariables" : "env.noGlobalVariables") }}</p>
+                <a-button v-if="!environmentDraft" size="small" :disabled="workspace.readOnly" data-testid="env-global-var-add" @click="addVariable(variableRows)">
+                  <PlusOutlined /> {{ t("env.addVar") }}
+                </a-button>
+              </div>
+            </section>
+          </div>
+        </template>
       </div>
     </div>
-    </fieldset>
     <a-modal
-      v-if="modal.open"
-      :open="modal.open"
-      :title="modal.mode === 'derive' ? t('env.derive') : t('env.new')"
-      :ok-text="t('common.confirm')"
-      :cancel-text="t('common.cancel')"
-      :ok-button-props="okButtonProps"
-      :cancel-button-props="cancelButtonProps"
-      :width="420"
-      data-testid="env-modal"
-      @ok="confirmModal"
-      @cancel="closeModal"
+      v-if="modal" :open="true" :title="t(modal.mode === 'derive' ? 'env.derive' : 'env.newEnvironment')"
+      :ok-text="t('common.confirm')" :cancel-text="t('common.cancel')" :ok-button-props="okButtonProps"
+      :cancel-button-props="cancelButtonProps" :width="420" data-testid="env-modal"
+      @ok="confirmModal" @cancel="closeCreateModal"
     >
       <a-input v-model:value="modal.name" data-testid="env-name-input" :placeholder="t('env.namePlaceholder')" :disabled="workspace.readOnly" />
-      <a-select
-        v-if="modal.mode === 'derive'"
-        v-model:value="modal.parentId"
-        class="parent-select"
-        :options="envs.envs.map((e) => ({ label: e.name, value: e.id }))"
-        :placeholder="t('env.parent')"
-        data-testid="env-parent-select"
-        :disabled="workspace.readOnly"
-      />
+      <a-select v-if="modal.mode === 'derive'" v-model:value="modal.parentId" class="parent-select"
+        :options="environmentList.map((env) => ({ label: env.name, value: env.id }))"
+        :placeholder="t('env.parent')" data-testid="env-parent-select" :disabled="workspace.readOnly" />
     </a-modal>
-    <ConfirmDialog
-      :open="deleteTarget !== null"
-      :title="t('env.deleteConfirm', { name: deleteTarget?.name ?? '' })"
-      @confirm="onDeleteConfirm"
-      @cancel="deleteTarget = null"
-    />
+    <ConfirmDialog :open="deleteTarget !== null" :title="t('env.deleteConfirm', { name: deleteTarget?.name ?? '' })"
+      @confirm="onDeleteConfirm" @cancel="cancelDelete" />
   </section>
 </template>
 
 <style scoped>
 .env-panel {
-  padding: 8px 10px;
-  font-size: 13px;
+  padding: 12px;
+  min-width: 0;
   height: 100%;
   box-sizing: border-box;
+  font-size: 13px;
+  background: var(--panel);
+  container-type: inline-size;
 }
-.readonly-fieldset { border: 0; margin: 0; min-width: 0; padding: 0; }
-.layout {
-  display: flex;
-  gap: 14px;
-  height: 100%;
-  min-height: 0;
+.layout { display: flex; gap: 12px; height: 100%; min-height: 0; }
+.side, .detail {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: auto;
 }
 .side {
-  width: 150px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  border-right: 1px solid var(--border);
-  padding-right: 10px;
-  overflow-y: auto;
+  box-sizing: border-box;
+  flex: 0 0 205px;
+  padding: 10px;
+  background: var(--workbench-form-navigation);
 }
-.side-title {
-  font-weight: 600;
-  color: var(--text-muted);
-  padding: 4px 6px;
+.side-heading { margin: 0; padding: 4px 6px; font-size: 15px; }
+.environment-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
+  margin: 8px 0 3px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
-.side-envs { margin-top: 8px; }
-.side-actions { display: inline-flex; gap: 2px; }
-.side-title { flex-wrap: wrap; gap: 6px; }
-.side-actions { flex-wrap: wrap; }
+.side-empty { padding: 4px 6px 4px 16px; color: var(--text-muted); }
 .side-item {
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  padding: 5px 8px;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 5px 5px 16px;
+  border: 0;
   border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
   cursor: pointer;
-  font-size: 13px;
 }
-.side-item:hover { background: var(--hover); }
-.side-item.active { background: var(--active-weak); color: var(--accent); }
-.side-delete { margin-top: 10px; align-self: flex-start; }
+.side-item:focus-visible { outline-offset: -2px; }
+.side-item:hover, .environment-row:hover { background: var(--hover); }
+.side-item.active, .environment-row.active {
+  background: var(--workbench-form-selected);
+  color: var(--accent);
+  font-weight: 600;
+}
+.environment-row { display: flex; align-items: center; gap: 4px; border-radius: 6px; padding-inline-end: 3px; }
+.environment-menu { opacity: 0; pointer-events: none; }
+.environment-row:hover .environment-menu, .environment-row:focus-within .environment-menu,
+.environment-menu[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .environment-menu { opacity: 1; pointer-events: auto; } }
+
 .detail {
   flex: 1;
-  min-width: 0;
+  min-height: 0;
+  padding: 0 20px 20px;
+  background: var(--bg);
+}
+.pane-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.pane-context { margin: 0 0 6px; color: var(--text-muted); overflow-wrap: anywhere; }
+.pane-summary, .pane-actions, .section-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pane-summary, .section-head { justify-content: space-between; }
+.pane-title { margin: 0; font-size: 22px; line-height: 1.4; overflow-wrap: anywhere; }
+.pane-actions { margin-inline-start: auto; }
+.save-status { color: var(--text-muted); }
+.save-status.dirty::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-inline-end: 6px;
+  border-radius: 50%;
+  background: var(--workbench-form-pending);
+}
+.save-status.saved { color: var(--pass); }
+.failure { margin: 8px 0 0; color: var(--fail); overflow-wrap: anywhere; }
+.pane-body { display: flex; flex-direction: column; gap: 22px; padding-top: 15px; }
+.section-head { margin-bottom: 8px; }
+.section-head h2 { margin: 0; font-weight: 600; font-size: 16px; }
+.table-scroll {
   overflow: auto;
+  scrollbar-color: var(--text-muted) var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
 }
-.pane-title {
-  font-weight: 600;
-  font-size: 14px;
-  margin-bottom: 8px;
-}
-.param-block { margin-bottom: 14px; }
-.block-title { font-weight: 600; margin-bottom: 4px; }
-.baseurl-rows { display: flex; flex-direction: column; gap: 6px; }
-.baseurl-row { display: flex; align-items: center; gap: 8px; }
-.baseurl-name { width: 140px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pane-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-}
-.saved { color: var(--pass, #389e0d); }
+.table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.config-table { width: 100%; min-width: 380px; table-layout: fixed; border-collapse: collapse; }
+.config-table th, .config-table td { padding: 5px 10px; text-align: start; }
+.config-table thead th { background: var(--workbench-form-table-head); white-space: nowrap; }
+.config-table tbody tr { border-top: 1px solid var(--border); }
+.config-table tbody th { font-weight: 400; }
+.config-table .name-cell { width: 32%; }
+.config-table .enabled-cell { width: 64px; text-align: center; }
+.config-table .action-cell { width: 48px; text-align: center; padding-inline: 4px; }
+.module-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.config-table :deep(.ant-input) { min-width: 0; width: 100%; }
+.empty-copy, .config-table .table-empty { color: var(--text-muted); padding: 10px; }
+.variables-empty { text-align: center; padding: 24px 10px; color: var(--text-muted); }
 .parent-select { margin-top: 8px; width: 100%; }
-
-.env-panel { padding: 12px; min-width: 0; background: var(--panel); container-type: inline-size; } .readonly-fieldset { height: 100%; min-height: 0; } .layout { gap: 12px; } .side { box-sizing: border-box; width: 190px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); } .side-item { padding: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 34px; flex-shrink: 0; } .detail { padding: 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; } .pane-title { overflow-wrap: anywhere; } .pane-actions { flex-wrap: wrap; margin-top: 12px; } .baseurl-row { flex-wrap: wrap; } .baseurl-row :deep(.ant-input) { flex: 1 1 180px; min-width: 0; } .param-block { min-width: 0; } .detail :deep(th) { white-space: nowrap; }
-@container (max-width: 620px) { .layout { flex-direction: column; } .side { width: 100%; max-height: 190px; flex: none; } .detail { min-height: 160px; } }
-
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@container (max-width: 620px) {
+  .layout { flex-direction: column; gap: 8px; }
+  .side { flex: none; max-height: min(170px, 35vh); }
+  .detail { padding-inline: 12px; }
+}
+@container (max-width: 400px) {
+  .pane-actions { margin-inline-start: 0; }
+  .config-table { min-width: 340px; }
+}
 </style>

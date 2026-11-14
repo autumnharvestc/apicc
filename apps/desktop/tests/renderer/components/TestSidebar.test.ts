@@ -24,8 +24,9 @@ it.each(['zh-CN', 'en'] as const)('P3g clears only navigation search and restore
   await wrapper.get('button[data-testid="test-search-clear"]').trigger('click');
   expect(search.element.value).toBe(''); expect(document.activeElement).toBe(search.element);
   expect(wrapper.emitted('update:pane')).toBeUndefined(); expect(wrapper.emitted('pick-api')).toBeUndefined();
-  const pick = wrapper.findAll('.api-item').find(item => item.text() === target.label)!;
-  expect(pick.attributes('title')).toBe(target.label);
+  const pick = wrapper.findAll('.api-item').find(item => item.get('.api-name').text() === target.label)!;
+  expect(pick.attributes('title')).toContain(target.label);
+  expect(pick.attributes('aria-current')).toBe('true');
   await pick.trigger('click'); expect(wrapper.emitted('pick-api')!.at(-1)).toEqual([target.locator]);
   await wrapper.setProps({ pane: 'scenario' }); await search.setValue('not-present');
   expect(wrapper.text()).toContain(locale === 'en' ? 'No matching items' : '没有匹配项');

@@ -8,6 +8,9 @@
   --workbench-topbar: #f5f8fd;
   --workbench-background: #eaf0f8; --workbench-rail: #edf3fa; --workbench-directory: #f7f9fc;
   --workbench-directory-selected: #dce9ff;
+  --workbench-form-rail: #f2f3f5; --workbench-form-navigation: #fafafb;
+  --workbench-form-selected: #edf3ff; --workbench-form-table-head: #edf2f7;
+  --workbench-form-pending: #c26910;
   --workbench-method-post: #914b0a; --workbench-method-patch: #6624ac;
   --workbench-method-surface: #e6f5eb; --workbench-code: #f1f5fb;
   --workbench-json-key: #214c97; --workbench-json-string: #176037; --workbench-json-literal: #78361a;
@@ -21,6 +24,9 @@ html[data-theme="dark"] {
   --workbench-topbar: #141b27;
   --workbench-background: var(--panel); --workbench-rail: #141e2c; --workbench-directory: #192435;
   --workbench-directory-selected: var(--active-weak);
+  --workbench-form-rail: #19212c; --workbench-form-navigation: #1b2635;
+  --workbench-form-selected: var(--active-weak); --workbench-form-table-head: var(--subtle);
+  --workbench-form-pending: #ffbc7c;
   --workbench-method-post: #ffbc7c; --workbench-method-patch: #d4adff;
   --workbench-method-surface: #193b32; --workbench-code: #172231;
   --workbench-json-key: #b4ccff; --workbench-json-string: #92e1a9; --workbench-json-literal: #ffbf91;

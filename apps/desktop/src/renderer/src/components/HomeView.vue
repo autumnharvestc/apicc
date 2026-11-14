@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Input as AInput, Modal as AModal, Select as ASelect, Tag as ATag } from "ant-design-vue";
-import { DownOutlined } from "@ant-design/icons-vue";
+import { Button as AButton, Input as AInput, Modal as AModal, Select as ASelect, Tag as ATag, Tooltip as ATooltip } from "ant-design-vue";
+import { DownOutlined, EllipsisOutlined, PlusOutlined } from "@ant-design/icons-vue";
 import type { ApiccApi } from "../../../shared/types.js";
 import type { OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
@@ -10,8 +10,9 @@ import type { useTreeStore } from "../stores/tree.js";
 import type { createOnlineStore } from "../stores/online.js";
 import type { useImportWizardStore } from "../stores/importW.js";
 import type { PluginsStore } from "../stores/plugins.js";
-import type { GroupLocator, ProjectLocator, WorkspaceLocator } from "../../../shared/locations.js";
+import type { GroupLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { LocalGroupTreeNodeDTO, LocalProjectTreeNodeDTO } from "../../../shared/tree-dto.js";
+import { projectSessionKey } from "../stores/localIdentity.js";
 import EmptyState from "./EmptyState.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import ConnectionPanel from "./ConnectionPanel.vue";
@@ -21,16 +22,6 @@ import ActionMenu from "./ActionMenu.vue";
 import { onlineSessionErrorKey } from "../i18n/index.js";
 import type { OnlineWorkspaceAction, OnlineWorkspaceActionTarget } from "../onlineWorkspaceActions.js";
 
-/**
- * 主页（M9-C/M10；轨三左右栏重构）：内部左栏（落点选择）+ 右栏（内容视图）。
- * - 左栏「我的团队」=本地工作区：子项=分组（点击过滤右栏项目）+「新建分组」；未开工作区
- *   时显示打开/新建本地目录入口（M11 行为保留）。
- * - 左栏「服务器」=在线档案（昵称，色块头像）；选中服务器→右栏该服务器团队空间只读清单
- *   （未登录提示去「管理连接」登录）。
- * - 左栏底部「管理连接」→ 右栏连接管理面板（档案增删改+登录唯一入口，登录对话框收口）。
- * - 右栏本地视图：项目卡片网格（ProjectCard：色块头像+名称+菜单 修改名称/克隆/移动/删除）
- *   + 工具栏「导入项目」（project 模式向导：选分组+项目名）+「新建项目」（带分组选择器）。
- */
 const props = defineProps<{
   api: ApiccApi;
   workspace: ReturnType<typeof useWorkspaceStore>;
@@ -48,8 +39,7 @@ const props = defineProps<{
   /** 在线项目卡片成签回调（终审 Important 1 ②）：组合根直连 tabs.openProjectTab
    * （online 分支 workspaceRef），纯在线用户在主页即可点项目成签。 */
   openOnlineProject: (projectId: string) => void;
-  /** 活动项目 id（计划 C 任务 5 D）：该项目签存在且激活——组合根从 tabs store 计算。 */
-  activeProjectLocator?: ProjectLocator | null;
+  openLocalProjectKeys?: ReadonlySet<string>;
   /** 活跃在线项目 id（终审 Important 1 ②）：活跃签为在线签时的 projectId——卡片高亮。 */
   activeOnlineProjectId?: string | null;
   activeOnlineWorkspaceTarget?: OnlineWorkspaceActionTarget | null;
@@ -67,6 +57,22 @@ type Selection =
 const selection = ref<Selection>({ kind: "local" });
 const projectFilter = ref("");
 const projectSearch = ref<{ focus(): void }>();
+let dialogTrigger: HTMLElement | null = null;
+
+function rememberDialogTrigger(active = document.activeElement) {
+  dialogTrigger = active instanceof HTMLElement && active.matches(".home-view button") ? active : null;
+}
+
+function restoreDialogFocus() {
+  const trigger = dialogTrigger;
+  dialogTrigger = null;
+  if (!trigger) return;
+  void nextTick(() => {
+    if (trigger.isConnected) trigger.focus({ preventScroll: true });
+    else projectSearch.value?.focus();
+  });
+}
+
 function clearProjectFilter() {
   projectFilter.value = "";
   void nextTick(() => projectSearch.value?.focus());
@@ -90,24 +96,36 @@ const groups = computed<GroupView[]>(() =>
 );
 const defaultGroupLocator = computed(() => groups.value.find((g) => g.name === "默认分组")?.locator ?? groups.value[0]?.locator ?? null);
 
+function sameGroup(left: GroupLocator, right: GroupLocator) {
+  return left.workspaceId === right.workspaceId && left.groupId === right.groupId;
+}
+
+const selectedGroup = computed(() => {
+  const sel = selection.value;
+  return sel.kind === "group" ? groups.value.find((group) => sameGroup(group.locator, sel.locator)) ?? null : null;
+});
+const allProjectsSelected = computed(() => selection.value.kind === "local" || (selection.value.kind === "group" && !selectedGroup.value));
+const projectQuery = computed(() => projectFilter.value.trim().toLocaleLowerCase());
+
 /** 在分组浏览中输入名称，也能查找本地工作区的所有项目。 */
 const visibleProjects = computed(() => {
-  const query = projectFilter.value.trim().toLocaleLowerCase();
-  if (query) {
-    return groups.value.flatMap((group) => group.projects
-      .filter((project) => project.name.toLocaleLowerCase().includes(query))
-      .map((project) => ({ ...project, groupName: group.name })));
-  }
-  const sel = selection.value;
-  if (sel.kind === "group") {
-    return (groups.value.find((g) => JSON.stringify(g.locator) === JSON.stringify(sel.locator))?.projects ?? [])
-      .map((project) => ({ ...project, groupName: "" }));
-  }
-  return groups.value.flatMap((group) => group.projects.map((project) => ({ ...project, groupName: group.name })));
+  const query = projectQuery.value;
+  const scope = !query && selectedGroup.value ? [selectedGroup.value] : groups.value;
+  return scope.flatMap((group) => group.projects
+    .filter((project) => !query || project.name.toLocaleLowerCase().includes(query))
+    .map((project) => ({
+      ...project,
+      groupName: group.name,
+      key: projectSessionKey(props.workspace.root, project.locator),
+    })));
 });
 
-const selectedGroupId = computed(() => (selection.value.kind === "group" ? selection.value.locator.groupId : ""));
 const selectedBaseUrl = computed(() => (selection.value.kind === "server" ? selection.value.baseUrl : ""));
+
+watch([() => props.workspace.root, () => props.workspace.tree?.locator.workspaceId], () => {
+  projectFilter.value = "";
+  if (selection.value.kind === "group") selection.value = { kind: "local" };
+});
 
 function selectLocal() {
   projectFilter.value = "";
@@ -140,6 +158,7 @@ const dialog = ref<{
 }>({ open: false, kind: "create-group", groupLocator: null, projectLocator: null, name: "", error: "" });
 
 function openCreateGroup() {
+  rememberDialogTrigger();
   dialog.value = { open: true, kind: "create-group", groupLocator: null, projectLocator: null, name: "", error: "" };
 }
 function openCreateProject(groupLocator: GroupLocator) {
@@ -151,14 +170,39 @@ function openRenameGroup(g: GroupView) {
 function openDeleteGroup(g: GroupView) {
   dialog.value = { open: true, kind: "delete-group", groupLocator: { ...g.locator }, projectLocator: null, name: g.name, error: "" };
 }
+
+function groupActions(group: GroupView) {
+  const nonempty = group.projects.length > 0;
+  return [
+    { key: "rename", label: t("tree.rename"), testId: "home-rename-group" },
+    {
+      key: "delete",
+      label: nonempty ? t("home.deleteNonemptyGroup", { reason: t("home.groupNotEmpty") }) : t("tree.delete"),
+      testId: "home-delete-group",
+      disabled: nonempty,
+      danger: true,
+    },
+  ];
+}
+
+function onGroupAction(action: string, group: GroupView) {
+  if (props.workspace.readOnly) return;
+  rememberDialogTrigger();
+  if (action === "rename") openRenameGroup(group);
+  if (action === "delete" && group.projects.length === 0) openDeleteGroup(group);
+}
+
 function openRenameProject(p: { name: string; locator: ProjectLocator }) {
+  rememberDialogTrigger();
   dialog.value = { open: true, kind: "rename-project", groupLocator: null, projectLocator: { ...p.locator }, name: p.name, error: "" };
 }
 function openDeleteProject(p: { name: string; locator: ProjectLocator }) {
+  rememberDialogTrigger();
   dialog.value = { open: true, kind: "delete-project", groupLocator: null, projectLocator: { ...p.locator }, name: p.name, error: "" };
 }
 function closeDialog() {
   dialog.value = { ...dialog.value, open: false };
+  restoreDialogFocus();
 }
 
 async function onDialogConfirm(name: string | null) {
@@ -208,14 +252,14 @@ async function onDialogConfirm(name: string | null) {
     if (kind === "delete-group") {
       const groupLocator = dialog.value.groupLocator;
       if (!groupLocator) return;
-      const g = groups.value.find((x) => JSON.stringify(x.locator) === JSON.stringify(groupLocator));
+      const g = groups.value.find((x) => sameGroup(x.locator, groupLocator));
       if (g && g.projects.length > 0) {
         dialog.value.error = t("home.groupNotEmpty");
         return;
       }
       await props.api.nodeDelete({ kind: "group", locator: groupLocator });
       await props.workspace.refresh();
-      if (selection.value.kind === "group" && JSON.stringify(selection.value.locator) === JSON.stringify(groupLocator)) selectLocal();
+      if (selection.value.kind === "group" && sameGroup(selection.value.locator, groupLocator)) selectLocal();
       closeDialog();
     }
   } catch (e) {
@@ -241,7 +285,7 @@ const newProjectGroupId = ref<string | undefined>(undefined);
 const newProjectError = ref("");
 
 function openNewProject() {
-  const locator = selection.value.kind === "group" ? selection.value.locator : defaultGroupLocator.value;
+  const locator = selectedGroup.value?.locator ?? defaultGroupLocator.value;
   newProjectGroupId.value = locator ? JSON.stringify(locator) : undefined;
   newProjectName.value = "";
   newProjectError.value = "";
@@ -274,16 +318,22 @@ const newProjectGroupOptions = computed(() => groups.value.map((g) => ({ label: 
 // —— 项目卡片动作：克隆 / 移动 / 删除（同名放开：克隆与重命名都可直接落） ——
 const moveOpen = ref(false);
 const moveProjectLocator = ref<ProjectLocator | null>(null);
+const moveProjectName = ref("");
 const moveTargetGroupValue = ref<string | undefined>(undefined);
 
-function openMoveProject(p: { locator: ProjectLocator }) {
+function openMoveProject(p: { name: string; locator: ProjectLocator }) {
+  rememberDialogTrigger();
   moveProjectLocator.value = { ...p.locator };
-  const sourceGroup = groups.value.find((g) => JSON.stringify(g.locator) === JSON.stringify({
-    workspaceId: p.locator.workspaceId, groupId: p.locator.groupId,
-  }));
+  moveProjectName.value = p.name;
+  const sourceGroup = groups.value.find((g) => sameGroup(g.locator, p.locator));
   moveTargetGroupValue.value = sourceGroup ? JSON.stringify(sourceGroup.locator)
     : defaultGroupLocator.value ? JSON.stringify(defaultGroupLocator.value) : undefined;
   moveOpen.value = true;
+}
+
+function closeMoveDialog() {
+  moveOpen.value = false;
+  restoreDialogFocus();
 }
 
 async function moveConfirm() {
@@ -296,7 +346,7 @@ async function moveConfirm() {
     const target = JSON.parse(moveTargetGroupValue.value) as GroupLocator;
     await props.api.projectMove(moveProjectLocator.value, target);
     await props.workspace.refresh();
-    moveOpen.value = false;
+    closeMoveDialog();
   } catch (e) {
     props.reportError(e);
   }
@@ -374,6 +424,15 @@ function openRemote(ws: OnlineWorkspaceSummary) {
 // —— 本地目录 打开/新建（计划 C 任务 2：裁定 E 互斥退役——本地打开不退在线，并存驻留） ——
 const wsDialogOpen = ref(false);
 const pendingRoot = ref("");
+const localWorkspaceActions = computed(() => [
+  { key: "open", label: t("home.openWorkspace"), testId: "home-open-dir" },
+  { key: "create", label: t("home.newDir"), testId: "home-new-dir" },
+]);
+
+function onLocalWorkspaceAction(action: string) {
+  if (action === "open") void openLocalDir();
+  if (action === "create") void startCreateLocal();
+}
 
 async function openLocalDir() {
   try {
@@ -387,8 +446,10 @@ async function openLocalDir() {
 
 async function startCreateLocal() {
   try {
+    const trigger = document.activeElement;
     const dir = await props.api.wsPickDirectory();
     if (!dir) return;
+    rememberDialogTrigger(trigger);
     pendingRoot.value = dir;
     wsDialogOpen.value = true;
   } catch (e) {
@@ -396,8 +457,13 @@ async function startCreateLocal() {
   }
 }
 
-async function onCreateWsConfirm(name: string | null) {
+function closeCreateWorkspace() {
   wsDialogOpen.value = false;
+  restoreDialogFocus();
+}
+
+async function onCreateWsConfirm(name: string | null) {
+  closeCreateWorkspace();
   if (!name) return;
   try {
     await props.workspace.create(pendingRoot.value, name);
@@ -412,76 +478,96 @@ async function onCreateWsConfirm(name: string | null) {
     <!-- 左栏：落点选择 -->
     <aside class="home-side" data-testid="home-sidebar">
       <div class="side-section">
+        <div class="side-heading">
+          <h2 class="side-title local-title">{{ t("home.localWorkspace") }}</h2>
+          <ActionMenu
+            v-if="workspace.opened"
+            test-id="home-workspace-more"
+            :label="t('home.localWorkspaceActions')"
+            :items="localWorkspaceActions"
+            @select="onLocalWorkspaceAction"
+          >
+            <EllipsisOutlined />
+          </ActionMenu>
+        </div>
         <button
+          v-if="workspace.opened"
           type="button"
-          class="side-item top"
-          :class="{ active: selection.kind === 'local' }"
-          :aria-current="selection.kind === 'local' ? 'page' : undefined"
+          class="side-item side-select"
+          :class="{ active: allProjectsSelected }"
+          :aria-current="allProjectsSelected ? 'page' : undefined"
           data-testid="home-side-local"
           @click="selectLocal"
         >
-          {{ t("home.myTeams") }}
-          <span v-if="workspace.opened" class="side-sub">{{ workspace.name }}</span>
+          {{ t("home.allProjects") }}
         </button>
-        <template v-if="workspace.opened">
-          <div
-            v-for="g in groups"
-            :key="g.id"
-            class="side-item child"
-          :class="{ active: selection.kind === 'group' && JSON.stringify(selection.locator) === JSON.stringify(g.locator) }"
-            data-testid="home-side-group"
+        <div v-else class="side-entry-actions">
+          <a-button size="small" type="primary" data-testid="home-open-dir" @click="openLocalDir">{{ t("home.openWorkspace") }}</a-button>
+          <a-button size="small" data-testid="home-new-dir" @click="startCreateLocal">{{ t("home.newDir") }}</a-button>
+        </div>
+      </div>
+
+      <div v-if="workspace.opened" class="side-section">
+        <div class="side-heading">
+          <h2 class="side-title">{{ t("home.groups") }}</h2>
+          <button
+            type="button"
+            class="side-add"
+            data-testid="home-new-group"
+            :aria-label="t('home.newGroup')"
+            :title="t('home.newGroup')"
+            :disabled="workspace.readOnly"
+            @click="openCreateGroup"
           >
-            <button type="button" class="side-name group-select" :title="g.name" :aria-current="selection.kind === 'group' && JSON.stringify(selection.locator) === JSON.stringify(g.locator) ? 'page' : undefined" @click="selectGroup(g.locator)">{{ g.name }}</button>
-            <span class="side-actions" @click.stop>
-              <a-button size="small" type="text" data-testid="home-rename-group" :disabled="workspace.readOnly" @click="openRenameGroup(g)">{{ t("tree.rename") }}</a-button>
-              <a-button
-                size="small"
-                type="text"
-                danger
-                :disabled="workspace.readOnly || g.projects.length > 0"
-                :title="g.projects.length > 0 ? t('home.groupNotEmpty') : undefined"
-                data-testid="home-delete-group"
-                @click="openDeleteGroup(g)"
-              >
-                {{ t("tree.delete") }}
-              </a-button>
-            </span>
-          </div>
-          <div class="side-item child action">
-            <a-button size="small" type="text" data-testid="home-new-group" :disabled="workspace.readOnly" @click="openCreateGroup">{{ t("home.newGroup") }}</a-button>
-          </div>
-          <!-- 打开/新建常驻（切换工作区入口不随打开态消失） -->
-          <div class="side-item child action">
-            <a-button size="small" type="text" data-testid="home-open-dir" @click="openLocalDir">{{ t("home.openWorkspace") }}</a-button>
-            <a-button size="small" type="text" data-testid="home-new-dir" @click="startCreateLocal">{{ t("home.newDir") }}</a-button>
-          </div>
-        </template>
-        <template v-else>
-          <div class="side-item child action">
-            <a-button size="small" type="primary" data-testid="home-open-dir" @click="openLocalDir">{{ t("home.openWorkspace") }}</a-button>
-          </div>
-          <div class="side-item child action">
-            <a-button size="small" data-testid="home-new-dir" @click="startCreateLocal">{{ t("home.newDir") }}</a-button>
-          </div>
-          <div class="side-empty" data-testid="home-local-empty">{{ t("home.noWorkspaceSide") }}</div>
-        </template>
+            <PlusOutlined />
+          </button>
+        </div>
+        <div
+          v-for="g in groups"
+          :key="g.id"
+          class="side-item group-row"
+          :class="{ active: selectedGroup === g }"
+          data-testid="home-side-group"
+        >
+          <a-tooltip :title="g.name" :trigger="['hover', 'focus']" placement="right">
+            <button type="button" class="side-name group-select" :aria-current="selectedGroup === g ? 'page' : undefined" @click="selectGroup(g.locator)">{{ g.name }}</button>
+          </a-tooltip>
+          <ActionMenu
+            class="group-actions"
+            test-id="home-group-more"
+            :label="t('home.groupActions', { name: g.name })"
+            :items="groupActions(g)"
+            :disabled="workspace.readOnly"
+            @select="onGroupAction($event, g)"
+          >
+            <EllipsisOutlined />
+          </ActionMenu>
+        </div>
       </div>
 
       <div class="side-section" data-testid="home-side-servers">
-        <div class="side-title">{{ t("home.servers") }}</div>
-        <button
-          type="button"
+        <div class="side-heading">
+          <h2 class="side-title">{{ t("home.servers") }}</h2>
+        </div>
+        <a-tooltip
           v-for="s in remoteProfiles"
           :key="s.baseUrl"
-          class="side-item"
-          :class="{ active: selection.kind === 'server' && selectedBaseUrl === s.baseUrl }"
-          :aria-current="selection.kind === 'server' && selectedBaseUrl === s.baseUrl ? 'page' : undefined"
-          :data-testid="`home-side-server-${s.baseUrl}`"
-          @click="selectServer(s.baseUrl)"
+          :title="s.name || s.baseUrl"
+          :trigger="['hover', 'focus']"
+          placement="right"
         >
-          <span class="side-name" :title="s.name || s.baseUrl">{{ s.name || s.baseUrl }}</span>
-          <a-tag v-if="online.loggedIn && online.activeBaseUrl === s.baseUrl" color="blue" class="side-tag">{{ t("home.active") }}</a-tag>
-        </button>
+          <button
+            type="button"
+            class="side-item side-select server-select"
+            :class="{ active: selectedBaseUrl === s.baseUrl }"
+            :aria-current="selectedBaseUrl === s.baseUrl ? 'page' : undefined"
+            :data-testid="`home-side-server-${s.baseUrl}`"
+            @click="selectServer(s.baseUrl)"
+          >
+            <span class="side-name">{{ s.name || s.baseUrl }}</span>
+            <span v-if="online.loggedIn && online.activeBaseUrl === s.baseUrl" class="side-status">{{ t("home.active") }}</span>
+          </button>
+        </a-tooltip>
         <div v-if="remoteProfiles.length === 0" class="side-empty" data-testid="home-servers-empty">{{ t("home.noServers") }}</div>
       </div>
 
@@ -514,7 +600,9 @@ async function onCreateWsConfirm(name: string | null) {
         </div>
         <p v-if="serverError" class="error server-error" role="alert">{{ serverError }}</p>
         <div v-if="showRetainedWorkspace && retainedWorkspace" class="ws-row" data-testid="retained-online-workspace">
-          <span class="ws-name retained-ws-name" tabindex="0" :title="retainedWorkspace.name">{{ retainedWorkspace.name }}</span>
+          <a-tooltip :title="retainedWorkspace.name" :trigger="['hover', 'focus']">
+            <span class="ws-name retained-ws-name" tabindex="0" :title="retainedWorkspace.name">{{ retainedWorkspace.name }}</span>
+          </a-tooltip>
           <ActionMenu
             test-id="workspace-actions"
             :label="t('home.workspaceActions')"
@@ -533,9 +621,11 @@ async function onCreateWsConfirm(name: string | null) {
           <div class="ws-list" data-testid="home-ws-list">
             <template v-for="w in online.workspaces" :key="w.id">
               <div class="ws-row">
-                <button type="button" class="ws-name" :title="w.name" :data-testid="`home-ws-${w.id}`" @click="openRemote(w)">
-                  {{ w.name }}
-                </button>
+                <a-tooltip :title="w.name" :trigger="['hover', 'focus']">
+                  <button type="button" class="ws-name" :title="w.name" :data-testid="`home-ws-${w.id}`" @click="openRemote(w)">
+                    {{ w.name }}
+                  </button>
+                </a-tooltip>
                 <ActionMenu
                   v-if="activeOnlineWorkspaceTarget?.baseUrl === selectedBaseUrl && activeOnlineWorkspaceTarget.workspaceId === w.id"
                   test-id="workspace-actions"
@@ -577,44 +667,53 @@ async function onCreateWsConfirm(name: string | null) {
 
       <!-- 本地视图：项目卡片网格 -->
       <template v-else>
-        <div class="content-head">
-          <span class="content-title" data-testid="home-content-title">
-            {{ selection.kind === "group" ? groups.find((g) => g.id === selectedGroupId)?.name : workspace.name }}
-          </span>
-          <span class="spacer"></span>
-          <a-button size="small" data-testid="home-import-project" :disabled="!workspace.opened || workspace.readOnly" @click="openImportProject">
-            {{ t("home.importProject") }}
-          </a-button>
-          <a-button size="small" type="primary" data-testid="home-new-project-top" :disabled="!workspace.opened || workspace.readOnly" @click="openNewProject">
-            {{ t("home.newProject") }}
+        <div class="content-head local-content-head">
+          <h1 class="content-title" data-testid="home-content-title">
+            {{ projectQuery ? t("home.searchResults") : selectedGroup?.name ?? t("home.allProjects") }}
+          </h1>
+          <a-tag v-if="workspace.opened && workspace.readOnly">{{ t("workspace.readonlyBadge") }}</a-tag>
+          <div class="project-tools">
+            <a-button size="small" data-testid="home-import-project" :disabled="!workspace.opened || workspace.readOnly" @click="openImportProject">
+              {{ t("home.importProject") }}
+            </a-button>
+            <a-button size="small" type="primary" data-testid="home-new-project-top" :disabled="!workspace.opened || workspace.readOnly" @click="openNewProject">
+              {{ t("home.newProject") }}
+            </a-button>
+          </div>
+        </div>
+        <div v-if="workspace.opened" class="project-filter">
+          <label for="home-project-search">{{ t("home.findProject") }}</label>
+          <a-input
+            id="home-project-search"
+            ref="projectSearch"
+            v-model:value="projectFilter"
+            data-testid="home-project-search"
+            :placeholder="t('home.findProjectHint')"
+          />
+          <a-button v-if="projectFilter" size="small" data-testid="home-clear-project-search" @click="clearProjectFilter">
+            {{ t("home.clearProjectSearch") }}
           </a-button>
         </div>
-        <label v-if="workspace.opened" class="project-filter">
-          <span>{{ t("home.findProject") }}</span>
-          <a-input ref="projectSearch" v-model:value="projectFilter" allow-clear data-testid="home-project-search" :placeholder="t('home.findProjectHint')" />
-        </label>
+        <p v-if="projectQuery" class="search-result-count" role="status" data-testid="home-search-count">
+          {{ t("home.searchResultCount", visibleProjects.length) }}
+        </p>
         <EmptyState v-if="!workspace.opened" :text="t('home.localEmpty')" />
-        <div v-else-if="projectFilter.trim() && visibleProjects.length === 0" class="project-filter-empty">
-          <p>{{ t("home.noMatchingProjects") }}</p>
-          <a-button size="small" data-testid="home-clear-project-search" @click="clearProjectFilter">{{ t("home.clearProjectSearch") }}</a-button>
-        </div>
-        <EmptyState v-else-if="visibleProjects.length === 0" :text="t('home.noProjects')" />
+        <EmptyState v-else-if="visibleProjects.length === 0" :text="t(projectQuery ? 'home.noMatchingProjects' : selectedGroup ? 'home.noProjects' : 'home.noWorkspaceProjects')" />
         <div v-else class="project-grid" data-testid="home-project-grid">
           <ProjectCard
             v-for="p in visibleProjects"
-            :key="JSON.stringify(p.locator)"
+            :key="p.key"
             :project-id="p.id"
             :project-name="p.name"
-            :active="JSON.stringify(p.locator) === JSON.stringify(activeProjectLocator)"
+            :group-name="p.groupName"
+            :opened="openLocalProjectKeys?.has(p.key)"
             :plain="workspace.readOnly"
             @open="openProject(p.locator)"
             @rename="openRenameProject(p)"
             @clone="cloneProject(p)"
             @move="openMoveProject(p)"
             @remove="openDeleteProject(p)"
-          >
-            <template v-if="p.groupName" #tags><span class="project-group" :title="p.groupName">{{ p.groupName }}</span></template>
-          </ProjectCard>
+          />
         </div>
       </template>
     </div>
@@ -679,9 +778,13 @@ async function onCreateWsConfirm(name: string | null) {
       :title="t('home.moveToGroup')"
       :width="420"
       data-testid="home-move-dialog"
-      @cancel="moveOpen = false"
+      @cancel="closeMoveDialog"
     >
       <div class="dialog-body">
+        <div class="field">
+          <span class="field-label">{{ t("home.projectName") }}</span>
+          <span class="dialog-name">{{ moveProjectName }}</span>
+        </div>
         <label class="field">
           <span class="field-label">{{ t("home.targetGroup") }}</span>
           <a-select
@@ -693,7 +796,7 @@ async function onCreateWsConfirm(name: string | null) {
         </label>
       </div>
       <template #footer>
-        <a-button data-testid="home-move-dialog-cancel" @click="moveOpen = false">{{ t("common.cancel") }}</a-button>
+        <a-button data-testid="home-move-dialog-cancel" @click="closeMoveDialog">{{ t("common.cancel") }}</a-button>
         <a-button type="primary" data-testid="home-move-dialog-confirm" @click="moveConfirm">{{ t("common.confirm") }}</a-button>
       </template>
     </a-modal>
@@ -702,12 +805,13 @@ async function onCreateWsConfirm(name: string | null) {
     <ConfirmDialog
       :open="dialog.open"
       :title="dialogTitle"
-      :input-placeholder="t('tree.namePlaceholder')"
+      :input-placeholder="dialog.kind === 'delete-group' || dialog.kind === 'delete-project' ? undefined : t('tree.namePlaceholder')"
       :initial-value="dialog.kind === 'rename-group' || dialog.kind === 'rename-project' ? dialog.name : undefined"
       :error="dialog.error"
       @confirm="onDialogConfirm"
       @cancel="closeDialog"
     >
+      <p v-if="dialog.kind === 'delete-group' || dialog.kind === 'delete-project'" class="dialog-name">{{ dialog.name }}</p>
       <p v-if="dialog.kind === 'delete-group'" class="muted">{{ t("home.deleteGroupHint") }}</p>
       <p v-if="dialog.kind === 'delete-project'" class="muted">{{ t("home.deleteProjectHint") }}</p>
     </ConfirmDialog>
@@ -718,7 +822,7 @@ async function onCreateWsConfirm(name: string | null) {
       :title="t('app.newWorkspace')"
       :input-placeholder="t('app.workspaceName')"
       @confirm="onCreateWsConfirm"
-      @cancel="wsDialogOpen = false"
+      @cancel="closeCreateWorkspace"
     />
   </section>
 </template>
@@ -735,6 +839,7 @@ async function onCreateWsConfirm(name: string | null) {
 }
 /* 左栏 */
 .home-side {
+  box-sizing: border-box;
   width: 208px;
   flex: none;
   border: 1px solid var(--border);
@@ -743,7 +848,7 @@ async function onCreateWsConfirm(name: string | null) {
   padding: 10px 8px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   overflow: auto;
 }
 .side-section {
@@ -751,50 +856,72 @@ async function onCreateWsConfirm(name: string | null) {
   flex-direction: column;
   gap: 2px;
 }
+.side-heading {
+  min-height: 30px;
+  padding-inline: 7px 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
 .side-title {
+  margin: 0;
   font-weight: 600;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
-  padding: 0 8px 4px;
+  overflow-wrap: anywhere;
+}
+.local-title {
+  font-size: 16px;
+  color: var(--text);
+}
+.side-add {
+  flex: 0 0 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.side-add:hover:enabled { background: var(--active-weak); }
+.side-add:disabled { opacity: 0.5; cursor: default; }
+.side-item, .side-empty, .side-entry-actions {
+  padding-inline-start: 20px;
 }
 .side-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 8px;
   border-radius: 6px;
-  cursor: pointer;
   font-size: 13px;
-  min-height: 32px;
+  min-height: 31px;
   box-sizing: border-box;
-  flex: none;
+  min-width: 0;
 }
-button.side-item, .group-select {
+.side-select, .group-select {
   border: 0;
   background: transparent;
   color: inherit;
-  font: inherit;
+  font-family: inherit;
   text-align: start;
   cursor: pointer;
 }
-.group-select { padding: 0; }
+.side-select { padding-inline-end: 8px; }
+.group-select {
+  min-height: 30px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: inherit;
+  font-weight: inherit;
+}
 .side-item:hover {
-  background: var(--active-weak);
+  background: var(--hover);
 }
 .side-item.active {
   background: var(--active-weak);
   color: var(--accent);
   font-weight: 600;
-}
-.side-item.top {
-  font-weight: 600;
-}
-.side-item.child {
-  padding-left: 20px;
-}
-.side-item.action {
-  cursor: default;
-  flex-wrap: wrap;
 }
 .side-name {
   flex: 1;
@@ -803,34 +930,36 @@ button.side-item, .group-select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.side-sub {
-  font-weight: 400;
-  font-size: 11px;
-  color: var(--text-muted);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.group-row { padding-inline-end: 2px; }
+.side-entry-actions {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
 }
-.side-actions {
-  display: inline-flex;
-  flex: none;
+.side-entry-actions :deep(.ant-btn) {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+}
+.group-actions {
   opacity: 0;
   pointer-events: none;
-  gap: 0;
 }
-.side-item:hover .side-actions, .side-item:focus-within .side-actions {
+.group-row:hover .group-actions, .group-row:focus-within .group-actions, .group-actions[aria-expanded="true"] {
   opacity: 1;
   pointer-events: auto;
 }
-@media (hover: none) { .side-actions { opacity: 1; pointer-events: auto; } }
-.side-tag {
-  margin: 0;
+@media (hover: none) { .group-actions { opacity: 1; pointer-events: auto; } }
+.side-status {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
 }
 .side-empty {
   color: var(--text-muted);
-  font-size: 12px;
-  padding: 2px 8px;
+  font-size: 13px;
+  padding-block: 5px;
 }
 .side-bottom {
   margin-top: auto;
@@ -859,9 +988,18 @@ button.side-item, .group-select {
   border-bottom: 1px solid var(--border);
 }
 .content-title {
+  margin: 0;
+  min-width: 0;
   font-weight: 600;
   font-size: 18px;
   overflow-wrap: anywhere;
+}
+.local-content-head .content-title { flex: 1 1 auto; }
+.project-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-inline-start: auto;
 }
 .content-toolbar {
   display: flex;
@@ -915,10 +1053,10 @@ button.side-item, .group-select {
   cursor: pointer;
 }
 .retained-ws-name { cursor: default; }
-.project-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.project-filter :deep(.ant-input-affix-wrapper) { width: min(280px, 100%); }
-.project-filter-empty { padding: 12px 0; color: var(--text-muted); }
-.project-group { display: block; overflow-wrap: anywhere; color: var(--text-muted); }
+.project-filter { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.project-filter :deep(.ant-input) { width: min(280px, 100%); height: 32px; }
+.project-filter :deep(.ant-input::placeholder) { color: var(--text-muted); }
+.search-result-count { margin: 0; color: var(--text-muted); font-size: 13px; }
 .server-error { margin: 0; overflow-wrap: anywhere; }
 /* 活跃工作区的项目卡片行（终审 Important 1 ②）：缩进排布于工作区行下 */
 .ws-projects {
@@ -948,6 +1086,7 @@ button.side-item, .group-select {
   color: var(--text-muted);
   font-size: 12px;
 }
+.dialog-name { overflow-wrap: anywhere; }
 .control {
   flex: 1;
 }
@@ -961,10 +1100,11 @@ button.side-item, .group-select {
 }
 @media (max-width: 759px) {
   .home-view { padding: 8px; gap: 8px; }
-  .home-side { width: clamp(104px, 32vw, 208px); padding: 8px 4px; }
+  .home-side { width: clamp(136px, 32vw, 208px); padding: 8px 4px; }
   .home-main { padding: 10px; }
-  .side-item.child { padding-left: 6px; }
-  .side-item.top { flex-wrap: wrap; }
+  .side-item, .side-empty, .side-entry-actions { padding-inline-start: 14px; }
+  .server-select { flex-wrap: wrap; gap: 0; padding-block: 4px; }
+  .server-select .side-name { flex-basis: 100%; }
   .side-bottom :deep(.ant-btn) { white-space: normal; height: auto; padding-inline: 4px; }
   .ws-row { flex-wrap: wrap; }
 }

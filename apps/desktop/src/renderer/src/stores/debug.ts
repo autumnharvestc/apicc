@@ -16,6 +16,9 @@ type Editor = ReturnType<typeof useEditorStore>;
 type RunFn = (input: DebugInvocation) => Promise<DebugResult>;
 type StartFn = (onStarted: (runId: string) => boolean) => Promise<DebugResult>;
 type OnRunAccepted = () => void;
+type CaseRunRecord = { tabId?: string; environmentName: string | null; pending: boolean; result: DebugResult | null; error: string | null };
+const maxRetainedCaseRuns = 12;
+type OnRunSettled = (result: DebugResult | null, error: string | null) => void;
 type ResultTarget = { root: string; locator: ApiLocator; generation?: number };
 type RequestDebugInvocation = Extract<DebugInvocation, { mode: "request" }>;
 type RestoreState = {
@@ -96,6 +99,17 @@ function assetTabFor(requestTabs: RequestTabsStore | undefined, root: string, lo
     && sameLocator(tab.source.locator, locator)) ?? null;
 }
 
+function caseRunKey(session: Editor["sessions"][string], identity: CaseIdentity, tab: RequestTab | null): string {
+  return JSON.stringify([apiSessionKey(session.root, session.locator), session.generation, tab?.tabId, tab?.generation, identity.caseId, identity.scope]);
+}
+
+export function isPersistedCase(session: Editor["sessions"][string], identity: CaseIdentity): boolean {
+  const findCase = (asset: typeof session.api) => asset.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
+  const draft = findCase(session.api);
+  const saved = findCase(JSON.parse(session.snapshot) as typeof session.api);
+  return !!draft && !!saved && JSON.stringify(draft) === JSON.stringify(saved);
+}
+
 /** Debug drafts never save a formal asset. Results and active jobs are root/full-locator scoped. */
 export function useDebugStore(
   api: ApiccApi,
@@ -150,6 +164,7 @@ export function useDebugStore(
       restoredOriginalValues: {} as Record<string, string>,
       restoreByTarget: {} as Record<string, RestoreState>,
       requestTabs: {} as Record<string, RequestTabDebugState>,
+      caseRuns: {} as Record<string, CaseRunRecord>,
       sendEpoch: 0,
       restoreEpoch: 0,
     }),
@@ -363,7 +378,7 @@ export function useDebugStore(
         const state = this.requestTabs[tabId];
         return !!state && (state.starting || state.sending);
       },
-      async runRequestTabInvocation(tab: RequestTab, editorValue: Editor, invocation?: DebugInvocation, runFn?: RunFn, startFn?: StartFn, onAccepted?: OnRunAccepted): Promise<void> {
+      async runRequestTabInvocation(tab: RequestTab, editorValue: Editor, invocation?: DebugInvocation, runFn?: RunFn, startFn?: StartFn, onAccepted?: OnRunAccepted, onSettled?: OnRunSettled): Promise<void> {
         const state = this.requestTabState(tab);
         if (state.starting || state.sending || !requestTabs?.isCurrent(tab.tabId, tab.generation, tab.root)
           || getContext().root !== tab.root) return;
@@ -417,13 +432,16 @@ export function useDebugStore(
             }
             result = await api.debugWait({ runId: started.runId });
           } else throw new Error("缺少调试调用信息");
+          onSettled?.(result, null);
           if (ownerIsCurrent()) {
             state.result = result;
             state.responseExchangeOrder = null;
             state.responseScrollByPanel = {};
           }
         } catch (error) {
-          if (ownerIsCurrent()) state.error = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
+          onSettled?.(null, message);
+          if (ownerIsCurrent()) state.error = message;
         } finally {
           if (requestTabs.isCurrent(tab.tabId, tab.generation, tab.root) && this.requestTabs[tab.tabId] === state) {
             state.sending = false;
@@ -435,6 +453,9 @@ export function useDebugStore(
       },
       evictRequestTab(tabId: string): void {
         delete this.requestTabs[tabId];
+        for (const [key, record] of Object.entries(this.caseRuns)) {
+          if (record.tabId === tabId) delete this.caseRuns[key];
+        }
       },
       async sendRequestTab(tab: RequestTab, editorValue: Editor, runFn?: RunFn, onAccepted?: OnRunAccepted): Promise<void> {
         const state = this.requestTabState(tab);
@@ -685,44 +706,68 @@ export function useDebugStore(
         restored.setFields(fields);
         this.syncActiveRestore(editorValue);
       },
+      caseRunFor(targetEditor: Editor, identity: CaseIdentity): CaseRunRecord | undefined {
+        const key = targetEditor.activeKey;
+        const session = key ? targetEditor.sessions[key] : undefined;
+        if (!session || session.root !== getContext().root) return undefined;
+        const tab = assetTabFor(requestTabs, session.root, session.locator);
+        return this.caseRuns[caseRunKey(session, identity, tab)];
+      },
       async runCase(targetEditor: Editor, identity: CaseIdentity, runFn?: RunFn) {
         const activeKey = targetEditor.activeKey;
         const session = activeKey ? targetEditor.sessions[activeKey] : undefined;
-        if (!session) return;
+        if (!session || session.root !== getContext().root) return;
         const tab = assetTabFor(requestTabs, session.root, session.locator);
         const tabState = tab ? this.requestTabState(tab) : null;
-        const saved = JSON.parse(session.snapshot) as typeof session.api;
-        const draft = session.api.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
-        const persisted = saved.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
-        if (!draft || !persisted || JSON.stringify(draft) !== JSON.stringify(persisted)) {
+        if (!isPersistedCase(session, identity)) {
           if (tabState) tabState.error = "请先显式保存当前用例，再运行已保存用例。";
           else this.error = "请先显式保存当前用例，再运行已保存用例。";
           return;
         }
-        if (tab) {
-          const state = tabState!;
-          state.selectedCase = { caseId: identity.caseId, scope: identity.scope };
-          const env = session.envs.find((item) => item.id === state.selectedEnvironmentId);
-          const invocation: DebugInvocation = {
-            mode: "case",
-            locator: copyLocator(session.locator),
-            case: { ...copyLocator(session.locator), caseId: identity.caseId, scope: identity.scope },
-            ...(env ? { environmentId: env.id } : {}),
-            ...(Object.keys(state.settings).length ? { settings: { ...state.settings } } : {}),
-          };
-          await this.runRequestTabInvocation(tab, targetEditor, invocation, runFn);
+        if (tabState ? tabState.sending || tabState.starting : this.sending || this.starting) return;
+        const env = tabState ? session.envs.find((item) => item.id === tabState.selectedEnvironmentId)
+          : session.envs.find((item) => item.name === this.selectedEnvName);
+        if ((tabState ? tabState.selectedEnvironmentId : this.selectedEnvName) && !env) {
+          if (tabState) tabState.error = "debug-environment-unavailable";
+          else this.error = "debug-environment-unavailable";
           return;
         }
-        this.selectCase(identity);
-        const env = session.envs.find((item) => item.name === this.selectedEnvName);
+        const settings = tabState?.settings ?? this.settings;
         const invocation: DebugInvocation = {
           mode: "case",
           locator: copyLocator(session.locator),
           case: { ...copyLocator(session.locator), caseId: identity.caseId, scope: identity.scope },
           ...(env ? { environmentId: env.id } : {}),
-          ...(Object.keys(this.settings).length ? { settings: { ...this.settings } } : {}),
+          ...(Object.keys(settings).length ? { settings: { ...settings } } : {}),
         };
-        await this.runInvocation(targetEditor, invocation, runFn);
+        const key = caseRunKey(session, invocation.case, tab);
+        const previous = this.caseRuns[key];
+        // Existing debug history remains the durable source for earlier runs.
+        // Keep a bounded set of recent results across the testing workspace.
+        delete this.caseRuns[key];
+        this.caseRuns[key] = { tabId: tab?.tabId, environmentName: env?.name ?? null, pending: true, result: null, error: null };
+        const record = this.caseRuns[key]!;
+        const settled: OnRunSettled = (result, error) => {
+          record.result = result;
+          record.error = error;
+        };
+        try {
+          if (tab && tabState) {
+            tabState.selectedCase = { ...identity };
+            await this.runRequestTabInvocation(tab, targetEditor, invocation, runFn, undefined, undefined, settled);
+          } else {
+            this.selectCase(identity);
+            await this.runInvocation(targetEditor, invocation, runFn, undefined, undefined, undefined, settled);
+          }
+        } finally {
+          record.pending = false;
+          if (!record.result && !record.error && this.caseRuns[key] === record) {
+            if (previous) this.caseRuns[key] = previous;
+            else delete this.caseRuns[key];
+          }
+          const finished = Object.keys(this.caseRuns).filter((id) => !this.caseRuns[id]?.pending);
+          for (const id of finished.slice(0, Math.max(0, finished.length - maxRetainedCaseRuns))) delete this.caseRuns[id];
+        }
       },
       async send(targetEditor: Editor, runFn?: RunFn, onAccepted?: OnRunAccepted) {
         const activeKey = targetEditor.activeKey;
@@ -775,7 +820,7 @@ export function useDebugStore(
       async cancel() {
         return cancelActiveRun(this);
       },
-      async runInvocation(targetEditor: Editor, invocation: DebugInvocation | undefined, runFn?: RunFn, target?: ResultTarget, startFn?: StartFn, onAccepted?: OnRunAccepted) {
+      async runInvocation(targetEditor: Editor, invocation: DebugInvocation | undefined, runFn?: RunFn, target?: ResultTarget, startFn?: StartFn, onAccepted?: OnRunAccepted, onSettled?: OnRunSettled) {
         const activeKey = targetEditor.activeKey;
         const session = activeKey ? targetEditor.sessions[activeKey] : undefined;
         const root = target?.root ?? session?.root;
@@ -827,12 +872,15 @@ export function useDebugStore(
           } else {
             throw new Error("缺少调试调用信息");
           }
+          onSettled?.(result, null);
           if (contextIsCurrent() && epoch === this.sendEpoch) {
             this.results[resultKey] = result;
             this.lastResultKey = resultKey;
           }
         } catch (error) {
-          if (contextIsCurrent() && epoch === this.sendEpoch) this.error = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
+          onSettled?.(null, message);
+          if (contextIsCurrent() && epoch === this.sendEpoch) this.error = message;
         } finally {
           if (epoch === this.sendEpoch) {
             this.sending = false;

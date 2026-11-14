@@ -63,6 +63,7 @@ import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
 import type { ApiParentLocator, ProjectLocator } from "../../src/shared/locations.js";
 import type { ApiccApi, ImportPreviewResult } from "../../src/shared/types.js";
 import type { LocalProjectTreeNodeDTO, LocalTreeNodeDTO } from "../../src/shared/tree-dto.js";
+import { localTreeNodeKey } from "../../src/shared/tree-dto.js";
 import type { DebugInvocation, StressReport } from "@apicc/core";
 
 const failingApi = createMemoryApi();
@@ -216,7 +217,13 @@ async function openLocalDir(wrapper: VueWrapper) {
     openTask = originalOpen(rootPath);
     return openTask;
   };
-  await wrapper.find('[data-testid="home-open-dir"]').trigger("click");
+  const workspaceMenu = home.find('[data-testid="home-workspace-more"]');
+  if (workspaceMenu.exists()) {
+    await workspaceMenu.trigger("click");
+    await expectBody("home-open-dir").trigger("click");
+  } else {
+    await home.get('[data-testid="home-open-dir"]').trigger("click");
+  }
   if (!openTask) {
     workspace.open = originalOpen;
     throw new Error("Open Directory did not invoke the real workspace.open action");
@@ -2046,7 +2053,9 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
 
     await wrapper.get('[data-testid="topbar-home"]').trigger("click");
     expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
-    await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+    const card = wrapper.get(`[data-testid="project-card-${project.id}"]`);
+    expect(card.text()).toContain("已打开");
+    await card.get(".card-name").trigger("click");
     await flushPromises();
 
     expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(false);
@@ -2952,25 +2961,71 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
     ] };
     failingApi.treeGet = async () => sameNameTree;
     try {
-      const wrapper = await mountApp();
+      const wrapper = await mountApp(document.body);
       const workspace = wrapper.getComponent(HomeView).props("workspace");
       await workspace.open("/tmp/r7-project-search");
       await flushPromises();
-      await wrapper.get(".group-select").trigger("click");
+      const firstGroup = wrapper.get(".group-select");
+      await firstGroup.trigger("click");
+      expect(wrapper.get('[data-testid="home-content-title"]').text()).toBe(firstGroupName);
+      expect(wrapper.get('[data-testid="home-side-local"]').attributes("aria-current")).toBeUndefined();
       const search = wrapper.get<HTMLInputElement>('input[data-testid="home-project-search"]');
       await search.setValue("no-such-project");
       expect(wrapper.text()).toContain("没有匹配的项目");
+      expect(wrapper.get('[data-testid="home-content-title"]').text()).toBe("搜索结果");
+      expect(wrapper.get('[data-testid="home-search-count"]').text()).toBe("找到 0 个项目");
       await wrapper.get('[data-testid="home-clear-project-search"]').trigger("click");
       expect(search.element.value).toBe("");
+      expect(document.activeElement).toBe(search.element);
+      expect(wrapper.get('[data-testid="home-content-title"]').text()).toBe(firstGroupName);
+      expect(wrapper.findAll(`[data-testid="project-card-${project.id}"]`)).toHaveLength(1);
       await search.setValue("示例");
       const cards = wrapper.findAll(`[data-testid="project-card-${project.id}"]`);
       expect(cards).toHaveLength(2);
       expect(cards.map((card) => card.get(".project-group").text())).toEqual([firstGroupName, secondGroupName]);
+      expect(wrapper.get('[data-testid="home-search-count"]').text()).toBe("找到 2 个项目");
+
+      await wrapper.findAll(".group-select")[1]!.trigger("click");
+      await search.setValue("示例");
+      await wrapper.get('[data-testid="home-new-project-top"]').trigger("click");
+      expect(expectBody("home-project-dialog-group").text()).toContain(secondGroupName);
+      await expectBody("home-project-dialog-cancel").trigger("click");
+      await wrapper.get('[data-testid="home-import-project"]').trigger("click");
+      await expectBody("import-curl-input").setValue("curl https://example.test/items");
+      await expectBody("import-curl-preview").trigger("click");
+      await vi.waitFor(() => expect(expectBody("import-group-select").text()).toContain(firstGroupName));
+      chooseAppSelect(wrapper, "import-group-select", JSON.stringify({ workspaceId: project.locator.workspaceId, groupId: otherGroupId }));
+      await flushPromises();
+      expect(expectBody("import-group-select").text()).toContain(secondGroupName);
+      await expectBody("import-cancel").trigger("click");
+
+      const secondCard = wrapper.findAll(`[data-testid="project-card-${project.id}"]`)[1]!;
+      const move = vi.spyOn(failingApi, "projectMove").mockResolvedValue(undefined);
+      try {
+        await secondCard.get('[data-testid="project-card-more"]').trigger("click");
+        await expectBody("project-menu-move").trigger("click");
+        expect(expectBody("home-move-dialog-group").text()).toContain(secondGroupName);
+        chooseAppSelect(wrapper, "home-move-dialog-group", JSON.stringify(originalGroup.locator));
+        await expectBody("home-move-dialog-confirm").trigger("click");
+        await vi.waitFor(() => expect(bodyFind("home-move-dialog-confirm")).toBeNull());
+        expect(move).toHaveBeenCalledExactlyOnceWith(otherLocator, originalGroup.locator);
+      } finally {
+        move.mockRestore();
+      }
+
       const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
       expect(tabs.tabs).toHaveLength(0);
-      await cards[1]!.get(".card-name").trigger("click");
+      await secondCard.get(".card-name").trigger("click");
       await flushPromises();
       expect(tabs.activeTab).toMatchObject({ projectLocator: otherLocator });
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await wrapper.get<HTMLInputElement>('input[data-testid="home-project-search"]').setValue("示例");
+      const reopened = wrapper.findAll(`[data-testid="project-card-${project.id}"]`);
+      expect(reopened[0]!.text()).not.toContain("已打开");
+      expect(reopened[1]!.text()).toContain("已打开");
+      await workspace.open("/tmp/r7-project-search-other-root");
+      await flushPromises();
+      for (const card of wrapper.findAll(`[data-testid="project-card-${project.id}"]`)) expect(card.text()).not.toContain("已打开");
     } finally {
       failingApi.treeGet = originalTreeGet;
     }
@@ -3253,7 +3308,7 @@ describe("App 测试模块装配（M9-D）", () => {
     wrapper.findComponent(RunView).vm.$emit("locate-evidence", identity);
     await vi.waitFor(() => expect(wrapper.findComponent(CasePanel).exists()).toBe(true));
     expect(requestTabs.activeId).toBe(tabA);
-    expect(wrapper.get('[data-testid="case-row"].active').find('input').element.value).toBe(target.name);
+    expect(wrapper.get('[data-testid="case-row"].active .case-choice-name').text()).toBe(target.name);
 
     await wrapper.get('[data-testid="rail-api"]').trigger("click");
     await wrapper.get(`[data-testid="request-tab-${tabB}"]`).trigger("click"); await flushPromises();
@@ -3273,7 +3328,7 @@ describe("App 测试模块装配（M9-D）", () => {
       await wrapper.get(`[data-testid="request-tab-${tabB}"]`).trigger("click"); await flushPromises();
       await wrapper.get(`[data-testid="request-tab-${tabA}"]`).trigger("click"); await flushPromises();
       await wrapper.get('[data-testid="rail-test"]').trigger("click"); await flushPromises();
-      await wrapper.findAll('[data-testid="case-row"]')[0]!.trigger("click");
+      await wrapper.findAll(".case-choice")[0]!.trigger("click");
       await wrapper.get('[data-testid="rail-api"]').trigger("click");
       release(); await flushPromises(); await flushPromises();
       expect(wrapper.findComponent(CasePanel).exists()).toBe(false);
@@ -3304,7 +3359,7 @@ describe("App 测试模块装配（M9-D）", () => {
     await vi.waitFor(() => expect(wrapper.findComponent(CasePanel).exists()).toBe(true));
     const assertLocated = () => {
       expect(wrapper.get('[data-testid="test-tab-api-cases"]').classes()).toContain("active");
-      expect(wrapper.get('[data-testid="case-row"].active').find('input').element.value).toBe(target.name);
+      expect(wrapper.get('[data-testid="case-row"].active .case-choice-name').text()).toBe(target.name);
       expect(editor.locator).toEqual(locator); expect(JSON.stringify(editor.api)).toBe(draft); expect(editor.dirty).toBe(true);
       expect(memory.test.apiLocator).toEqual(locator); expect(memory.apiTree.lastApiLocator).toEqual(locator);
       expect(wrapper.find('[data-testid="test-navigation-list"] .api-item.active').exists()).toBe(true);
@@ -3326,7 +3381,7 @@ describe("App 测试模块装配（M9-D）", () => {
     } finally { confirm.mockRestore(); }
   });
   it("rail-test 打开测试模块：单接口用例面板选接口后可编辑，case-run 运行结果内嵌上屏", async () => {
-    const wrapper = await mountApp();
+    const wrapper = await mountApp(document.body);
     await openLocalDir(wrapper);
     await flushPromises();
     // 选中种子接口（作用域化树：collection 展开后点接口）
@@ -3357,6 +3412,193 @@ describe("App 测试模块装配（M9-D）", () => {
     }
     expect(wrapper.find('[data-testid="test-result"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="case-show-result"]').trigger("click");
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="test-result"]').element);
+  });
+
+  it("清空保存的用例请求覆盖后，切到另一用例再回原项仍显示错误并阻止运行", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    await wrapper.get('[data-testid="rail-test"]').trigger("click");
+    const panel = wrapper.getComponent(CasePanel);
+    const editor = panel.props("editor");
+    const first = editor.api!.cases[0]!;
+    const snapshot = editor.sessions[editor.activeKey!]!;
+    // Use an already-saved override so deleting its text is the only edit.
+    first.requestOverride = JSON.parse(JSON.stringify(editor.api!.contract.request));
+    snapshot.snapshot = JSON.stringify(editor.api);
+    const other = panel.props("cases").addCase({ name: "另一条用例", scope: "base" });
+    await flushPromises();
+    await wrapper.findAll(".case-choice").find((row) => row.text().includes(other.name))!.trigger("click");
+    await wrapper.findAll(".case-choice").find((row) => row.text().includes(first.name))!.trigger("click");
+    const override = '[data-testid="case-request-override-json"]';
+    const run = `[data-testid="case-run-${first.id}"]`;
+    await wrapper.get(override).setValue("");
+    expect(wrapper.get('[data-testid="case-request-override-error"]').text()).toContain("请输入请求覆盖 JSON");
+    expect(wrapper.get(run).attributes("disabled")).toBeDefined();
+    await wrapper.findAll(".case-choice").find((row) => row.text().includes(other.name))!.trigger("click");
+    await wrapper.findAll(".case-choice").find((row) => row.text().includes(first.name))!.trigger("click");
+    expect(wrapper.get<HTMLTextAreaElement>(override).element.value).toBe("");
+    expect(wrapper.get(run).attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-testid="case-request-inherit"]').trigger("click");
+    expect(wrapper.find('[data-testid="case-request-override-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="case-panel"]').text()).toContain("保存后可运行");
+  });
+
+  it("运行按请求签环境提交，迟到失败只显示在原用例，压测沿用项目环境", async () => {
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const projectEnvironment = await failingApi.envCreate({ locator: project.locator, name: "project-stress-environment" });
+    const requestEnvironment = await failingApi.envCreate({ locator: project.locator, name: "request-test-environment" });
+    const start = vi.spyOn(failingApi, "debugStart").mockResolvedValue({ runId: "late-case-failure" });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const wait = vi.spyOn(failingApi, "debugWait").mockImplementation(async () => {
+      await gate;
+      throw new Error("request transport failed");
+    });
+    try {
+      const wrapper = await mountApp(document.body);
+      await openLocalDir(wrapper);
+      await clickApiAndWait(wrapper);
+      const editor = wrapper.getComponent(RequestEditor).props("editor");
+      const first = editor.api!.cases[0]!;
+      editor.api!.contract.request.path = "/different-draft-path";
+      await wrapper.get('[data-testid="rail-test"]').trigger("click");
+      const panel = wrapper.getComponent(CasePanel);
+      const debug = panel.props("debug")!;
+      debug.selectEnv(projectEnvironment.name);
+      const other = panel.props("cases").addCase({ name: "另外一条未保存用例", scope: "base" });
+      await flushPromises();
+      const environment = wrapper.get<HTMLSelectElement>('[data-testid="case-run-environment"]');
+      await environment.setValue(requestEnvironment.id);
+      const run = wrapper.get(`[data-testid="case-run-${first.id}"]`);
+      expect(run.attributes("disabled")).toBeUndefined();
+      await run.trigger("click");
+      expect(start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        mode: "case", environmentId: requestEnvironment.id, case: expect.objectContaining({ caseId: first.id, scope: first.scope }),
+      }));
+      expect(wrapper.get('[data-testid="test-result"]').text()).toContain(requestEnvironment.name);
+      expect(wrapper.get('[data-testid="case-panel"]').text()).toContain("此用例正在运行");
+      await wrapper.findAll(".case-choice").find((row) => row.text().includes(other.name))!.trigger("click");
+      expect(wrapper.find('[data-testid="test-result"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="case-panel"]').text()).toContain("此接口的另一项请求正在运行");
+      finish();
+      await vi.waitFor(() => expect(debug.requestTabState(debug.requestTabForSession(editor.activeKey!)!).sending).toBe(false));
+      expect(wrapper.find('[data-testid="test-result"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="case-panel"]').text()).toContain("保存后可运行");
+      await wrapper.findAll(".case-choice").find((row) => row.text().includes(first.name))!.trigger("click");
+      expect(wrapper.get('[data-testid="test-result"]').text()).toContain("request transport failed");
+      await environment.setValue("");
+      expect(wrapper.get('[data-testid="test-result"]').text()).toContain(requestEnvironment.name);
+      await wrapper.get(`[data-testid="case-stress-${first.id}"]`).trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(StressPanel).props("stress").plan?.environmentId).toBe(projectEnvironment.id));
+    } finally {
+      finish();
+      start.mockRestore();
+      wait.mockRestore();
+      await failingApi.nodeDelete({ kind: "environment", locator: { ...project.locator, environmentId: requestEnvironment.id } });
+      await failingApi.nodeDelete({ kind: "environment", locator: { ...project.locator, environmentId: projectEnvironment.id } });
+    }
+  });
+
+  it("测试侧栏切接口时等待目标读取，旧接口用例和执行按钮不可用", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    const editor = wrapper.getComponent(RequestEditor).props("editor");
+    const existing = editor.locator!;
+    const originalGet = failingApi.apiGet.bind(failingApi);
+    const originalTree = failingApi.treeGet.bind(failingApi);
+    const tree = await originalTree();
+    if (tree.kind !== "root") throw new Error("Expected a local root");
+    const group = tree.children.find((node) => node.kind === "group" && node.id === existing.groupId)!;
+    const project = projectByLabel(tree, "示例项目");
+    const module = project.children.find((node) => node.kind === "collection" && node.id === existing.collectionId)!;
+    if (module.kind !== "collection") throw new Error("Expected a test module");
+    const node = module.children.find((item) => item.kind === "api" && item.id === existing.apiId)!;
+    if (node.kind !== "api") throw new Error("Expected a test API");
+    const other = { ...existing, apiId: "00000000-0000-4000-8000-000000000846" };
+    const label = "等待读取的同项目接口";
+    failingApi.treeGet = async () => ({ ...tree, children: tree.children.map((entry) =>
+      entry.kind === "group" && entry.id === group.id ? { ...entry, children: entry.children.map((item) =>
+        item.kind === "project" && item.id === project.id ? { ...item, children: item.children.map((collection) =>
+          collection.kind === "collection" && collection.id === module.id ? { ...collection, children: [...collection.children, {
+            ...node, id: other.apiId, locator: other, key: localTreeNodeKey({ source: "local", kind: "api", locator: other }), label,
+          }] } : collection,
+        ) } : item,
+      ) } : entry,
+    ) });
+    let finish!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    failingApi.apiGet = async (locator) => {
+      if (locator.apiId !== other.apiId) return originalGet(locator);
+      started();
+      await gate;
+      const detail = await originalGet(existing);
+      detail.api.contract.metadata.name = label;
+      detail.api.contract.id = other.apiId;
+      return { ...detail, locator: other };
+    };
+    try {
+      await wrapper.getComponent(TopBar).props("workspace").refresh();
+      await wrapper.get('[data-testid="rail-test"]').trigger("click");
+      expect(wrapper.findComponent(CasePanel).exists()).toBe(true);
+      const target = wrapper.findAll(".api-detail").find((row) => row.text().includes(label))!;
+      await target.trigger("click");
+      await entered;
+      expect(wrapper.find('[data-testid^="case-run-"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(false);
+      finish();
+      await vi.waitFor(() => expect(wrapper.getComponent(CasePanel).text()).toContain(label));
+      expect(editor.locator).toEqual(other);
+    } finally {
+      finish();
+      failingApi.treeGet = originalTree;
+      failingApi.apiGet = originalGet;
+    }
+  });
+
+  it("切工作区打开回执未到时，旧测试页不能继续运行、保存或打开压测", async () => {
+    const wrapper = await mountApp();
+    await openLocalDir(wrapper);
+    await clickApiAndWait(wrapper);
+    await wrapper.get('[data-testid="rail-test"]').trigger("click");
+    const workspace = wrapper.getComponent(TopBar).props("workspace");
+    const root = workspace.root;
+    const run = vi.spyOn(failingApi, "debugStart");
+    const save = vi.spyOn(failingApi, "caseDraftSave");
+    const prep = vi.spyOn(failingApi, "stressPlansList");
+    const actualOpen = failingApi.wsOpen.bind(failingApi);
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const open = vi.spyOn(failingApi, "wsOpen").mockImplementation(async (path) => {
+      await gate;
+      return actualOpen(path);
+    });
+    const oldRun = wrapper.get('button[data-testid^="case-run-"]');
+    const oldSave = wrapper.get('[data-testid="case-save"]');
+    const oldStress = wrapper.get('[data-testid^="case-stress-"]');
+    const opening = workspace.open(`${root}-case-copy`);
+    try {
+      expect(workspace.root).toBe(root);
+      expect(workspace.hasPendingOpen()).toBe(true);
+      await Promise.all([oldRun.trigger("click"), oldSave.trigger("click"), oldStress.trigger("click")]);
+      expect(run).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+      expect(prep).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(false);
+    } finally {
+      finish();
+      await opening;
+      open.mockRestore();
+      save.mockRestore();
+      run.mockRestore();
+      prep.mockRestore();
+      await workspace.open(root);
+    }
   });
 
   it("用例行「压测」：内嵌 StressPanel 渲染并绑定当前接口（apiId/cases/envs 预选该用例）", async () => {
@@ -3492,7 +3734,8 @@ describe("App 环境联动（M9-A1）", () => {
     await wrapper.find('[data-testid="rail-envs"]').trigger("click");
     await expectBody("manage-environments").trigger("click");
     await flushPromises();
-    await wrapper.find('[data-testid="env-new"]').trigger("click");
+    await wrapper.get('[data-testid="env-create-menu"]').trigger("click");
+    await expectBody("env-new").trigger("click");
     await flushPromises();
     await expectBody("env-name-input").setValue("prod");
     const envs = wrapper.findComponent(EnvPanel).props("envs") as ReturnType<typeof useEnvsStore>;
@@ -3513,7 +3756,15 @@ describe("App 环境联动（M9-A1）", () => {
     // 回调试模块：选择器数据源（editor.envs）已含新环境
     await wrapper.find('[data-testid="rail-api"]').trigger("click");
     await vi.waitFor(() => expect(editorOf().envs.map((entry) => entry.name)).toContain("prod"));
-    expect(editorOf().envs.map((e) => e.name)).toContain("prod");
+    const prod = editorOf().envs.find((entry) => entry.name === "prod")!;
+    await wrapper.get('[data-testid="debug-env-select"]').trigger("click");
+    expect(expectBody(`debug-env-option-${prod.id}`).text()).toBe("prod");
+    await expectBody(`debug-env-option-${prod.id}`).trigger("click");
+    expect(wrapper.get('[data-testid="debug-env-select"]').text()).toContain("prod");
+
+    await wrapper.get('[data-testid="rail-test"]').trigger("click");
+    await wrapper.get('[data-testid^="case-stress-"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.find(`[data-testid="stress-load-editor"] option[value="${prod.id}"]`).exists()).toBe(true));
   });
 });
 

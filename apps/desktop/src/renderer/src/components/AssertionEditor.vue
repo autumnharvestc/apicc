@@ -6,15 +6,19 @@ import { builtinAssertDescriptors } from "@apicc/core/schema";
 import { compileRegex } from "@apicc/core/assert/regex";
 import type { Assertion } from "@apicc/core";
 import type { AssertionOperatorDTO } from "../../../shared/testing.js";
-const props = defineProps<{ assertions: Assertion[]; readOnly?: boolean; operators?: AssertionOperatorDTO[] }>();
+const props = defineProps<{ assertions: Assertion[]; readOnly?: boolean; operators?: AssertionOperatorDTO[]; workbench?: boolean }>();
 const emit = defineEmits<{ validity: [message: string] }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
 const errors = reactive<Record<string, string>>({});
 const parseErrors = reactive<Record<string, string>>({});
 const operators = computed(() => props.operators ?? Object.entries(builtinAssertDescriptors).map(([op, descriptor]) => ({ op, descriptor })));
 const targets = ["status", "responseTime", "header", "bodyText", "bodyJson", "bodyXml", "cookie"];
 const descriptor = (row: Assertion) => operators.value.find((item) => item.op === row.op)?.descriptor;
 const known = (row: Assertion) => operators.value.some((item) => item.op === row.op);
+function operatorLabel(op: string): string {
+  const key = `testAssertionOperators.${op}`;
+  return props.workbench && te(key) ? t(key) : op;
+}
 function validate() {
   for (const row of props.assertions) {
     try {
@@ -67,11 +71,11 @@ function remove(index: number) {
 }
 </script>
 <template>
-  <div class="assertion-editor" data-testid="assert-table">
+  <div class="assertion-editor" :class="{ 'workbench-assertions': workbench }" data-testid="assert-table">
     <div v-for="(row, index) in assertions" :key="row.id" class="assertion-row">
       <div class="fields">
         <label>{{ t('case.target') }}<a-select :value="row.target" :disabled="readOnly" :options="[...new Set([...(descriptor(row)?.targets ?? targets),row.target])].map(value => ({ label: targets.includes(value) ? t(`testPresentation.targets.${value}`) : value, value }))" data-testid="assert-target" @update:value="value => target(row, value as Assertion['target'])" /></label>
-        <label>{{ t('case.op') }}<a-select :value="row.op" :disabled="readOnly" :options="[...operators, ...(!known(row) ? [{ op: row.op }] : [])].map(item => ({ label: item.op, value: item.op }))" data-testid="assert-op" @update:value="value => set(row, 'op', value)" /></label>
+        <label>{{ t('case.op') }}<a-select :value="row.op" :disabled="readOnly" :options="[...operators, ...(!known(row) ? [{ op: row.op }] : [])].map(item => ({ label: operatorLabel(item.op), value: item.op }))" data-testid="assert-op" @update:value="value => set(row, 'op', value)" /></label>
         <label v-if="descriptor(row)?.expectedFormat !== 'none'">{{ t('case.expected') }}<a-input :value="row.expected" :disabled="readOnly" :placeholder="descriptor(row)?.expectedFormat ?? 'text'" data-testid="assert-expected" @update:value="value => set(row, 'expected', value)" /></label>
         <label v-if="row.target === 'header'">{{ t('case.headerName') }}<a-input :value="row.headerName" :disabled="readOnly" data-testid="assert-header-name" @update:value="value => set(row, 'headerName', value)" /></label>
         <label v-if="row.target === 'cookie'">{{ t('testing.cookieName') }}<a-input :value="row.cookieName" :disabled="readOnly" @update:value="value => set(row, 'cookieName', value)" /></label>
@@ -95,4 +99,13 @@ function remove(index: number) {
 <style scoped src="../styles/editor-controls.css"></style>
 <style scoped>
 .assertion-editor { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin-bottom: 12px; }.assertion-row { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); }.fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }label { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 140px; }label :deep(.ant-select) { width: 100%; }.advanced-options { margin-top: 10px; }.advanced-options label { margin: 8px 0; }p { margin: 8px 0; font-size: 12px; line-height: 1.6; }p[role=alert] { color: var(--fail); }.hint { color: var(--text-muted); }
+.workbench-assertions { gap: 0; }
+.workbench-assertions .assertion-row {
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.workbench-assertions .assertion-row:first-child { border-top: 1px solid var(--border); }
 </style>
