@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { CompiledMockPlanSchema, CompileMockInputWireSchema, CompileMockResultSchema, MockEvaluationResultWireSchema, SharedMockPolicySchema, PublicationInputSchema, ProjectionPolicySchema } from "@apicc/core/collaboration/shared";
 import { evaluateMock } from "@apicc/core/collaboration";
+import { ContractProjectSchema } from "@apicc/core/schema";
 import { handleOperation } from "../src/handlers.js";
 import { PlanCache } from "../src/cache.js";
 import { digestJson } from "../src/protocol.js";
@@ -51,10 +52,12 @@ it("dispatches mutation script changes through real Core classifier", async () =
   expect(await handleOperation("classify-asset-mutation", { beforeFiles: after, afterFiles: after })).toEqual({ scriptChanged: false, locations: [] });
 });
 it("requires an explicit initial-project classification for a fixed empty before snapshot", async () => {
-  const project = createMockConfiguredProject();
-  const collection = project.collections[0]!;
-  project.collections = [{ ...collection, preOperations: [], postOperations: [], folders: [], apis: [] }];
-  delete project.mock;
+  const project = ContractProjectSchema.parse({
+    id: "10000000-0000-4000-8000-000000000001",
+    name: "Initial project",
+    globals: {},
+    collections: [{ id: "10000000-0000-4000-8000-000000000002", name: "Initial collection" }],
+  });
   const afterFiles = [...encodeContractProjectFiles(project).files].map(([path, content]) => ({ path, content }));
   await expect(handleOperation("classify-asset-mutation", { beforeFiles: [], afterFiles, initialContractProjectId: project.id })).resolves.toEqual({ scriptChanged: false, locations: [] });
   await expect(handleOperation("classify-asset-mutation", { beforeFiles: [], afterFiles })).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
