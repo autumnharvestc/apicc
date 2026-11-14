@@ -1,4 +1,5 @@
 import type { ApiAsset, ContractCollection, ContractFolder, ContractProject, ContractWorkspace } from "@apicc/core";
+import { isDefaultCollectionId } from "@apicc/core/schema";
 import type { ApiLocator, CollectionLocator, FolderLocator, GroupLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
 import { localTreeNodeKey, type LocalTreeNodeDTO, type TreeNodeDTO } from "../shared/tree-dto.js";
 
@@ -44,6 +45,7 @@ function collectionNode(locator: ProjectLocator, collection: ContractCollection)
     id: collection.id,
     key: localTreeNodeKey(identity),
     label: collection.name,
+    ...(isDefaultCollectionId(locator.projectId, collection.id) ? { isDefault: true } : {}),
     children: [
       ...collection.apis.map((asset) => apiNode({ ...typedLocator, folderIds: [], apiId: asset.contract.id }, asset)),
       ...collection.folders.map((folder) => folderNode({ ...typedLocator, folderIds: [folder.id] }, folder)),
@@ -53,6 +55,7 @@ function collectionNode(locator: ProjectLocator, collection: ContractCollection)
 
 function projectNode(locator: ProjectLocator, project: ContractProject): LocalTreeNodeDTO {
   const identity = { source: "local" as const, kind: "project" as const, locator };
+  const collections = project.collections.map((collection) => collectionNode(locator, collection));
   return {
     ...identity,
     id: project.id,
@@ -85,7 +88,10 @@ function projectNode(locator: ProjectLocator, project: ContractProject): LocalTr
         locator: workflowLocator,
       };
     }),
-    children: project.collections.map((collection) => collectionNode(locator, collection)),
+    children: [
+      ...collections.filter((node) => node.kind === "collection" && !node.isDefault),
+      ...collections.filter((node) => node.kind === "collection" && node.isDefault),
+    ],
   };
 }
 

@@ -16,6 +16,7 @@ import type { Workflow } from "../workflow/model.js";
 import type { SchemaNode } from "../contract/schemaNode.js";
 import { JsonValueSchema, SchemaNodeSchema } from "../contract/schemaNode.js";
 import type { SuiteAsset } from "../testing/model.js";
+import { createDefaultCollectionId, isDefaultCollectionId } from "./defaultCollection.js";
 
 export type CloneIdKind =
   | "project" | "collection" | "folder" | "environment" | "workflow" | "workflowNode" | "workflowEdge"
@@ -46,18 +47,20 @@ class IdMapper {
   private readonly ids = new Map<string, string>();
   private readonly mappings: CloneIdMapping[] = [];
 
-  constructor(private readonly newId: CloneIdFactory) {}
+  constructor(private readonly newId: CloneIdFactory, private readonly reserveId?: (kind: CloneIdKind, targetId: string) => void) {}
 
-  declare(kind: CloneIdKind, sourceId: string, ownerId?: string): string {
+  declare(kind: CloneIdKind, sourceId: string, ownerId?: string, createTargetId?: (allocatedId: string) => string): string {
     const identity = this.identity(kind, sourceId, ownerId);
     const existing = this.ids.get(identity);
     if (existing !== undefined) return existing;
 
-    const targetId = this.newId(kind, sourceId, ownerId);
-    if (targetId === sourceId) throw new Error(`The ID factory reused the source ID for ${kind}:${sourceId}.`);
+    const allocatedId = this.newId(kind, sourceId, ownerId);
+    const targetId = createTargetId?.(allocatedId) ?? allocatedId;
+    if (allocatedId === sourceId || targetId === sourceId) throw new Error(`The ID factory reused the source ID for ${kind}:${sourceId}.`);
     if (this.mappings.some((mapping) => mapping.targetId === targetId)) {
       throw new Error(`The ID factory returned a duplicate target ID for ${kind}:${sourceId}.`);
     }
+    if (targetId !== allocatedId) this.reserveId?.(kind, targetId);
     this.ids.set(identity, targetId);
     this.mappings.push({ kind, sourceId, targetId, ...(ownerId === undefined ? {} : { ownerId }) });
     return targetId;
@@ -84,12 +87,12 @@ class IdMapper {
 
 export function cloneProjectDefinition(
   project: ContractProject,
-  options: { newId: CloneIdFactory },
+  options: { newId: CloneIdFactory; reserveId?: (kind: CloneIdKind, targetId: string) => void },
 ): ClonedProjectDefinition {
   const cloned = cloneDefinitionValue(project);
-  const mapper = new IdMapper(options.newId);
-  mapper.declare("project", project.id);
-  collectProjectMappings(project, mapper);
+  const mapper = new IdMapper(options.newId, options.reserveId);
+  const projectId = mapper.declare("project", project.id);
+  collectProjectMappings(project, projectId, mapper);
   rewriteProject(project, cloned, mapper);
   return { project: cloned, idMap: mapper.result() };
 }
@@ -115,9 +118,14 @@ export function cloneAssetBundle(
   return { bundle: cloned, idMap: mapper.result() };
 }
 
-function collectProjectMappings(project: ContractProject, mapper: IdMapper): void {
+function collectProjectMappings(project: ContractProject, targetProjectId: string, mapper: IdMapper): void {
   for (const environment of project.environments) mapper.declare("environment", environment.id, project.id);
-  for (const collection of project.collections) collectCollectionMappings(collection, project.id, collectionScope(collection.id), mapper);
+  for (const collection of project.collections) {
+    const makeDefaultId = isDefaultCollectionId(project.id, collection.id)
+      ? (nonce: string) => createDefaultCollectionId(targetProjectId, nonce)
+      : undefined;
+    collectCollectionMappings(collection, project.id, collectionScope(collection.id), mapper, makeDefaultId);
+  }
   for (const workflow of project.workflows) collectWorkflowMappings(workflow, project.id, mapper);
   for (const model of project.models) mapper.declare("model", model.id, project.id);
   for (const component of project.components) collectComponentMappings(component, project.id, mapper);
@@ -126,8 +134,8 @@ function collectProjectMappings(project: ContractProject, mapper: IdMapper): voi
   for (const suite of project.suites ?? []) collectSuiteMappings(suite, project.id, mapper);
 }
 
-function collectCollectionMappings(collection: ContractCollection, projectId: string, scope: string, mapper: IdMapper): void {
-  mapper.declare("collection", collection.id, projectId);
+function collectCollectionMappings(collection: ContractCollection, projectId: string, scope: string, mapper: IdMapper, createTargetId?: (allocatedId: string) => string): void {
+  mapper.declare("collection", collection.id, projectId, createTargetId);
   collectOperations(collection.preOperations, operationScope(scope, "pre"), mapper);
   collectOperations(collection.postOperations, operationScope(scope, "post"), mapper);
   for (const folder of collection.folders) collectFolderMappings(folder, scope, projectId, mapper);

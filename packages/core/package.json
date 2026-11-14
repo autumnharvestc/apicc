@@ -31,6 +31,10 @@
       "types": "./dist/schema.d.ts",
       "default": "./dist/schema.js"
     },
+    "./node-name": {
+      "types": "./dist/storage/sanitize.d.ts",
+      "default": "./dist/storage/sanitize.js"
+    },
     "./assert/regex": {
       "types": "./dist/assert/regex.d.ts",
       "default": "./dist/assert/regex.js"
@@ -94,6 +98,7 @@
   "dependencies": {
     "@apicc/plugin-sdk": "workspace:*",
     "@napi-rs/keyring": "2.1.0",
+    "@noble/hashes": "2.4.0",
     "@xmldom/xmldom": "^0.9.12",
     "better-sqlite3": "^13.0.3",
     "csv-parse": "^7.0.2",

@@ -5,6 +5,7 @@ import { Alert as AAlert, Button as AButton, Input as AInput, Select as ASelect,
 import type { ApiRequest, HttpMethod, ParameterBinding, RequestBody } from "@apicc/core";
 import type { createOnlineStore } from "../stores/online.js";
 import EmptyState from "./EmptyState.vue";
+import type { OnlineDirectoryTarget } from "../../../shared/online/execution.js";
 
 const ATabPane = ATabs.TabPane;
 const ATextarea = AInput.TextArea;
@@ -22,7 +23,12 @@ const ATypographyText = ATypography.Text;
  */
 const props = defineProps<{
   online: ReturnType<typeof createOnlineStore>;
+  titlePath?: string;
+  draft?: { name: string; request: ApiRequest; target: OnlineDirectoryTarget | null; busy: boolean; error: string; pending: unknown; needsTarget: boolean };
+  draftWritable?: boolean;
+  targets?: Array<{ target: OnlineDirectoryTarget; label: string }>;
 }>();
+const emit = defineEmits<{ "save-draft": []; "verify-draft": []; "cancel-draft": [] }>();
 const { t } = useI18n();
 
 const METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -34,12 +40,20 @@ type Tab = (typeof TABS)[number];
 const activeTab = ref<Tab>("params");
 
 const api = computed(() => props.online.editorApi);
-const request = computed<ApiRequest | null>(() => api.value?.contract.request ?? null);
-const writable = computed(() => props.online.canEdit(props.online.editorPath));
+const request = computed<ApiRequest | null>(() => props.draft?.request ?? api.value?.contract.request ?? null);
+const writable = computed(() => props.draft ? !!props.draftWritable && !props.draft.busy && !props.draft.pending : props.online.canEdit(props.online.editorPath));
 const apiName = computed({
-  get: () => api.value?.contract.metadata.name ?? "",
-  set: (name: string) => { if (api.value) api.value.contract.metadata.name = name; },
+  get: () => props.draft?.name ?? api.value?.contract.metadata.name ?? "",
+  set: (name: string) => { if (props.draft) props.draft.name = name; else if (api.value) api.value.contract.metadata.name = name; },
 });
+const targetKey = computed(() => props.draft?.target ? JSON.stringify(props.draft.target) : undefined);
+const activeTarget = computed(() => props.targets?.find(row => JSON.stringify(row.target) === targetKey.value));
+function selectTarget(key: unknown) {
+  if (!props.draft || !writable.value) return;
+  props.draft.target = props.targets?.find(row => JSON.stringify(row.target) === key)?.target ?? null;
+  props.draft.needsTarget = !props.draft.target;
+  props.draft.error = "";
+}
 const requestPath = computed({
   get: () => request.value?.path ?? "",
   set: (path: string) => { if (request.value) request.value.path = path; },
@@ -79,6 +93,7 @@ const savedTip = ref(false);
 let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function onSave() {
+  if (props.draft) { emit("save-draft"); return; }
   await props.online.saveApi();
   if (props.online.conflict === null && props.online.error === null && props.online.editorDirty === false) {
     savedTip.value = true;
@@ -127,13 +142,13 @@ function authDescription(request_: ApiRequest | null): string {
 
 <template>
   <!-- 空态：未选中任何文件 → 引导文案（含调试/运行边界说明） -->
-  <div v-if="!online.editorPath" class="guide-wrap">
+  <div v-if="!draft && !online.editorPath" class="guide-wrap">
     <EmptyState :text="t('online.editorEmpty')" />
     <p class="guide" data-testid="online-guide">{{ t("online.pullGuide") }}</p>
   </div>
 
   <!-- 只读配置叶：原文浏览 -->
-  <section v-else-if="online.editorKind === 'file'" class="editor" data-testid="online-file-view">
+  <section v-else-if="!draft && online.editorKind === 'file'" class="editor" data-testid="online-file-view">
     <div class="name-row">
       <a-typography-text strong data-testid="online-file-name">{{ online.editorPath }}</a-typography-text>
       <a-tag data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
@@ -143,7 +158,7 @@ function authDescription(request_: ApiRequest | null): string {
 
   <!-- api.yaml：坏数据 → problems + 原文；好数据 → 表单（只读态禁用） -->
   <section v-else class="editor" data-testid="online-api-editor">
-    <template v-if="online.editorProblems.length">
+    <template v-if="!draft && online.editorProblems.length">
       <a-alert type="error" show-icon :message="t('online.problemsTitle')" data-testid="online-problems">
         <template #description>
           <ul class="problems">
@@ -154,16 +169,19 @@ function authDescription(request_: ApiRequest | null): string {
       <details><summary>{{ t('onlineExecution.raw') }}</summary><pre class="raw" data-testid="online-raw">{{ online.editorRaw }}</pre></details>
     </template>
 
-    <template v-else-if="api && request">
+    <template v-else-if="(draft || api) && request">
+      <p v-if="draft" class="path-line">{{ activeTarget?.label ?? t("projectDirectory.noSavePosition") }}</p>
       <div class="name-row">
         <a-input
           v-model:value="apiName"
           class="name-input"
           data-testid="online-editor-name"
+          :aria-label="t('debugLoop.freeSaveName')"
+          :placeholder="t('debugLoop.freeSaveName')"
           :disabled="!writable"
         />
-        <span v-if="online.editorDirty" class="dirty" :title="t('wf.unsaved')">●</span>
-        <a-tag v-if="!writable" data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
+        <span v-if="!draft && online.editorDirty" class="dirty" :title="t('wf.unsaved')">●</span>
+        <a-tag v-if="draft ? !draftWritable : !writable" data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
         <span v-if="savedTip" class="saved-tip" data-testid="online-saved-tip">{{ t("online.savedTip") }}</span>
       </div>
       <div class="top-row">
@@ -187,14 +205,23 @@ function authDescription(request_: ApiRequest | null): string {
           v-if="writable"
           type="primary"
           data-testid="online-save-btn"
-          :disabled="online.saving"
+          :disabled="online.saving || !!(draft && (!draft.name.trim() || !activeTarget || draft.needsTarget))"
           @click="onSave"
         >
           {{ online.saving ? t("online.saving") : t("online.save") }}
         </a-button>
       </div>
-      <a-typography-text class="path-line" type="secondary" data-testid="online-editor-path">
-        {{ online.editorPath }}
+      <div v-if="draft" class="draft-target">
+        <a-select :value="activeTarget ? targetKey : undefined" :disabled="!writable" data-testid="online-draft-target"
+          :aria-label="t('debugLoop.freeSaveTarget')" :placeholder="t('debugLoop.freeSaveTarget')"
+          :options="targets?.map(row => ({ value: JSON.stringify(row.target), label: row.label }))" @update:value="selectTarget" />
+        <a-button v-if="draft.pending" data-testid="online-draft-verify" :loading="draft.busy" :disabled="!draftWritable" @click="emit('verify-draft')">{{ t('onlineDirectory.verify') }}</a-button>
+        <a-button data-testid="online-draft-cancel" :disabled="draft.busy || !!draft.pending" @click="emit('cancel-draft')">{{ t('common.cancel') }}</a-button>
+        <p v-if="draft.error" role="alert">{{ t(`onlineDirectory.errors.${draft.error}`) }}</p>
+        <p v-else-if="draft.needsTarget || (!!draft.target && !activeTarget)" role="status">{{ t('projectDirectory.targetMissing') }}</p>
+      </div>
+      <a-typography-text v-else class="path-line" type="secondary" data-testid="online-editor-path">
+        {{ titlePath || online.editorPath }}
       </a-typography-text>
 
       <a-tabs v-model:active-key="activeTab">
@@ -332,6 +359,9 @@ function authDescription(request_: ApiRequest | null): string {
 .method-select { width: 96px; }
 .url { flex: 1; }
 .path-line { font-size: 11px; }
+.draft-target { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
+.draft-target :deep(.ant-select) { flex: 1 1 230px; min-width: 160px; max-width: 100%; }
+.draft-target p { flex: 1 0 100%; margin: 0; }
 .panel { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
 .kv-row { display: flex; gap: 6px; align-items: center; }
 .kv-row :deep(.ant-input) { flex: 1; }

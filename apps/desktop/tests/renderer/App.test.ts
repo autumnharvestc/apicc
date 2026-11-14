@@ -60,7 +60,7 @@ import type { useWfListStore } from "../../src/renderer/src/stores/wfList.js";
 import type { useEnvsStore } from "../../src/renderer/src/stores/envs.js";
 import { useModuleMemoryStore } from "../../src/renderer/src/stores/moduleMemory.js";
 import type { WfBindIndex } from "../../src/renderer/src/wf/wfBindings.js";
-import type { ProjectLocator } from "../../src/shared/locations.js";
+import type { ApiParentLocator, ProjectLocator } from "../../src/shared/locations.js";
 import type { ApiccApi, ImportPreviewResult } from "../../src/shared/types.js";
 import type { LocalProjectTreeNodeDTO, LocalTreeNodeDTO } from "../../src/shared/tree-dto.js";
 import type { DebugInvocation, StressReport } from "@apicc/core";
@@ -182,6 +182,14 @@ async function openNewApiFromContainer(wrapper: VueWrapper, label: string): Prom
   if (!row) throw new Error(`Expected the ${label} container row to be rendered`);
   await row.get('[data-testid="tree-more"]').trigger("click");
   await expectBody("new-api").trigger("click");
+  await vi.waitFor(() => expect(wrapper.find('[data-testid="editor-full-url"]').exists()).toBe(true));
+}
+
+async function submitNewApiDraft(wrapper: VueWrapper, name: string) {
+  await wrapper.get('[data-testid="editor-full-url"]').setValue("https://example.test/directory-draft");
+  await wrapper.get('[data-testid="save-free-btn"]').trigger("click");
+  await expectBody("free-save-name").setValue(name);
+  await expectBody("free-save-submit").trigger("click");
 }
 
 async function openProjectTool(wrapper: VueWrapper, item: string) {
@@ -874,6 +882,50 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       expect(fixture.prepared[0]?.selection.business).toMatchObject({ purpose: 'case-suggestion', target: { apiId: entry.locator.apiId } });
     } finally { wrapper.unmount(); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
   });
+  it('opens the online directory draft above the compact sidebar and restores its rail trigger', async () => {
+    const names = ['onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution'] as const;
+    const originals = new Map(names.map(name => [name, failingApi[name]]));
+    const scope = { workspaceId: '11', groupId: '22', projectId: '33' };
+    const projects = [{ id: '33', groupId: '22', name: 'Compact online project', myRole: 'EDITOR' as const }];
+    const view = { workspaceId: '11', name: 'Team', myRole: 'VIEWER' as const,
+      projects, tree: onlineTreeToDto({ workspaceId: '11', rootVersion: 1, files: [], projects }, 'Team') };
+    failingApi.onlineLogin = async () => ({ expiresAt: '2099-01-01T00:00:00Z', user: { id: '7', username: 'alice', displayName: 'Member' } });
+    failingApi.onlineWorkspaceList = async () => [{ id: '11', name: view.name, myRole: 'VIEWER', createdAt: '2026-11-01T00:00:00Z' }];
+    failingApi.onlineWorkspaceOpen = async () => view;
+    failingApi.onlineWorkspaceActivate = async () => {};
+    failingApi.onlineTreeView = async () => view;
+    failingApi.onlineExecution = async input => {
+      if (input.operation === 'assets') return { project: null, problems: [], assets: { ...scope, format: null, contractProjectId: null, version: '0', manifestHash: 'a'.repeat(64), files: [] } };
+      if (input.operation === 'agents') return { defaultAgentId: null, canManageScripts: false, policy: structuredClone(defaultPolicyConfig), policyVersion: '1', agents: [] };
+      if (input.operation === 'materials') return { credentials: [], attachments: [] };
+      if (input.operation === 'list') return [];
+      throw new Error('Unexpected online write');
+    };
+    vi.stubGlobal('innerWidth', 640);
+    const wrapper = await mountApp(document.body);
+    try {
+      const online = wrapper.findComponent(OnlineLoginDialog).props('online');
+      online.addProfile('http://127.0.0.1:8080', 'Team');
+      await online.login('alice', 'password8'); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
+      await wrapper.findComponent(ProjectTabs).props('tabs').openProjectTab({ kind: 'online', workspaceId: '11', name: view.name }, projects[0]!);
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="online-directory-blank"]').exists()).toBe(true));
+      const rail = wrapper.get('[data-testid="rail-directory"]');
+      await rail.trigger('click');
+      const create = wrapper.get('[data-testid="directory-create"]');
+      await create.trigger('click');
+      await expectBody('new-api').trigger('click');
+      const draft = wrapper.get('[data-testid="online-draft"]');
+      expect(draft.isVisible()).toBe(true);
+      expect(rail.attributes('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(draft.get('[data-testid="online-editor-name"]').element);
+      await draft.get('[data-testid="online-draft-cancel"]').trigger('click');
+      expect(wrapper.find('[data-testid="online-draft"]').exists()).toBe(false);
+      expect(document.activeElement).toBe(rail.element);
+    } finally {
+      wrapper.unmount(); vi.unstubAllGlobals();
+      for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) });
+    }
+  });
   // Catches the composition root leaving its real AI operation/subscription alive after unmount.
   it('T11 disposes the shared App AI operation on unmount', async () => {
     const fixture = createAiBusinessFixture();
@@ -1213,6 +1265,192 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     }
   });
 
+  it("目录空项目首存默认模块，取消无写入，改名后复用同一模块", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const original = await failingApi.treeGet();
+    const group = original.children?.find((node) => node.kind === "group");
+    if (group?.kind !== "group") throw new Error("Expected a fixture group");
+    const created = await realNodeCreate({ kind: "project", parent: group.locator, name: "Directory first save" });
+    if (created.kind !== "project") throw new Error("Expected a fixture project");
+    const workspace = wrapper.getComponent(SideTree).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const collection = () => workspace.findProject(created.locator)?.children.find((node) => node.kind === "collection");
+    try {
+      await workspace.refresh();
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await wrapper.get(`[data-testid="project-card-${created.id}"]`).trigger("click");
+      const startDraft = async () => {
+        await vi.waitFor(() => expect(wrapper.find('[data-testid="directory-create"]').isVisible()).toBe(true));
+        await wrapper.get('[data-testid="directory-create"]').trigger("click");
+        await expectBody("new-api").trigger("click");
+        await vi.waitFor(() => expect(wrapper.find('[data-testid="editor-full-url"]').exists()).toBe(true));
+      };
+      await startDraft();
+      expect(wrapper.get('.request-path').text()).toBe("尚未选择保存位置");
+      await wrapper.get('[data-testid="editor-full-url"]').setValue("https://example.test/first");
+      await wrapper.get('[data-testid="save-free-btn"]').trigger("click");
+      expect(expectBody("free-save-target").text()).toContain("未分类接口（默认）");
+      await expectBody("free-save-name").setValue("First API");
+      await expectBody("free-save-cancel").trigger("click");
+      expect(collection()).toBeUndefined();
+      await submitNewApiDraft(wrapper, "First API");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="tree-default-collection"]').text()).toBe("默认"));
+      expect(wrapper.get('.request-path').text()).toBe("未分类接口");
+      const initial = collection();
+      if (initial?.kind !== "collection") throw new Error("Expected the persisted default module");
+      const row = wrapper.get('[data-testid="tree-container-row"]');
+      await row.get('[data-testid="tree-more"]').trigger("click");
+      const openedMenu = new DOMWrapper(document.body).get('[data-menu-owner="tree-more"]');
+      await openedMenu.get('[data-testid="node-rename"]').trigger("click");
+      await expectBody("dialog-input").setValue("Renamed intake");
+      await expectBody("dialog-confirm").trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('.request-path').text()).toBe("Renamed intake"));
+      await startDraft();
+      await wrapper.get('[data-testid="save-free-btn"]').trigger("click");
+      expect(expectBody("free-save-target").text()).toContain("Renamed intake（默认）");
+      await expectBody("free-save-name").setValue("Second API");
+      await expectBody("free-save-submit").trigger("click");
+      await vi.waitFor(() => expect(collection()?.children).toHaveLength(2));
+      expect(collection()?.id).toBe(initial.id);
+      const bridge = initI18n().i18n.global;
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="save-feedback"]').text()).toContain("保存"));
+      const language = bridge.locale.value;
+      try {
+        bridge.locale.value = "en";
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="save-feedback"]').text()).toContain("API saved"));
+      } finally { bridge.locale.value = language; }
+    } finally {
+      await failingApi.nodeDelete({ kind: "project", locator: created.locator });
+    }
+  });
+
+  it("目录删掉预选嵌套容器后保留草稿，经显式重读和重新选择保存", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const workspace = wrapper.getComponent(SideTree).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const original = await failingApi.treeGet();
+    const project = projectByLabel(original, "示例项目");
+    const container = project.children.find(node => node.kind === "collection");
+    if (container?.kind !== "collection") throw new Error("Expected fixture collection");
+    const created = await realNodeCreate({ kind: "folder", parent: container.locator, name: "Directory deleted target" });
+    if (created.kind !== "folder") throw new Error("Expected fixture folder");
+    const save = vi.spyOn(failingApi, "apiCreateFromRequestDraft");
+    let saved: Awaited<ReturnType<ApiccApi["apiCreateFromRequestDraft"]>> | undefined;
+    try {
+      await workspace.refresh();
+      await expandAllCollapsedTreeContainers(wrapper);
+      await openNewApiFromContainer(wrapper, created.label);
+      expect(wrapper.get(".request-path").text()).toBe(`${container.label} / ${created.label}`);
+      await failingApi.nodeDelete({ kind: "folder", locator: created.locator });
+      await submitNewApiDraft(wrapper, "After deleted target");
+      await vi.waitFor(() => expect(bodyFind("free-save-error")?.text()).toContain("原保存位置已不可用"));
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(wrapper.get('[data-testid="editor-full-url"]').element.getAttribute("value")).toBe("https://example.test/directory-draft");
+      expect(expectBody("free-save-name").element.getAttribute("value")).toBe("After deleted target");
+      await expectBody("free-save-reload-targets").trigger("click");
+      await vi.waitFor(() => expect(bodyFind("free-save-reload-targets")?.isVisible()).not.toBe(true));
+      expect((expectBody("free-save-submit").element as HTMLButtonElement).disabled).toBe(true);
+      chooseAppSelect(wrapper, "free-save-target", JSON.stringify(container.locator));
+      await flushPromises();
+      await expectBody("free-save-submit").trigger("click");
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="request-editor"]').attributes("data-source-kind")).toBe("asset"));
+      expect(save).toHaveBeenCalledTimes(2);
+      saved = await save.mock.results[1]?.value;
+      expect(saved?.locator).toMatchObject({ ...container.locator, folderIds: [] });
+      expect(wrapper.get(".request-path").text()).toBe(container.label);
+    } finally {
+      save.mockRestore();
+      if (saved) await failingApi.nodeDelete({ kind: "api", locator: saved.locator });
+      if (workspace.findProject(project.locator)?.children.some(node => node.kind === "collection" && node.children.some(child => child.id === created.id))) {
+        await failingApi.nodeDelete({ kind: "folder", locator: created.locator }).catch(() => undefined);
+      }
+    }
+  });
+
+  it("目录项目操作在刷新失败后仍更新、关闭准确项目签并保留其他项目选择", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const workspace = wrapper.getComponent(SideTree).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const original = await failingApi.treeGet();
+    const project = projectByLabel(original, "示例项目");
+    const other = await realNodeCreate({ kind: "project", parent: { workspaceId: project.locator.workspaceId, groupId: project.locator.groupId }, name: "Directory project operations" });
+    if (other.kind !== "project") throw new Error("Expected fixture project");
+    const secondCollection = await realNodeCreate({ kind: "collection", parent: project.locator, name: "Second directory collection" });
+    if (secondCollection.kind !== "collection") throw new Error("Expected a second collection");
+    const secondApi = await realNodeCreate({ kind: "api", parent: secondCollection.locator, api: { name: "Second directory API", protocol: "http" } });
+    let removed = false;
+    try {
+      await workspace.refresh();
+      await clickApiAndWait(wrapper);
+      const originalTab = wrapper.getComponent(RequestEditor).props("requestTab") as RequestTab;
+      await expandAllCollapsedTreeContainers(wrapper);
+      await wrapper.get(`[data-testid="tree-api"][data-node-id="${secondApi.id}"]`).trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.tabId).not.toBe(originalTab.tabId));
+      await wrapper.get(`[data-testid="request-tab-${originalTab.tabId}"]`).trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.tabId).toBe(originalTab.tabId));
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await wrapper.get(`[data-testid="project-card-${other.id}"]`).trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-1"]').attributes("aria-selected")).toBe("true"));
+      await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.getComponent(RequestEditor).props("requestTab")?.tabId).toBe(originalTab.tabId));
+      expect(wrapper.get('.node.selected [data-testid="tree-api"]').attributes("data-node-id")).not.toBe(secondApi.id);
+      await wrapper.get('[data-testid="tree-search"]').setValue("示例集合");
+      const container = wrapper.get('[data-testid="tree-container-row"]');
+      await container.get('.row-title').trigger("click");
+      await workspace.refresh();
+      await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+      await wrapper.get(`[data-testid="project-card-${other.id}"]`).trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-1"]').attributes("aria-selected")).toBe("true"));
+      expect((wrapper.get('[data-testid="tree-search"]').element as HTMLInputElement).value).toBe("");
+      await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-0"]').attributes("aria-selected")).toBe("true"));
+      expect((wrapper.get('[data-testid="tree-search"]').element as HTMLInputElement).value).toBe("示例集合");
+      expect(wrapper.get('[data-testid="tree-container-row"]').classes()).toContain("selected");
+      await wrapper.get('[data-testid="project-tab-1"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="directory-project-more"]').attributes("aria-label")).toContain(other.label));
+      const openProjectMenu = () => wrapper.get('[data-testid="directory-project-more"]').trigger("click");
+      const refresh = vi.spyOn(workspace, "refresh").mockRejectedValue(new Error("injected directory refresh"));
+      try {
+        await openProjectMenu();
+        await expectBody("directory-project-rename").trigger("click");
+        await expectBody("dialog-input").setValue("Directory project renamed");
+        await expectBody("dialog-confirm").trigger("click");
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-1"]').text()).toContain("Directory project renamed"));
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="app-error"]').text()).toContain("项目更改已保存"));
+        await openProjectMenu();
+        await expectBody("directory-project-delete").trigger("click");
+        await expectBody("dialog-cancel").trigger("click");
+        expect(wrapper.find('[data-testid="project-tab-1"]').exists()).toBe(true);
+        await openProjectMenu();
+        await expectBody("directory-project-delete").trigger("click");
+        await expectBody("dialog-confirm").trigger("click");
+        await vi.waitFor(() => expect(wrapper.find('[data-testid="project-tab-1"]').exists()).toBe(false));
+        removed = true;
+      } finally { refresh.mockRestore(); }
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-0"]').attributes("aria-selected")).toBe("true"));
+      expect(wrapper.get('[data-testid="tree-container-row"]').classes()).toContain("selected");
+      const requestTabs = wrapper.getComponent(RequestTabs).props("tabs") as ReturnType<typeof createRequestTabsStore>;
+      for (const id of [...requestTabs.order]) await wrapper.get(`[data-testid="request-tab-close-${id}"]`).trigger("click");
+      await vi.waitFor(() => expect(requestTabs.order).toHaveLength(0));
+      await wrapper.get('[data-testid="rail-run"]').trigger("click");
+      const third = await realNodeCreate({ kind: "project", parent: { workspaceId: project.locator.workspaceId, groupId: project.locator.groupId }, name: "Directory view checkpoint" });
+      if (third.kind !== "project") throw new Error("Expected another fixture project");
+      try {
+        await workspace.refresh();
+        await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+        await wrapper.get(`[data-testid="project-card-${third.id}"]`).trigger("click");
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-1"]').attributes("aria-selected")).toBe("true"));
+        expect(wrapper.get('[data-testid="rail-run"]').attributes("aria-current")).toBe("page");
+        await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
+        await vi.waitFor(() => expect(requestTabs.order).toHaveLength(1));
+        expect(wrapper.get('[data-testid="rail-run"]').attributes("aria-current")).toBe("page");
+      } finally { await failingApi.nodeDelete({ kind: "project", locator: third.locator }); }
+    } finally {
+      if (!removed) await failingApi.nodeDelete({ kind: "project", locator: other.locator }).catch(() => undefined);
+      await failingApi.nodeDelete({ kind: "collection", locator: secondCollection.locator });
+    }
+  });
+
   it("当前项目可打开 free 请求签并用完整 URL 保留重复 query 顺序发送", async () => {
     const wrapper = await mountApp();
     await openLocalDir(wrapper);
@@ -1368,8 +1606,8 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       expect(requestEditor.props("requestTab")).toMatchObject({ ...originalFreeTab, tabId: session.tabId, source: { kind: "free" } });
 
       expect(bodyFind("free-save-name")).not.toBeNull();
-      await vi.waitFor(() => expect(bodyFind("free-save-target")).not.toBeNull());
-      expect((expectBody("free-save-submit").element as HTMLButtonElement).disabled).toBe(false);
+      await vi.waitFor(() => expect((expectBody("free-save-submit").element as HTMLButtonElement).disabled,
+        `${expectBody("free-save-target").text()} ${bodyFind("free-save-target-missing")?.text() ?? ""}`).toBe(false));
       await expectBody("free-save-submit").trigger("click");
       await flushPromises();
       await flushPromises();
@@ -1439,7 +1677,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     const name = "Free URL pending guard";
     const previousNodeCreate = failingApi.nodeCreate;
     let projectLocator: ProjectLocator | null = null;
-    let targetParent: Parameters<typeof failingApi.apiCreateFromRequestDraft>[0]["targetParent"] | null = null;
+    let targetParent: ApiParentLocator | null = null;
     try {
       const rootTree = await failingApi.treeGet();
       const group = rootTree.children!.find((node) => node.kind === "group");
@@ -1944,8 +2182,8 @@ describe("App 错误反馈通道（宽审查 I1）", () => {
     // 打开工作区：memory 替身 wsOpen 对非工作区目录回退内存态（已 seed）
     await openLocalDir(wrapper);
     await flushPromises();
-    // 展开分组后经集合行 More 菜单选择「新建接口」
-    await openNewApiFromContainer(wrapper, "示例集合");
+    await wrapper.get('[data-testid="directory-create"]').trigger("click");
+    await expectBody("new-collection").trigger("click");
     await expectBody("dialog-input").setValue("x");
     await expectBody("dialog-confirm").trigger("click");
     await flushPromises();
@@ -2328,23 +2566,10 @@ describe("App 工作流绑定索引随树刷新（审查 I2）", () => {
       expect(before).not.toBeNull();
       expect(before!.apiIds.size).toBe(1);
 
-      // 项目内经侧树新增接口：nodeCreate + workspace.refresh 换新 tree 引用
+      // 项目内经目录创建并保存请求草稿，刷新目录的绑定索引。
       await openNewApiFromContainer(wrapper, "示例集合");
-      await expectBody("dialog-input").setValue("联动新接口");
-      const tree = wrapper.findComponent(SideTree).props("tree") as ReturnType<typeof useTreeStore>;
-      const originalCreate = tree.createNode.bind(tree);
-      let createTask: ReturnType<typeof originalCreate> | null = null;
-      tree.createNode = (...args) => {
-        createTask = originalCreate(...args);
-        return createTask;
-      };
-      try {
-        await expectBody("dialog-confirm").trigger("click");
-        if (!createTask) throw new Error("API creation dialog did not invoke the real tree.createNode action");
-        await createTask;
-      } finally {
-        tree.createNode = originalCreate;
-      }
+      await submitNewApiDraft(wrapper, "联动新接口");
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="request-editor"]').attributes("data-source-kind")).toBe("asset"));
       await wrapper.get('[data-testid="rail-wf"]').trigger("click");
       await flushPromises();
 
@@ -3170,16 +3395,8 @@ describe("App 测试模块装配（M9-D）", () => {
       expect(wrapper.find('[data-testid="case-panel"]').exists()).toBe(true);
       // 切接口：压测会话清空（clear 裁定）——新建第二接口并选中
       await openNewApiFromContainer(wrapper, "示例集合");
-      await expectBody("dialog-input").setValue("第二接口");
-      const treeStore = wrapper.findComponent(SideTree).props("tree") as ReturnType<typeof useTreeStore>;
-      const originalCreate = treeStore.createNode.bind(treeStore);
-      let creating: ReturnType<typeof originalCreate> | null = null;
-      treeStore.createNode = (...args) => (creating = originalCreate(...args));
-      try {
-        await expectBody("dialog-confirm").trigger("click");
-        if (!creating) throw new Error("API dialog did not create the new API");
-        await creating;
-      } finally { treeStore.createNode = originalCreate; }
+      await submitNewApiDraft(wrapper, "第二接口");
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="request-editor"]').attributes("data-source-kind")).toBe("asset"));
       await flushPromises();
       // 新接口在测试模块：进入压测上下文前报告已清空
       await wrapper.get('[data-testid="rail-test"]').trigger("click");

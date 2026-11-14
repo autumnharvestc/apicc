@@ -152,7 +152,8 @@ export const SharedMockPolicySchema = z.object({ maxResponseBytes: z.number().in
   requestDeadlineMs: z.number().int().min(1000).max(120_000), ...sensitivePolicyShape,
 }).strict();
 export const MockDiagnosticSchema = z.object({ severity: z.enum(["warning", "error"]), code: z.string(), path: z.string(), message: z.string(), lossy: z.boolean(), ownerId: z.string().optional() }).strict();
-export const AssetMutationInputWireSchema = z.object({ beforeFiles: ContractFilesWireSchema, afterFiles: ContractFilesWireSchema }).strict();
+export const AssetMutationInputWireSchema = z.object({ beforeFiles: ContractFilesWireSchema, afterFiles: ContractFilesWireSchema,
+  initialContractProjectId: z.string().uuid().optional() }).strict();
 export const AssetMutationResultSchema = z.object({ scriptChanged: z.boolean(), locations: z.array(z.string()) }).strict();
 export const CompileMockInputWireSchema = z.object({ files: ContractFilesWireSchema, maxResponseBytes: SharedMockPolicySchema.shape.maxResponseBytes.optional() }).strict();
 export const CompileMockResultSchema = z.discriminatedUnion("ok", [

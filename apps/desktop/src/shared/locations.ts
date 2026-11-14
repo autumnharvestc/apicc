@@ -21,6 +21,10 @@ export const CaseLocatorSchema = ApiLocatorSchema.extend({ caseId: z.string(), s
 export const WorkflowImpactLocatorSchema = ApiLocatorSchema.extend({ caseId: z.string().optional() }).strict();
 
 export const ApiParentLocatorSchema = z.union([CollectionLocatorSchema, FolderLocatorSchema]);
+export const RequestSaveTargetSchema = z.union([ApiParentLocatorSchema, z.object({
+  kind: z.literal("project-default"),
+  expectedCollectionId: IdSchema.nullable(),
+}).strict()]);
 
 export const NodeLocatorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("group"), locator: GroupLocatorSchema }).strict(),
@@ -49,4 +53,5 @@ export type SuiteLocator = z.infer<typeof SuiteLocatorSchema>;
 export type CaseLocator = z.infer<typeof CaseLocatorSchema>;
 export type WorkflowImpactLocator = z.infer<typeof WorkflowImpactLocatorSchema>;
 export type ApiParentLocator = z.infer<typeof ApiParentLocatorSchema>;
+export type RequestSaveTarget = z.infer<typeof RequestSaveTargetSchema>;
 export type NodeLocator = z.infer<typeof NodeLocatorSchema>;

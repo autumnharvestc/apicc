@@ -6,8 +6,9 @@ export const LOCALES = ["zh-CN", "en"] as const;
 export type Locale = (typeof LOCALES)[number];
 const STORAGE_KEY = "apicc.locale";
 
-/** Only known session codes at the end of plain/main IPC errors are presentation keys. */
+/** Only known online error codes at the end of plain/main IPC errors are presentation keys. */
 export function onlineSessionErrorKey(message: string | null | undefined): string | null {
+  if (message?.match(/(?:^|Error: )online-directory-project-draft-conflict(?:['"])?$/)) return "onlineDirectory.errors.project-draft-conflict";
   const code = message?.match(/(?:^|Error: )(online-not-signed-in|online-workspace-not-open|online-session-changed|online-workspace-server-conflict|online-tab-server-mismatch|online-tab-server-unknown)(?:['"])?$/)?.[1];
   return code ? `online.sessionErrors.${code}` : null;
 }

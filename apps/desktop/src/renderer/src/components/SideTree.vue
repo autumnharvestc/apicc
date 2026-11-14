@@ -3,10 +3,11 @@ import { ref, computed, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Tree as ATree, Tooltip as ATooltip } from "ant-design-vue";
 import { AppstoreOutlined, DeleteOutlined, EditOutlined, FolderOutlined, MoreOutlined, PlusOutlined, ProjectOutlined } from "@ant-design/icons-vue";
+import { sanitizeNodeName } from "@apicc/core/node-name";
 import type { WorkflowImpactEntryDTO } from "../../../shared/types.js";
 import type { ApiccApi, ContainerTarget, NodeCreateInput, NodeCreatedDTO } from "../../../shared/types.js";
-import type { NodeLocator, ProjectLocator } from "../../../shared/locations.js";
-import type { LocalTreeNodeDTO, TreeNodeDTO } from "../../../shared/tree-dto.js";
+import type { ApiLocator, ApiParentLocator, NodeLocator, ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
+import { localTreeNodeKey, type LocalTreeNodeDTO, type OnlineTreeNodeDTO, type TreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { useTreeStore } from "../stores/tree.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
@@ -55,8 +56,21 @@ const props = defineProps<{
   importTargetKey?: string;
   compact?: boolean;
   hidden?: boolean;
+  scopeKey?: string;
+  projectDrafts?: boolean;
+  onlineProject?: OnlineTreeNodeDTO | null;
+  onlineWritable?: boolean;
+  onlineExpanded?: string[];
+  onlineSelectedKey?: string;
 }>();
-const emit = defineEmits<{ select: [node: TreeNodeDTO | NodeCreatedDTO]; "import-interfaces": [targetKey: string] }>();
+const emit = defineEmits<{
+  select: [node: TreeNodeDTO | NodeCreatedDTO]; "import-interfaces": [targetKey: string];
+  "new-interface": [parent: ApiParentLocator | null];
+  "project-renamed": [root: string, locator: ProjectLocator, name: string];
+  "project-deleted": [root: string, locator: ProjectLocator];
+  "online-directory-action": [action: string, node: OnlineTreeNodeDTO];
+  "online-expanded": [keys: string[]];
+}>();
 const { t } = useI18n();
 
 // nodeRename/nodeDelete 频道接受的节点 kind（api 树节点；不含 root/workflow）。
@@ -71,12 +85,13 @@ watch(() => props.tree.selected?.key ?? null, (key) => { selectedKeys.value = ke
 watch(() => props.moduleMemory?.apiTree.expanded, (keys) => {
   if (!props.treeRoot && props.activeProjectLocator) expanded.value = new Set(keys ?? []);
 }, { deep: true, immediate: true });
+watch(() => props.onlineExpanded, (keys) => { if (keys) expanded.value = new Set(keys); }, { immediate: true });
 
 function descendantContainerIds(node: TreeNodeDTO): string[] {
   const ids: string[] = [];
   for (const child of node.children ?? []) {
     // api 与 workflow 均为叶子（workflow 由 project.workflows 摘要合成，不入 children）
-    if (child.kind !== "api" && child.kind !== "workflow") ids.push(child.key);
+    if (child.kind !== "api" && child.kind !== "workflow" && child.kind !== "file") ids.push(child.key);
     ids.push(...descendantContainerIds(child));
   }
   return ids;
@@ -91,6 +106,7 @@ function toggle(node: TreeNodeDTO, opening = !expanded.value.has(node.key)) {
     for (const id of descendantContainerIds(node)) next.add(id);
   }
   expanded.value = next;
+  if (node.source === "online" && props.onlineProject) emit("online-expanded", [...next]);
   if (props.treeRoot === undefined && props.activeProjectLocator && props.moduleMemory) {
     props.moduleMemory.apiTree.expanded = [...next];
     props.moduleMemory.touch();
@@ -117,8 +133,9 @@ const activeProjectNode = computed<TreeNodeDTO | null>(() => {
   if (props.treeRoot !== undefined || !props.activeProjectLocator) return null;
   return props.workspace.findProject(props.activeProjectLocator);
 });
-const scoped = computed(() => props.treeRoot === undefined && activeProjectNode.value !== null);
+const scoped = computed(() => !!props.onlineProject || (props.treeRoot === undefined && activeProjectNode.value !== null));
 const rootNode = computed<TreeNodeDTO | null>(() => {
+  if (props.onlineProject) return props.onlineProject;
   if (props.treeRoot !== undefined) return props.treeRoot;
   if (activeProjectNode.value) return activeProjectNode.value;
   return props.workspace.tree;
@@ -158,8 +175,8 @@ const treeData = computed<TreeDataNode[]>(() => {
         children,
       };
     });
-  // 作用域化：项目节点本身作为顶层容器过 mapNodes——project.workflows 叶合成逻辑同口径复用。
-  const all = mapNodes(scoped.value && rootNode.value ? [rootNode.value] : rootNode.value?.children);
+  const all = scoped.value && rootNode.value
+    ? mapNodes([rootNode.value])[0]?.children ?? [] : mapNodes(rootNode.value?.children);
   // 搜索过滤（M8）：label 不区分大小写；命中保留完整子树，未命中但有命中后代则保留为路径
   const kw = props.filter?.trim().toLowerCase();
   if (!kw) return all;
@@ -186,8 +203,6 @@ watch(
 // 过滤激活时可见容器全部展开（否则命中叶子的祖先链处于折叠态，过滤结果不可见）
 const effectiveExpandedKeys = computed(() => {
   const keys = new Set(expanded.value);
-  // 作用域化：项目根（顶层即项目）恒展开，集合层直接可见
-  if (scoped.value && rootNode.value) keys.add(rootNode.value.key);
   // 搜索过滤激活：可见容器全部自动展开（否则命中叶子的祖先链折叠，结果不可见）
   if (!props.filter?.trim()) return Array.from(keys);
   const collect = (nodes: TreeDataNode[]) => {
@@ -205,33 +220,84 @@ const effectiveExpandedKeys = computed(() => {
 const filterNoMatch = computed(
   () => !!props.filter?.trim() && treeData.value.length === 0,
 );
-const createTarget = computed<TreeNodeDTO | null>(() => {
-  if (isReadOnly.value || !rootNode.value) return null;
-  const selected = props.tree.selected?.key;
-  function findTarget(node: TreeNodeDTO, parent: TreeNodeDTO | null): TreeNodeDTO | null {
-    if (node.key === selected) return node.kind === "api" ? parent : node;
-    for (const child of node.children ?? []) {
-      const found = findTarget(child, node);
-      if (found) return found;
-    }
-    return null;
-  }
-  const target = findTarget(rootNode.value, null);
-  return target?.kind === "workflow" ? rootNode.value : target ?? rootNode.value;
-});
+const createTarget = computed(() => isReadOnly.value || (props.scopeKey !== undefined && !activeProjectNode.value)
+  ? null : activeProjectNode.value ?? rootNode.value);
 const createItems = computed(() => [
+  ...(props.onlineProject && props.onlineWritable ? [
+    { key: "collection", label: t("tree.newCollection"), testId: "new-collection" },
+    { key: "api", label: t("tree.newApi"), testId: "new-api" },
+  ] : []),
   ...(createTarget.value ? nodeCreateItems(createTarget.value) : []),
+  ...(activeProjectNode.value ? [{ key: "api", label: t("tree.newApi"), testId: "new-api" }] : []),
   ...(createTarget.value && props.importTargetKey
     ? [{ key: "import", label: t("projectTools.importInterfaces"), testId: "directory-import-interfaces" }] : []),
 ]);
+const projectManageItems = computed(() => [
+  { key: "rename", label: t("tree.renameTooltip"), testId: "directory-project-rename" },
+  { key: "delete", label: t("tree.deleteTooltip"), testId: "directory-project-delete", divider: true, danger: true },
+]);
+function reveal(locator: ApiLocator) {
+  const keys = new Set(expanded.value);
+  const project = activeProjectNode.value;
+  if (!project || project.source !== "local" || project.kind !== "project") return;
+  let parent = project.children.find((node) => node.kind === "collection" && node.locator.collectionId === locator.collectionId);
+  if (!parent) return;
+  keys.add(parent.key);
+  for (const id of locator.folderIds) {
+    parent = parent.children?.find((node) => node.kind === "folder" && node.id === id);
+    if (!parent) return;
+    keys.add(parent.key);
+  }
+  expanded.value = keys;
+  scrollToDirectoryNode(localTreeNodeKey({ source: "local", kind: "api", locator }));
+}
+
+function revealOnline(path: string) {
+  const visit = (node: OnlineTreeNodeDTO): string[] | undefined => {
+    if (node.id === path && (node.kind === "api" || node.kind === "collection")) return [node.key];
+    for (const child of node.children ?? []) {
+      const chain = visit(child);
+      if (chain) return [node.key, ...chain];
+    }
+  };
+  const chain = props.onlineProject && visit(props.onlineProject);
+  if (!chain) return;
+  expanded.value = new Set([...expanded.value, ...chain]);
+  emit("online-expanded", [...expanded.value]);
+  scrollToDirectoryNode(chain.at(-1)!);
+}
+
+function scrollToDirectoryNode(key: string) {
+  if (props.hidden) return;
+  const generation = scopeGeneration;
+  void nextTick(() => {
+    const selected = props.onlineProject ? props.onlineSelectedKey : props.tree.selected?.key;
+    if (generation !== scopeGeneration || props.hidden || selected !== key) return;
+    const scroller = directory.value?.querySelector<HTMLElement>(".directory-tree");
+    const row = [...(scroller?.querySelectorAll<HTMLElement>("[data-directory-node]") ?? [])]
+      .find((element) => element.dataset.directoryNode === key);
+    if (!scroller || !row) return;
+    const visible = scroller.getBoundingClientRect();
+    const bounds = row.getBoundingClientRect();
+    if (bounds.top < visible.top) scroller.scrollTop += bounds.top - visible.top;
+    else if (bounds.bottom > visible.bottom) scroller.scrollTop += bounds.bottom - visible.bottom;
+  });
+}
+defineExpose({ reveal, revealOnline });
 let openedImportTarget: string | undefined;
 
 function selectDirectoryAction(action: string) {
-  if (props.hidden || !createTarget.value) return;
+  if (props.hidden) return;
+  if (props.onlineProject) {
+    if (props.onlineWritable && (action === "api" || action === "collection")) emit("online-directory-action", action, props.onlineProject);
+    return;
+  }
+  if (!createTarget.value) return;
   if (action === "import") {
     if (openedImportTarget && openedImportTarget === props.importTargetKey) emit("import-interfaces", openedImportTarget);
     return;
   }
+  if (action === "api" && activeProjectNode.value) { emit("new-interface", null); return; }
   runNodeAction(createTarget.value, action);
 }
 
@@ -239,10 +305,7 @@ function selectNode(node: TreeNodeDTO) {
   selectedKeys.value = [node.key];
   if (node.source === "local") {
     props.tree.select(node);
-    if (node.kind === "api" && props.moduleMemory) {
-      props.moduleMemory.apiTree.lastApiLocator = { ...node.locator, folderIds: [...node.locator.folderIds] };
-      props.moduleMemory.touch();
-    }
+    props.moduleMemory?.rememberDirectorySelection(props.workspace.root, node);
   }
   emit("select", node);
 }
@@ -259,24 +322,36 @@ function nodeCreateItems(node: TreeNodeDTO) {
 }
 
 function rowMenuItems(node: TreeNodeDTO) {
+  if (node.source === "online") {
+    if (!props.onlineWritable || (node.kind !== "collection" && node.kind !== "folder")) return [];
+    return [{ key: "api", label: t("tree.newApi"), testId: "new-api" },
+      ...(node.isDefault ? [{ key: "rename", label: t("tree.renameTooltip"), testId: "node-rename" }] : [])];
+  }
   const container = node.kind === "collection" || node.kind === "folder";
   return [
-    ...(container ? [{ key: "manage", label: t("container.manage"), testId: "container-manage" }] : []),
     ...nodeCreateItems(node),
-    ...(props.compact ? [
+    ...(container ? [{ key: "manage", label: t("container.manage"), testId: "container-manage" }] : []),
+    ...(container || node.kind === "project" || props.compact ? [
       { key: "rename", label: t("tree.renameTooltip"), testId: "node-rename" },
-      { key: "delete", label: t("tree.deleteTooltip"), testId: "node-delete" },
+      { key: "delete", label: t("tree.deleteTooltip"), testId: "node-delete", divider: true, danger: true },
     ] : []),
   ];
 }
 
 function runNodeAction(node: TreeNodeDTO | null, action: string) {
-  if (!node || isReadOnly.value || props.hidden) return;
+  if (!node || props.hidden) return;
+  if (node.source === "online") {
+    if (props.onlineWritable && rowMenuItems(node).some(item => item.key === action)) emit("online-directory-action", action, node);
+    return;
+  }
+  if (isReadOnly.value) return;
   if (action === "manage") openManage(node);
   else if (action === "rename") node.kind === "workflow" ? startWorkflowRename(node) : startRename(node);
   else if (action === "delete") node.kind === "workflow" ? startWorkflowDelete(node) : startDelete(node);
   else if (action === "group") startCreateGroup();
-  else if (action === "project" || action === "collection" || action === "api" || action === "folder") startCreate(node, action);
+  else if (action === "api" && scoped.value && node.source === "local" && (node.kind === "folder" || node.kind === "collection")) {
+    emit("new-interface", node.kind === "folder" ? { ...node.locator, folderIds: [...node.locator.folderIds] } : { ...node.locator });
+  } else if (action === "project" || action === "collection" || action === "api" || action === "folder") startCreate(node, action);
 }
 
 function rememberActionFocus() {
@@ -287,14 +362,22 @@ function restoreActionFocus() {
   const origin = returnFocus;
   returnFocus = null;
   void nextTick(() => {
-    const target = origin?.isConnected && origin.getClientRects().length ? origin
-      : directory.value?.querySelector<HTMLElement>(".node.selected .row-title, .node .row-title") ?? directory.value;
+    const target = !props.hidden && origin?.isConnected ? origin
+      : props.hidden ? document.querySelector<HTMLElement>('[data-testid="rail-directory"]')
+        : directory.value?.querySelector<HTMLElement>(".node.selected .row-title, .node .row-title") ?? directory.value;
     target?.focus({ preventScroll: true });
   });
 }
 
 // —— 容器管理对话框（M10）：以完整 ContainerTarget 定位，不接受裸 kind/id ——
 const manageState = ref<{ open: boolean; target: ContainerTarget | null; name: string }>({ open: false, target: null, name: "" });
+let scopeGeneration = 0;
+watch(() => props.scopeKey, () => {
+  scopeGeneration += 1;
+  dialog.value = { ...dialog.value, open: false };
+  manageState.value.open = false;
+  returnFocus = null;
+});
 function openManage(node: TreeNodeDTO) {
   if (node.source !== "local" || (node.kind !== "collection" && node.kind !== "folder")) return;
   rememberActionFocus();
@@ -315,6 +398,7 @@ interface DialogState {
   initialValue?: string;
   /** 任务 6：删除影响命中清单（可选——openDialog 兜底空数组，非删除对话框无此键）。 */
   impact?: WorkflowImpactEntryDTO[];
+  projectDelete?: boolean;
   run: (value: string | null) => Promise<void> | void;
 }
 const dialog = ref<DialogState>({ open: false, title: "", impact: [], run: () => {} });
@@ -332,6 +416,7 @@ function closeDialog() {
 
 async function onDialogConfirm(value: string | null) {
   const run = dialog.value.run;
+  const generation = scopeGeneration;
   dialog.value = { ...dialog.value, open: false };
   // 宽审查 I1：先关对话框再执行 run；run 的拒绝统一转报组合根错误展示条，
   // 不再是未处理的 rejection。创建/重命名/删除链路共用此收口点。
@@ -340,7 +425,7 @@ async function onDialogConfirm(value: string | null) {
   } catch (e) {
     props.reportError(e);
   } finally {
-    restoreActionFocus();
+    if (generation === scopeGeneration && !dialog.value.open) restoreActionFocus();
   }
 }
 
@@ -366,17 +451,22 @@ function startCreateGroup() {
 function startCreate(parent: TreeNodeDTO, kind: CreateKind) {
   if (isReadOnly.value) return;
   const root = props.workspace.root;
+  const generation = scopeGeneration;
   const titleKey = { group: "tree.newGroup", project: "tree.newProject", collection: "tree.newCollection", folder: "tree.newFolder", api: "tree.newApi" }[kind];
   openDialog({
     title: t(titleKey),
     placeholder: t("tree.namePlaceholder"),
     run: async (value) => {
       if (!value) return;
-      if (root !== props.workspace.root || parent.source !== "local") return;
+      if (root !== props.workspace.root || generation !== scopeGeneration || parent.source !== "local") return;
       const input = createInput(parent, kind, value);
       if (!input) throw new Error(`不支持在 ${parent.kind} 下创建 ${kind}`);
-      const node = await props.tree.createNode(input);
-      if (props.workspace.root === root) emit("select", node);
+      const current = () => props.workspace.root === root && generation === scopeGeneration;
+      const node = await props.tree.createNode(input, current);
+      if (current()) {
+        props.moduleMemory?.rememberDirectorySelection(root, node);
+        emit("select", node);
+      }
     },
   });
 }
@@ -395,14 +485,19 @@ function startRename(node: TreeNodeDTO) {
   if (isReadOnly.value) return;
   if (node.source !== "local" || node.kind === "root" || node.kind === "workflow") return;
   const root = props.workspace.root;
+  const generation = scopeGeneration;
   openDialog({
     title: t("tree.rename"),
     placeholder: t("tree.namePlaceholder"),
     initialValue: node.label,
     run: async (value) => {
       if (!value) return;
-      if (root !== props.workspace.root) return;
-      await props.tree.renameNode(locatorForNode(node), value);
+      if (root !== props.workspace.root || generation !== scopeGeneration) return;
+      if (node.kind !== "project") return props.tree.renameNode(locatorForNode(node), value);
+      const name = sanitizeNodeName(value);
+      await props.api.nodeRename({ kind: "project", locator: node.locator }, name);
+      emit("project-renamed", root, node.locator, name);
+      await refreshCommittedDirectory(root, generation);
     },
   });
 }
@@ -419,6 +514,7 @@ async function startDelete(node: TreeNodeDTO) {
   if (isReadOnly.value) return;
   if (node.source !== "local" || node.kind === "root" || node.kind === "workflow") return;
   const root = props.workspace.root;
+  const generation = scopeGeneration;
   const target = locatorForNode(node);
   let impact: WorkflowImpactEntryDTO[] = [];
   if (target.kind === "api") {
@@ -428,16 +524,26 @@ async function startDelete(node: TreeNodeDTO) {
       props.reportError(e);
       return;
     }
-    if (props.workspace.root !== root) return;
+    if (props.workspace.root !== root || generation !== scopeGeneration) return;
   }
   openDialog({
     title: t("tree.deleteConfirm", { name: node.label }),
     impact,
+    projectDelete: node.kind === "project",
     run: async () => {
-      if (props.workspace.root !== root) return;
-      await props.tree.deleteNode(target, async () => true);
+      if (props.workspace.root !== root || generation !== scopeGeneration) return;
+      if (node.kind !== "project") { await props.tree.deleteNode(target, async () => true); return; }
+      await props.api.nodeDelete({ kind: "project", locator: node.locator });
+      emit("project-deleted", root, node.locator);
+      await refreshCommittedDirectory(root, generation);
     },
   });
+}
+
+async function refreshCommittedDirectory(root: string, generation: number, feedback = "projectDirectory.projectRefreshFailed") {
+  if (props.workspace.root !== root) return;
+  try { await props.workspace.refresh(); }
+  catch { if (props.workspace.root === root && generation === scopeGeneration) props.reportError(t(feedback)); }
 }
 
 // —— 工作流动作（M2-B 收口）：走 wf:rename / wf:delete 专用频道（不经 node:rename 的
@@ -450,21 +556,24 @@ function startWorkflowRename(node: TreeNodeDTO) {
   if (isReadOnly.value) return;
   if (node.source !== "local" || node.kind !== "workflow") return;
   const root = props.workspace.root;
+  const generation = scopeGeneration;
   openDialog({
     title: t("tree.rename"),
     placeholder: t("tree.namePlaceholder"),
     initialValue: node.label,
     run: async (value) => {
       if (!value) return;
-      if (props.workspace.root !== root) return;
+      if (props.workspace.root !== root || generation !== scopeGeneration) return;
       const locator = { ...node.locator };
-      await props.api.wfRename(locator, value);
+      const saved = await props.api.wfRename(locator, value);
       if (props.workspace.root !== root) return;
-      // 审查 I2：设计器正开着同一工作流时缓冲仍持旧名——此后保存按缓冲整体替换，
-      // 改名被静默回滚且树摘要滞留假值。强制卸载会话，下次打开重新 load 拿新名
-      // （避免「改了 id 同步、内容半同步」的中间态）。
-      if (JSON.stringify(props.workflowDesign.locator) === JSON.stringify(locator)) props.workflowDesign.unload();
-      await props.workspace.refresh();
+      if (ownsWorkflow(root, locator) && props.workflowDesign.workflow) {
+        if (props.workflowDesign.dirty || props.workflowDesign.saving) {
+          props.workflowDesign.workflow = { ...props.workflowDesign.workflow, name: saved.name };
+          props.workflowDesign.snapshot = JSON.stringify({ ...JSON.parse(props.workflowDesign.snapshot), name: saved.name });
+        } else props.workflowDesign.unload();
+      }
+      await refreshCommittedDirectory(root, generation, "projectDirectory.workflowRefreshFailed");
     },
   });
 }
@@ -473,17 +582,25 @@ function startWorkflowDelete(node: TreeNodeDTO) {
   if (isReadOnly.value) return;
   if (node.source !== "local" || node.kind !== "workflow") return;
   const root = props.workspace.root;
+  const generation = scopeGeneration;
   openDialog({
     title: t("wf.deleteConfirm", { name: node.label }),
     run: async () => {
-      if (props.workspace.root !== root) return;
+      if (props.workspace.root !== root || generation !== scopeGeneration) return;
       // 已在对话框确认：放行回调恒真。
       await props.api.wfDelete({ ...node.locator });
       if (props.workspace.root !== root) return;
       if (props.tree.selected?.key === node.key) props.tree.selected = null;
-      await props.workspace.refresh();
+      if (ownsWorkflow(root, node.locator) && !props.workflowDesign.dirty && !props.workflowDesign.saving) props.workflowDesign.unload();
+      await refreshCommittedDirectory(root, generation, "projectDirectory.workflowRefreshFailed");
     },
   });
+}
+
+function ownsWorkflow(root: string, locator: WorkflowLocator): boolean {
+  const current = props.workflowDesign.locator;
+  return props.workflowDesign.root === root && !!current && current.workspaceId === locator.workspaceId
+    && current.groupId === locator.groupId && current.projectId === locator.projectId && current.workflowId === locator.workflowId;
 }
 
 function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "project" | "collection" | "folder" | "api" }>): NodeLocator {
@@ -502,27 +619,31 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
     <div v-if="showCreateInHeader" class="directory-header">
       <div class="directory-heading">
         <span class="sider-title" data-testid="sider-title">{{ t("workbench.directory") }}</span>
-        <ActionMenu v-if="createTarget && createItems.length" :key="JSON.stringify([createTarget.key, importTargetKey])"
-          test-id="directory-create" :label="t('workbench.createIn', { name: createTarget.label })" :items="createItems"
-          :hidden="hidden"
-          @opened="openedImportTarget = importTargetKey" @select="selectDirectoryAction">
-          <PlusOutlined />
-        </ActionMenu>
+        <div class="directory-actions">
+          <ActionMenu v-if="(onlineProject || createTarget) && createItems.length" :key="JSON.stringify([scopeKey, (onlineProject ?? createTarget)?.key])"
+            test-id="directory-create" :label="t('workbench.createIn', { name: (onlineProject ?? createTarget)?.label })" :items="createItems"
+            :hidden="hidden" @opened="openedImportTarget = importTargetKey" @select="selectDirectoryAction"><PlusOutlined /></ActionMenu>
+          <ActionMenu v-if="activeProjectNode && !isReadOnly" :key="`project:${scopeKey}`"
+            test-id="directory-project-more" :label="t('projectDirectory.projectActions', { name: activeProjectNode.label })"
+            :items="projectManageItems" :hidden="hidden" @select="runNodeAction(activeProjectNode, $event)"><MoreOutlined /></ActionMenu>
+        </div>
       </div>
       <slot name="search" />
     </div>
     <div class="directory-tree">
       <EmptyState v-if="isEmpty || !rootNode" :text="emptyText" />
       <EmptyState v-else-if="filterNoMatch" :text="t('tree.noMatch')" />
+      <EmptyState v-else-if="scoped && !treeData.length" :text="onlineProject ? t(onlineWritable ? 'onlineDirectory.empty' : 'onlineDirectory.emptyReadOnly') : t('projectDirectory.empty')" />
       <template v-else>
         <div v-if="!scoped" class="root-row">
           <span class="root-label" :title="rootNode.label">{{ rootNode.label }}</span>
           <a-button v-if="!showCreateInHeader && !isReadOnly" size="small" data-testid="new-group" @click="startCreateGroup">{{ t("tree.newGroup") }}</a-button>
         </div>
-        <a-tree :key="rootNode.key" class="tree" :tree-data="treeData" :expanded-keys="effectiveExpandedKeys" :selected-keys="selectedKeys" :virtual="false" block-node @select="selectTreeNode" @expand="expandTreeNode">
+        <a-tree :key="scopeKey ?? rootNode.key" class="tree" :tree-data="treeData" :expanded-keys="effectiveExpandedKeys" :selected-keys="onlineProject ? [onlineSelectedKey ?? ''] : selectedKeys" :virtual="false" block-node @select="selectTreeNode" @expand="expandTreeNode">
           <template #title="{ dto }">
-            <div class="node" :class="{ selected: selectedKeys.includes(dto.key) }"
-              :data-testid="dto.kind === 'api' ? 'tree-api-row' : dto.kind === 'workflow' ? 'tree-workflow-row' : dto.kind === 'file' ? 'tree-file-row' : undefined">
+            <div class="node" :class="{ selected: onlineProject ? onlineSelectedKey === dto.key : selectedKeys.includes(dto.key) }"
+              :data-directory-node="dto.key"
+              :data-testid="dto.kind === 'api' ? 'tree-api-row' : dto.kind === 'workflow' ? 'tree-workflow-row' : dto.kind === 'file' ? 'tree-file-row' : dto.kind === 'collection' || dto.kind === 'folder' ? 'tree-container-row' : undefined">
               <button v-if="dto.kind !== 'api' && dto.kind !== 'file' && dto.kind !== 'workflow'"
                 type="button" class="toggle" data-testid="tree-group-toggle" :aria-expanded="effectiveExpandedKeys.includes(dto.key)"
                 :title="t('workbench.toggleNode', { name: dto.label })" :aria-label="t('workbench.toggleNode', { name: dto.label })" @click.stop="toggle(dto)">
@@ -542,14 +663,16 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
                   <span :class="dto.kind === 'api' ? 'api-name' : 'label'" :title="dto.label">{{ dto.label }}</span>
                 </button>
               </a-tooltip>
-              <span v-if="!isReadOnly && dto.kind !== 'file'" class="action-rail" @click.stop @keydown.stop>
+              <span v-if="dto.kind === 'collection' && dto.isDefault" class="default-marker"
+                :title="t('projectDirectory.defaultHint')" data-testid="tree-default-collection">{{ t("projectDirectory.defaultLabel") }}</span>
+              <span v-if="dto.source === 'online' ? rowMenuItems(dto).length : !isReadOnly" class="action-rail" @click.stop @keydown.stop>
                 <ActionMenu v-if="rowMenuItems(dto).length" class="icon-action more-trigger"
-                  test-id="tree-more" :label="t('tree.moreActions')" :items="rowMenuItems(dto)"
+                  test-id="tree-more" :label="t('projectDirectory.rowActions', { name: dto.label })" :items="rowMenuItems(dto)"
                   :hidden="hidden"
                   @select="runNodeAction(dto, $event)">
                   <MoreOutlined />
                 </ActionMenu>
-                <template v-if="!compact">
+                <template v-if="dto.source === 'local' && !compact && dto.kind !== 'collection' && dto.kind !== 'folder' && dto.kind !== 'project'">
                   <button type="button" class="icon-action" data-testid="node-rename" :aria-label="t('tree.renameTooltip')" :title="t('tree.renameTooltip')" @click.stop="runNodeAction(dto, 'rename')"><EditOutlined /></button>
                   <button type="button" class="icon-action danger" data-testid="node-delete" :aria-label="t('tree.deleteTooltip')" :title="t('tree.deleteTooltip')" @click.stop="runNodeAction(dto, 'delete')"><DeleteOutlined /></button>
                 </template>
@@ -586,6 +709,7 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
           </li>
         </ul>
       </template>
+      <p v-if="dialog.projectDelete && projectDrafts" class="impact-warning">{{ t("projectDirectory.deleteProjectDrafts") }}</p>
     </ConfirmDialog>
   </aside>
 </template>
@@ -600,6 +724,7 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 }
 .directory-header { flex: none; padding: 6px 8px 8px; }
 .directory-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 32px; }
+.directory-actions { display: flex; align-items: center; gap: 2px; }
 .sider-title { font-weight: 600; }
 .directory-tree { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
 .root-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; }
@@ -649,8 +774,9 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 .label, .api-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kind-icon { flex: none; font-size: 13px; color: var(--text-muted); }
 .kind-icon.mod { color: var(--accent); }
+.default-marker { flex: none; border-radius: 3px; padding: 0 4px; background: var(--subtle); color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 .action-rail { display: flex; flex: none; align-items: center; }
-.action-rail > .icon-action {
+.action-rail > .icon-action, .action-rail :deep(.menu-trigger.icon-action) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -667,7 +793,8 @@ function locatorForNode(node: Extract<LocalTreeNodeDTO, { kind: "group" | "proje
 .node.selected .icon-action,
 .node:hover .icon-action,
 .node:focus-within .icon-action,
-.icon-action[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+.icon-action[aria-expanded="true"],
+.node :deep(.menu-trigger.more-trigger) { opacity: 1; pointer-events: auto; }
 .icon-action:hover, .icon-action:focus-visible { background: var(--border); }
 .icon-action.danger { color: var(--fail); }
 @media (hover: none) { .icon-action { opacity: 1; pointer-events: auto; } }

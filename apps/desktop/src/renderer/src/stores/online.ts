@@ -5,7 +5,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 // 纯 schema 一律走 ./schema 子路径（依赖闭包仅 zod）。
 import { ComponentAssetSchema, ModelAssetSchema, ApiAssetSchema } from "@apicc/core/schema";
 import { createProjectAssetContext } from "@apicc/core/assets/context";
-import type { ApiAsset, ComponentAsset, ModelAsset } from "@apicc/core";
+import type { ApiAsset, ComponentAsset, ContractProject, ModelAsset } from "@apicc/core";
 import { OnlineBaseUrlSchema, type OnlineRole, type OnlineTreeProject, type OnlineUser, type OnlineVersionConflict, type OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import { chunk, planPull, planPush, restoreLocalPaths, toEntityPath, type LocalFileRow, type ProjectDirRef } from "../../../shared/online/migrate.js";
 import type { OnlineGroup } from "../../../shared/online/contract.js";
@@ -14,7 +14,7 @@ import type { MigrationResult, OnlineServerProfile } from "../../../shared/onlin
 import type { ApiccApi } from "../../../shared/types.js";
 import { createOnlineExecutionStore } from "./onlineExecution.js";
 import { createOnlineSchedulesStore } from './onlineSchedules.js';
-import { OnlineExecutionContextSchema } from "../../../shared/online/execution.js";
+import { OnlineDirectoryResultSchema, OnlineExecutionContextSchema, type OnlineDirectoryWrite, type OnlineExecutionContext } from "../../../shared/online/execution.js";
 
 /**
  * 服务器档案存储键（任务 2 裁定 C）：与既有偏好存储同一先例（renderer localStorage——
@@ -122,6 +122,7 @@ async function projectAssetProblems(api: ApiccApi, workspaceId: string, projectI
 export interface OnlineSession {
   workspace: { id: string; name: string; myRole: OnlineRole };
   baseUrl?: string;
+  ownerId?: string;
   tree: TreeNodeDTO | null;
   projects: OnlineTreeProject[];
   buffers: Record<string, OnlineEditorBuffer>;
@@ -139,6 +140,17 @@ function activeBufferOf(state: { sessions: Record<string, OnlineSession>; active
   const session = activeSessionOf(state);
   if (!session || session.activeEditorPath === null) return null;
   return session.buffers[session.activeEditorPath] ?? null;
+}
+
+function locateOnlineApi(project: ContractProject, path: string) {
+  const segments = path.split("/");
+  if (segments[0] !== "collections") return null;
+  let container: Pick<ContractProject["collections"][number], "folders" | "apis"> | undefined = project.collections.find(row => row.id === segments[1]);
+  let index = 2;
+  while (segments[index] === "folders") { container = container?.folders.find(row => row.id === segments[index + 1]); index += 2; }
+  if (!container || segments[index] !== "apis" || segments[index + 2] !== "api.yaml" || segments.length !== index + 3) return null;
+  const assetIndex = container.apis.findIndex(row => row.contract.id === segments[index + 1]);
+  return assetIndex < 0 ? null : { container, assetIndex, asset: container.apis[assetIndex]! };
 }
 
 /**
@@ -159,6 +171,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
   watch(() => [execution.context, execution.visible] as const, ([context, visible]) => schedules.activate(context, visible), { flush: 'sync' });
   // Renderer results belong to the authentication attempt that selected their target.
   let authenticationGeneration = 0;
+  let directoryTreeGeneration = 0;
   function captureMigration(store: { activeWorkspaceId: string | null; activeBaseUrl: string | null; sessions: Record<string, OnlineSession> }) {
     const { activeWorkspaceId: workspaceId, activeBaseUrl } = store;
     if (workspaceId === null) return null;
@@ -279,7 +292,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       canEdit(state): (path: string | null) => boolean {
         return (path: string | null): boolean => {
           const session = activeSessionOf(state);
-          if (!session || session.workspace.myRole === "VIEWER" || !path) return false;
+          if (!session || !path) return false;
           const buffer = session.buffers[path];
           if (buffer?.kind === "api" && (buffer.loading || buffer.problems.length > 0)) return false;
           if (path === "apicc.workspace.yaml") {
@@ -287,15 +300,51 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           }
           const project = session.projects.find((p) => path === p.id || path.startsWith(`${p.id}/`));
           if (project) return project.myRole !== "VIEWER" && project.myRole !== "NONE";
-          return true;
+          return session.workspace.myRole !== "VIEWER";
         };
       },
     },
     actions: {
       executionContext(projectId: string | null) {
+        const session = activeSessionOf(this);
+        if (session?.ownerId && session.ownerId !== this.user?.id) return null;
         const row = this.projects.find(project => project.id === projectId);
         const parsed = OnlineExecutionContextSchema.safeParse({ serverId: this.activeBaseUrl ? `${this.activeBaseUrl.replace(/\/$/, '')}/api/v1` : '', ownerId: this.user?.id, scope: { workspaceId: this.activeWorkspaceId, groupId: row?.groupId, projectId: row?.id } });
         return this.loggedIn && parsed.success ? parsed.data : null;
+      },
+      canWriteDirectory(context: OnlineExecutionContext | null): boolean {
+        if (!context || JSON.stringify(this.executionContext(context.scope.projectId)) !== JSON.stringify(context)) return false;
+        const project = this.projects.find(row => row.id === context.scope.projectId && row.groupId === context.scope.groupId);
+        return !!project && (project.myRole === "EDITOR" || project.myRole === "ADMIN" || project.myRole === "OWNER");
+      },
+
+      async writeDirectory(input: OnlineDirectoryWrite) {
+        if (!this.canWriteDirectory(input.context) || !execution.visible || JSON.stringify(execution.context) !== JSON.stringify(input.context)) {
+          throw new Error("online-directory-write-forbidden");
+        }
+        const scope = captureMigration(this);
+        const inProject = () => scope?.isCurrent() && execution.visible && JSON.stringify(execution.context) === JSON.stringify(input.context);
+        const result = OnlineDirectoryResultSchema.parse(await api.onlineExecution(input));
+        if (inProject() && result.view) execution.acceptDirectoryView(input.context, result.view);
+        if ((result.status === "saved" || result.status === "version-conflict") && scope?.isCurrent()) {
+          const refreshed = await this.refreshTreeView();
+          return { result, refreshed, current: inProject() === true };
+        }
+        return { result, refreshed: false, current: inProject() === true };
+      },
+
+      openCreatedDirectoryApi(context: OnlineExecutionContext, path: string): void {
+        const session = activeSessionOf(this);
+        const view = execution.view;
+        if (!session || !view?.project || JSON.stringify(execution.context) !== JSON.stringify(context)
+          || JSON.stringify(this.executionContext(context.scope.projectId)) !== JSON.stringify(context)) return;
+        const asset = locateOnlineApi(view.project, path)?.asset;
+        const file = view.assets.files.find(row => row.path === path);
+        const fullPath = `${context.scope.projectId}/${path}`;
+        if (!asset || !file) return;
+        if (!session.buffers[fullPath]) session.buffers[fullPath] = { path: fullPath, kind: "api", api: JSON.parse(JSON.stringify(asset)),
+          raw: file.content, problems: [], version: Number(file.version), snapshot: JSON.stringify(asset), loading: false };
+        session.activeEditorPath = fullPath;
       },
       persistProfiles(): void {
         writePersisted(storage, { active: this.activeBaseUrl, servers: this.profiles.map((p) => ({ ...p })) });
@@ -549,7 +598,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         const generation = authenticationGeneration;
         const baseUrl = this.activeBaseUrl;
         const existing = this.sessions[ws.id];
-        if (existing?.baseUrl && existing.baseUrl !== baseUrl) {
+        if ((existing?.baseUrl && existing.baseUrl !== baseUrl) || (existing?.ownerId && existing.ownerId !== this.user?.id)) {
           this.error = "online-workspace-server-conflict";
           return;
         }
@@ -560,6 +609,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           this.sessions[ws.id] = {
             workspace: { id: ws.id, name: ws.name, myRole: ws.myRole },
             baseUrl: baseUrl ?? undefined,
+            ownerId: this.user?.id,
             tree: view.tree,
             projects: view.projects,
             buffers: this.sessions[ws.id]?.buffers ?? {},
@@ -628,17 +678,22 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       },
 
       /** 刷新活跃工作区树视图（推送/迁移后调用；main 侧内容变更（put/batch/delete 成功）已使树缓存失效，此处取到的是新树）。 */
-      async refreshTreeView(): Promise<void> {
-        const workspaceId = this.activeWorkspaceId;
-        if (workspaceId === null) return;
+      async refreshTreeView(): Promise<boolean> {
+        const capture = captureMigration(this);
+        if (!capture) return false;
+        const { workspaceId, isCurrent } = capture;
+        const generation = ++directoryTreeGeneration;
         try {
           const view = await api.onlineTreeView(workspaceId);
+          if (!isCurrent() || generation !== directoryTreeGeneration) return false;
           const session = this.sessions[workspaceId];
-          if (!session) return; // 刷新在途会话已被关：丢弃迟到视图
+          if (!session) return false;
           session.tree = view.tree;
           session.projects = view.projects;
+          return true;
         } catch (e) {
-          this.error = e instanceof Error ? e.message : String(e);
+          if (isCurrent() && generation === directoryTreeGeneration) this.error = e instanceof Error ? e.message : String(e);
+          return false;
         }
       },
 
@@ -659,20 +714,24 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
           }
           return;
         }
-        const session = this.sessions[wsId];
+        const session = activeSessionOf(this);
         if (!session) return;
         const existing = session.buffers[id];
-        if (existing && existing.path !== null && !opts?.force) {
+        if (existing && (existing.loading || (existing.path !== null && !opts?.force))) {
           session.activeEditorPath = id; // 已驻留：仅切指针
           return;
         }
-        const slot = existing ?? emptyBuffer();
-        session.buffers[id] = slot;
+        if (!existing) session.buffers[id] = emptyBuffer();
+        const slot = session.buffers[id]!;
+        const capture = captureMigration(this);
+        const ownsSlot = () => this.sessions[wsId] === session && session.buffers[id] === slot
+          && (!session.ownerId || session.ownerId === this.user?.id) && (!session.baseUrl || session.baseUrl === this.activeBaseUrl);
         session.activeEditorPath = id;
         slot.loading = true;
         this.error = null;
         try {
           const result = await api.onlineFilesGet({ workspaceId: wsId, paths: [id] });
+          if (!ownsSlot()) return;
           const file = result.files[0];
           if (!file) {
             if (slot.path === null) {
@@ -680,7 +739,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
               delete session.buffers[id];
               if (session.activeEditorPath === id) session.activeEditorPath = null;
             }
-            this.error = `文件不在可见清单中: ${id}`;
+            if (capture?.isCurrent()) this.error = `文件不在可见清单中: ${id}`;
             return;
           }
           slot.path = file.path;
@@ -694,11 +753,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             return;
           }
           slot.kind = "api";
-          if (execution.project && execution.context?.scope.workspaceId === wsId && id.startsWith(`${execution.context.scope.projectId}/`)) {
-            const apiId = id.split('/').at(-2); const matches: ApiAsset[] = [];
-            const visit = (container: { apis: ApiAsset[]; folders: Array<{ apis: ApiAsset[]; folders: unknown[] }> }) => { for (const asset of container.apis) if (asset.contract.id === apiId) matches.push(asset); for (const folder of container.folders) visit(folder as typeof container); };
-            for (const collection of execution.project.collections) visit(collection);
-            if (matches.length === 1) { slot.api = JSON.parse(JSON.stringify(matches[0])); slot.snapshot = JSON.stringify(slot.api); slot.problems = []; return; }
+          const storedProject = execution.view?.project;
+          const context = execution.context;
+          if (storedProject && context?.scope.workspaceId === wsId && id.startsWith(`${context.scope.projectId}/`)) {
+            const asset = locateOnlineApi(storedProject, id.slice(context.scope.projectId.length + 1))?.asset;
+            if (asset) { slot.api = JSON.parse(JSON.stringify(asset)); slot.snapshot = JSON.stringify(slot.api); slot.problems = []; return; }
           }
           try {
             const parsed = ApiAssetSchema.safeParse(parseYaml(file.content));
@@ -706,8 +765,11 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
               slot.api = parsed.data;
               const projectId = id.split("/", 1)[0] ?? "";
               try {
-                slot.problems = await projectAssetProblems(api, wsId, projectId, parsed.data);
+                const problems = await projectAssetProblems(api, wsId, projectId, parsed.data);
+                if (!ownsSlot()) return;
+                slot.problems = problems;
               } catch (e) {
+                if (!ownsSlot()) return;
                 slot.problems = [`项目资产上下文读取失败: ${e instanceof Error ? e.message : String(e)}`];
               }
               slot.snapshot = JSON.stringify(parsed.data);
@@ -723,7 +785,8 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             slot.problems = [e instanceof Error ? e.message : String(e)];
           }
         } catch (e) {
-          this.error = e instanceof Error ? e.message : String(e);
+          if (!ownsSlot()) return;
+          if (capture?.isCurrent()) this.error = e instanceof Error ? e.message : String(e);
           if (slot.path === null) {
             delete session.buffers[id];
             if (session.activeEditorPath === id) session.activeEditorPath = null;
@@ -740,12 +803,19 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
        */
       async saveApi(): Promise<void> {
         const wsId = this.activeWorkspaceId;
-        const session = wsId !== null ? this.sessions[wsId] : undefined;
+        const session = activeSessionOf(this);
         const buffer = session && session.activeEditorPath !== null ? session.buffers[session.activeEditorPath] : undefined;
         if (wsId === null || !session || !buffer || this.saving) return;
         const apiDef = buffer.api;
         const path = buffer.path;
         if (!apiDef || !path || buffer.loading || buffer.problems.length > 0 || !this.canEdit(path)) return;
+        const submitted = JSON.stringify(apiDef);
+        const capture = captureMigration(this);
+        const isCurrent = () => capture?.isCurrent() && session.buffers[path] === buffer;
+        const accept = (value: ApiAsset) => {
+          buffer.snapshot = JSON.stringify(value);
+          if (JSON.stringify(buffer.api) === submitted) buffer.api = value;
+        };
         this.saving = true;
         this.error = null;
         try {
@@ -754,14 +824,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             this.error = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("\n");
             return;
           }
-          if (execution.project && execution.context?.scope.workspaceId === wsId && path.startsWith(`${execution.context.scope.projectId}/`)) {
-            const draft = JSON.parse(JSON.stringify(execution.project)) as typeof execution.project;
-            let changed = false;
-            const visit = (container: { apis: ApiAsset[]; folders: Array<{ apis: ApiAsset[]; folders: unknown[] }> }) => { const index = container.apis.findIndex(asset => asset.contract.id === parsed.data.contract.id); if (index >= 0) { if (JSON.stringify(container.apis[index]) !== buffer.snapshot) throw new Error("version_conflict"); container.apis[index] = parsed.data; changed = true; } for (const folder of container.folders) visit(folder as typeof container); };
-            for (const collection of draft.collections) visit(collection);
-            if (!changed) throw new Error("online-project-scope-mismatch");
-            await execution.saveProject(draft);
-            buffer.api = parsed.data; buffer.snapshot = JSON.stringify(parsed.data); return;
+          const storedProject = execution.view?.project;
+          const context = execution.context;
+          if (storedProject && context?.scope.workspaceId === wsId && path.startsWith(`${context.scope.projectId}/`)) {
+            const draft = JSON.parse(JSON.stringify(storedProject)) as typeof storedProject;
+            const destination = locateOnlineApi(draft, path.slice(context.scope.projectId.length + 1));
+            if (destination?.asset.contract.id !== parsed.data.contract.id || JSON.stringify(destination.asset) !== buffer.snapshot) throw new Error("version_conflict");
+            destination.container.apis[destination.assetIndex] = parsed.data;
+            await execution.saveProject(draft, "api-buffer");
+            if (isCurrent()) accept(parsed.data);
+            return;
           }
           const content = stringifyYaml(JSON.parse(JSON.stringify(parsed.data)) as Record<string, unknown>);
           const outcome = await api.onlineFilePut({
@@ -770,15 +842,15 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             content,
             baseVersion: buffer.version,
           });
+          if (!isCurrent()) return;
           if (outcome.outcome === "pushed") {
             buffer.version = outcome.result.version;
-            buffer.api = parsed.data;
-            buffer.snapshot = JSON.stringify(parsed.data);
+            accept(parsed.data);
           } else {
             this.conflict = outcome.conflict;
           }
         } catch (e) {
-          this.error = e instanceof Error ? e.message : String(e);
+          if (isCurrent()) this.error = e instanceof Error ? e.message : String(e);
         } finally {
           this.saving = false;
         }

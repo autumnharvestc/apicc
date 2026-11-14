@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "coreBuildIdentity": "526281712a8171f7eaf94e1e8fd449d14d8b7fccdf78c125f91ad06af5d17a69",
+  "coreBuildIdentity": "5f35ad33431b524f9efd7e7f9e60ab4006d5c633e6ff65b5d35f050d2714de5e",
   "request": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "anyOf": [
@@ -1565,6 +1565,11 @@
               },
               "afterFiles": {
                 "$ref": "#/$defs/__schema7"
+              },
+              "initialContractProjectId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
               }
             },
             "required": [

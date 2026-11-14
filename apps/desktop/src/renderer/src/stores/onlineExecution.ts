@@ -31,6 +31,25 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
   const editableProject = (value: ContractProject | null): ContractProject | null => value ? reactive(plain(value) as object) as ContractProject : null;
   const stressIntent = (plan: import('@apicc/core').StressPlan) => JSON.stringify([store.context, store.view?.assets.version, store.location, plan, store.environmentId, store.stressWorkerCount, store.stressConfirmedOrigins]);
   const current = (token: number, context: OnlineExecutionContext) => generation === token && store.visible && key(context) === key(store.context);
+  function acceptProjectView(context: OnlineExecutionContext, view: OnlineProjectView, preserveDraft: boolean) {
+    if (key(context) !== key(store.context) || !store.visible || view.assets.workspaceId !== context.scope.workspaceId
+      || view.assets.groupId !== context.scope.groupId || view.assets.projectId !== context.scope.projectId) return false;
+    const previous = store.view?.assets.version;
+    if (previous !== undefined) {
+      const nextVersion = BigInt(view.assets.version);
+      const currentVersion = BigInt(previous);
+      if (nextVersion < currentVersion) return false;
+      if (preserveDraft && nextVersion === currentVersion) return true;
+    }
+    const dirty = preserveDraft && store.dirty;
+    store.view = view;
+    store.directoryDraftConflict = dirty;
+    if (!dirty) {
+      store.project = editableProject(view.project);
+      store.saved = JSON.stringify(store.project);
+    }
+    return true;
+  }
   const stop = () => { if (timer) clearTimeout(timer); timer = undefined; };
   const schedule = () => {
     stop();
@@ -40,7 +59,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     context: null as OnlineExecutionContext | null, location: { kind: "local" } as ExecutionLocation,
     environmentId: undefined as string | undefined, visible: false, jobs: [] as OnlineJob[], error: "", statusRefreshMs: 2000,
     connection: "unknown" as "unknown" | "connected" | "disconnected", view: null as OnlineProjectView | null,
-    agents: null as ProjectExecutionAgents | null, project: null as ContractProject | null, saved: "", busy: false, running: false,
+    agents: null as ProjectExecutionAgents | null, project: null as ContractProject | null, saved: "", directoryDraftConflict: false, busy: false, running: false,
     localResult: null as OnlineLocalResult | null, report: null as OnlineReport | null, selectedJobId: "",
     resultSelection: null as ResultSelection | null,
     localPlugins: null as PluginsListResult | null, activeLocalRunId: "",
@@ -58,7 +77,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
         selections.set(key(store.context), { location: plain(store.location), environmentId: store.environmentId });
         const previous = retain(store.context); previous.lastUsed = now(); previous.payloadBytes = undefined;
       }
-      generation++; stop(); store.context = context ? plain(context) : null; store.jobs = []; store.view = null; store.project = null; store.agents = null; store.saved = ""; store.error = ""; store.localResult = null; store.report = null; store.busy = false; store.running = false; store.connection = "unknown"; store.localOnlyRefIds = []; store.materials = { credentials: [], attachments: [], attachmentPaths: {} };
+      generation++; stop(); store.context = context ? plain(context) : null; store.jobs = []; store.view = null; store.project = null; store.agents = null; store.saved = ""; store.directoryDraftConflict = false; store.error = ""; store.localResult = null; store.report = null; store.busy = false; store.running = false; store.connection = "unknown"; store.localOnlyRefIds = []; store.materials = { credentials: [], attachments: [], attachmentPaths: {} };
       stressConfirmation.value = ''; store.stressConfirmedOrigins = []; store.stressWorkerCount = 1;
       store.materialMetadata = null; store.activeLocalRunId = ''; store.selectedJobId = ''; store.resultSelection = null;
       if (context) retain(context).lastUsed = now();
@@ -82,7 +101,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       try {
         const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "assets", context }));
         if (!current(token, context)) return;
-        store.view = view; store.project = editableProject(view.project); store.saved = JSON.stringify(store.project);
+        store.acceptDirectoryView(context, view);
         const agents = ProjectExecutionAgentsSchema.parse(await api.onlineExecution({ operation: "agents", context }));
         if (!current(token, context)) return;
         store.agents = agents; store.connection = "connected"; store.error = "";
@@ -149,15 +168,20 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     },
     async save(delta: AssetDelta) {
       const context = store.context && plain(store.context); if (!context) return;
+      if (store.directoryDraftConflict) throw new Error("online-directory-project-draft-conflict");
       const token = generation; const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "save", context, delta: plain(delta) }));
       if (!current(token, context)) return;
-      store.view = view; store.project = editableProject(view.project); store.saved = JSON.stringify(store.project);
+      acceptProjectView(context, view, false);
     },
-    async saveProject(project: ContractProject) {
+    async saveProject(project: ContractProject, mode: "whole-draft" | "api-buffer" = "whole-draft") {
       const context = store.context && plain(store.context); if (!context || !store.view) throw new Error("online-project-unavailable");
+      if (mode === "whole-draft" && store.directoryDraftConflict) throw new Error("online-directory-project-draft-conflict");
       const token = generation; const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "saveProject", context, project: plain(project), expectedVersion: store.view.assets.version }));
       if (!current(token, context)) throw new Error("online-session-changed");
-      store.view = view; store.project = editableProject(view.project); store.saved = JSON.stringify(store.project);
+      acceptProjectView(context, view, mode === "api-buffer");
+    },
+    acceptDirectoryView(context: OnlineExecutionContext, view: OnlineProjectView): boolean {
+      return acceptProjectView(context, view, true);
     },
     async run(target: TaskTarget) {
       const context = store.context && plain(store.context); if (!context || !store.view || !store.visible) throw new Error("online-project-unavailable");

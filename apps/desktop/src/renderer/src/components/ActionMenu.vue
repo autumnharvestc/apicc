@@ -6,7 +6,7 @@ defineOptions({ inheritAttrs: false });
 const props = defineProps<{
   label: string;
   testId?: string;
-  items: readonly { key: string; label: string; checked?: boolean; disabled?: boolean; testId?: string; locale?: string; divider?: boolean }[];
+  items: readonly { key: string; label: string; checked?: boolean; disabled?: boolean; testId?: string; locale?: string; divider?: boolean; danger?: boolean }[];
   disabled?: boolean;
   hidden?: boolean;
 }>();
@@ -128,7 +128,7 @@ defineExpose({ close, hasFocus: () => open.value || trigger.value === document.a
         :role="item.checked === undefined ? 'menuitem' : 'menuitemradio'"
         :aria-checked="item.checked"
         :disabled="item.disabled"
-        :class="{ 'menu-divider': item.divider }"
+        :class="{ 'menu-divider': item.divider, 'menu-danger': item.danger }"
         :data-testid="item.testId"
         :data-locale="item.locale"
         tabindex="-1"
@@ -201,6 +201,7 @@ defineExpose({ close, hasFocus: () => open.value || trigger.value === document.a
 .action-menu button:focus-visible { outline-offset: -2px; }
 .action-menu button:disabled { opacity: 0.55; cursor: default; }
 .action-menu .menu-divider { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 6px; border-radius: 0; }
+.action-menu .menu-danger { color: var(--fail); }
 .menu-check { display: inline-block; flex: 0 0 14px; color: var(--accent); }
 @media (forced-colors: active) {
   .action-menu, .menu-trigger { border-color: ButtonText; }

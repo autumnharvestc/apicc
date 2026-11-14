@@ -69,11 +69,12 @@ export function useTreeStore(api: ApiccApi, workspace: ReturnType<typeof useWork
         this.selected = selectionOf(node);
       },
 
-      async createNode(input: NodeCreateInput): Promise<NodeCreatedDTO> {
+      async createNode(input: NodeCreateInput, isCurrent: () => boolean = () => true): Promise<NodeCreatedDTO> {
         this.assertWritable();
+        const root = workspace.root;
         const created = await api.nodeCreate(input);
-        await workspace.refresh();
-        this.selected = selectionOf(created);
+        if (workspace.root === root) await workspace.refresh();
+        if (workspace.root === root && isCurrent()) this.selected = selectionOf(created);
         return created;
       },
 

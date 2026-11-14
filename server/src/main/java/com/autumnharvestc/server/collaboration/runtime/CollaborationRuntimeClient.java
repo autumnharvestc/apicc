@@ -76,8 +76,10 @@ public class CollaborationRuntimeClient {
             catch(Exception problem){throw new Failure("RPC_RESPONSE_INVALID");}
             if(response.statusCode()==429&&value.path("code").asText().equals("RPC_BUSY")&&value.path("retryable").isBoolean()&&!value.path("retryable").asBoolean()&&value.path("requestId").asText().isEmpty())throw new Failure("RPC_BUSY");
             if(response.statusCode()!=200){
-                if(java.util.Set.of("sync-read","sync-plan","sync-resolve","sync-rollback").contains(operation)&&protocol.validError(value)
-                    &&request.path("requestId").equals(value.path("requestId")))throw new Failure(value.path("code").asText());
+                String errorCode=value.path("code").asText();
+                boolean expectedError=java.util.Set.of("sync-read","sync-plan","sync-resolve","sync-rollback").contains(operation)
+                    || (response.statusCode()==400&&operation.equals("classify-asset-mutation")&&errorCode.equals("PUBLICATION_SOURCE_INVALID"));
+                if(expectedError&&protocol.validError(value)&&request.path("requestId").equals(value.path("requestId")))throw new Failure(errorCode);
                 throw new Failure("RPC_RESPONSE_INVALID");
             }
             if(!protocol.validResponse(value)||!value.path("coreBuildIdentity").asText().equals(protocol.coreBuildIdentity())

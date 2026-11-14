@@ -3,22 +3,32 @@
  * project locator; persisted legacy ID-only selections are deliberately not guessed.
  */
 import { createPinia, defineStore } from "pinia";
-import { ApiLocatorSchema, ProjectLocatorSchema, WorkflowLocatorSchema } from "../../../shared/locations.js";
+import { ApiLocatorSchema, CollectionLocatorSchema, FolderLocatorSchema, ProjectLocatorSchema, WorkflowLocatorSchema } from "../../../shared/locations.js";
 import type { ApiLocator, ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
 import { projectSessionKey } from "./localIdentity.js";
 import type { TestingPane } from "../../../shared/testing.js";
+import { z } from "zod";
+
+const DirectorySelectionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("collection"), locator: CollectionLocatorSchema }),
+  z.object({ kind: z.literal("folder"), locator: FolderLocatorSchema }),
+  z.object({ kind: z.literal("api"), locator: ApiLocatorSchema }),
+  z.object({ kind: z.literal("workflow"), locator: WorkflowLocatorSchema }),
+]);
+export type DirectorySelection = z.infer<typeof DirectorySelectionSchema>;
+type ApiTreeMemory = { filter: string; expanded: string[]; lastApiLocator: ApiLocator | null; selection: DirectorySelection | null };
 
 const STORAGE_KEY = "apicc.moduleMemory";
 
 interface ScopedMemory {
   root: string;
   projectLocator: ProjectLocator;
-  apiTree: { expanded: string[]; lastApiLocator: ApiLocator | null };
+  apiTree: ApiTreeMemory;
   test: { apiLocator: ApiLocator | null; workflowLocator: WorkflowLocator | null };
 }
 
 interface ModuleMemory {
-  apiTree: { filter: string; expanded: string[]; lastApiLocator: ApiLocator | null };
+  apiTree: ApiTreeMemory;
   test: { pane: TestingPane; apiLocator: ApiLocator | null; workflowLocator: WorkflowLocator | null };
   activeScopeKey: string | null;
   scopes: Record<string, ScopedMemory>;
@@ -32,9 +42,18 @@ function copyApi(locator: ApiLocator | null): ApiLocator | null {
   return locator ? { ...locator, folderIds: [...locator.folderIds] } : null;
 }
 
+function emptyTree(): ApiTreeMemory {
+  return { filter: "", expanded: [], lastApiLocator: null, selection: null };
+}
+
+function copyTree(tree: ApiTreeMemory): ApiTreeMemory {
+  return { filter: tree.filter, expanded: [...tree.expanded], lastApiLocator: copyApi(tree.lastApiLocator),
+    selection: tree.selection ? DirectorySelectionSchema.parse(tree.selection) : null };
+}
+
 function emptyState(): ModuleMemory {
   return {
-    apiTree: { filter: "", expanded: [], lastApiLocator: null },
+    apiTree: emptyTree(),
     test: { pane: "api-cases", apiLocator: null, workflowLocator: null },
     activeScopeKey: null,
     scopes: {},
@@ -63,12 +82,15 @@ function parseStored(): ModuleMemory {
       const tree = typeof row.apiTree === "object" && row.apiTree !== null ? row.apiTree as Record<string, unknown> : {};
       const testState = typeof row.test === "object" && row.test !== null ? row.test as Record<string, unknown> : {};
       const lastApi = ApiLocatorSchema.safeParse(tree.lastApiLocator);
+      const selection = DirectorySelectionSchema.safeParse(tree.selection);
       const testApi = ApiLocatorSchema.safeParse(testState.apiLocator);
       const workflow = WorkflowLocatorSchema.safeParse(testState.workflowLocator);
       state.scopes[key] = {
         root: row.root,
         projectLocator: copyProject(project.data),
         apiTree: {
+          filter: typeof tree.filter === "string" ? tree.filter : "",
+          selection: selection.success && projectSessionKey(row.root, selection.data.locator) === key ? selection.data : null,
           expanded: Array.isArray(tree.expanded) ? tree.expanded.filter((entry): entry is string => typeof entry === "string") : [],
           lastApiLocator: lastApi.success && lastApi.data.workspaceId === project.data.workspaceId
             && lastApi.data.groupId === project.data.groupId && lastApi.data.projectId === project.data.projectId
@@ -100,7 +122,7 @@ export function useModuleMemoryStore() {
           const previous = this.scopes[previousKey];
           if (previous) this.scopes[previousKey] = {
             ...previous,
-            apiTree: { expanded: [...this.apiTree.expanded], lastApiLocator: copyApi(this.apiTree.lastApiLocator) },
+            apiTree: copyTree(this.apiTree),
             test: {
               apiLocator: copyApi(this.test.apiLocator),
               workflowLocator: this.test.workflowLocator ? { ...this.test.workflowLocator } : null,
@@ -109,8 +131,7 @@ export function useModuleMemoryStore() {
         }
         if (!locator || !root) {
           this.activeScopeKey = null;
-          this.apiTree.expanded = [];
-          this.apiTree.lastApiLocator = null;
+          this.apiTree = emptyTree();
           this.test.apiLocator = null;
           this.test.workflowLocator = null;
           return;
@@ -119,11 +140,10 @@ export function useModuleMemoryStore() {
         const key = projectSessionKey(root, projectLocator);
         const scope = this.scopes[key];
         this.activeScopeKey = key;
-        this.apiTree.expanded = scope ? [...scope.apiTree.expanded] : [];
-        this.apiTree.lastApiLocator = scope ? copyApi(scope.apiTree.lastApiLocator) : null;
+        this.apiTree = scope ? copyTree(scope.apiTree) : emptyTree();
         this.test.apiLocator = scope ? copyApi(scope.test.apiLocator) : null;
         this.test.workflowLocator = scope?.test.workflowLocator ? { ...scope.test.workflowLocator } : null;
-        if (!scope) this.scopes[key] = { root, projectLocator, apiTree: { expanded: [], lastApiLocator: null }, test: { apiLocator: null, workflowLocator: null } };
+        if (!scope) this.scopes[key] = { root, projectLocator, apiTree: emptyTree(), test: { apiLocator: null, workflowLocator: null } };
         this.touch();
       },
 
@@ -132,7 +152,7 @@ export function useModuleMemoryStore() {
           const previous = this.scopes[this.activeScopeKey];
           if (previous) this.scopes[this.activeScopeKey] = {
             ...previous,
-            apiTree: { expanded: [...this.apiTree.expanded], lastApiLocator: copyApi(this.apiTree.lastApiLocator) },
+            apiTree: copyTree(this.apiTree),
             test: {
               apiLocator: copyApi(this.test.apiLocator),
               workflowLocator: this.test.workflowLocator ? { ...this.test.workflowLocator } : null,
@@ -140,6 +160,14 @@ export function useModuleMemoryStore() {
           };
         }
         localStorage.setItem(STORAGE_KEY, JSON.stringify(this.$state));
+      },
+
+      rememberDirectorySelection(root: string, node: unknown): void {
+        const selection = DirectorySelectionSchema.safeParse(node);
+        if (!selection.success || projectSessionKey(root, selection.data.locator) !== this.activeScopeKey) return;
+        this.apiTree.selection = selection.data;
+        if (selection.data.kind === "api") this.apiTree.lastApiLocator = copyApi(selection.data.locator);
+        this.touch();
       },
     },
   })(createPinia());

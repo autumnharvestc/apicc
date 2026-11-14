@@ -51,6 +51,7 @@ import {
   ModelLocatorSchema,
   NodeLocatorSchema,
   ProjectLocatorSchema,
+  RequestSaveTargetSchema,
   WorkflowImpactLocatorSchema,
   WorkflowLocatorSchema,
   WorkspaceLocatorSchema,
@@ -252,7 +253,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.ApiGet]: z.tuple([ApiLocatorSchema]),
   [IpcChannel.ApiCreateFromRequestDraft]: z.tuple([z.object({
     project: ProjectLocatorSchema,
-    targetParent: ApiParentLocatorSchema,
+    targetParent: RequestSaveTargetSchema,
     name: z.string(),
     request: ApiRequestSchema,
     sourceProjectRevision: z.string().min(1),

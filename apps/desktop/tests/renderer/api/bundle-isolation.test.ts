@@ -35,7 +35,7 @@ describe("渲染层产物 memory 隔离（生产包拓扑回归）", () => {
       expect(emittedModules.size, "没有采集实际生产 chunk 的模块依赖").toBeGreaterThan(0);
       const hostModules = [...emittedModules].filter(id => id.includes("browser-external") || id.startsWith("node:")
         || /\/(better-sqlite3|@napi-rs\/keyring|undici|ws)\//.test(id)
-        || /\/packages\/core\/dist\/(?:shared\.js|index\.js|storage\/|runner\/|credentials\/|stress\/runner\.js)/.test(id));
+        || /\/packages\/core\/dist\/(?:shared\.js|index\.js|storage\/(?!sanitize\.js$)|runner\/|credentials\/|stress\/runner\.js)/.test(id));
       expect(hostModules, "生产 chunk 包含 Node-only/browser-external 宿主依赖").toEqual([]);
       const html = readFileSync(join(outDir, "index.html"), "utf8");
       const entryMatch = html.match(/<script[^>]+src="\.?\/?(assets\/[^"]+\.js)"/);

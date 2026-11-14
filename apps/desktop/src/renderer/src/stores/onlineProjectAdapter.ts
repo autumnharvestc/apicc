@@ -4,7 +4,7 @@ import type { ContractWorkspace, ContractCollection, ContractFolder, ApiAsset, W
 import type { ApiccApi, ApiDetail } from "../../../shared/types.js";
 import type { TestingAssets, TestingContext } from "../../../shared/testing.js";
 import type { ApiLocator } from "../../../shared/locations.js";
-import { toTreeNode } from "../../../main/tree.js"; // Pure DTO projection: type-only Core dependency, no filesystem/runtime imports.
+import { toTreeNode } from "../../../main/tree.js"; // Pure DTO projection shared with the main process.
 import { useWorkspaceStore } from "./workspace.js";
 import { useEnvsStore } from "./envs.js";
 import { createTestingStore } from "./testing.js";

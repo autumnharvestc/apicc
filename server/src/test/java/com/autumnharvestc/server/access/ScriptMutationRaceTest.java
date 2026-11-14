@@ -40,7 +40,11 @@ class ScriptMutationRaceTest extends AccessHttpFixture {
                 }
                 state.calls.incrementAndGet();state.started.countDown();
                 if(!state.release.await(10,TimeUnit.SECONDS))throw new IllegalStateException("fixture release timed out");
-                if(state.fail){request.sendResponseHeaders(state.failureStatus,-1);return;}
+                if(state.fail){
+                    if(state.failureCode==null){request.sendResponseHeaders(state.failureStatus,-1);return;}
+                    byte[] error=WIRE.writeValueAsBytes(Map.of("code",state.failureCode,"requestId",value.path("requestId").asText(),"retryable",false));
+                    request.sendResponseHeaders(state.failureStatus,error.length);request.getResponseBody().write(error);return;
+                }
                 var response=(ObjectNode)value.deepCopy();response.set("payload",state.result);
                 response.put("coreBuildIdentity",new RuntimeProtocol(WIRE).coreBuildIdentity()).put("outputDigest",RuntimeProtocol.digestJson(state.result));
                 response.put("outputBytes",WIRE.writeValueAsBytes(state.result).length).put("wireBytes",0);
@@ -52,11 +56,11 @@ class ScriptMutationRaceTest extends AccessHttpFixture {
     }
     static class Exchange {
         final JsonNode payload,result;final boolean fail;final AtomicInteger calls=new AtomicInteger();final AtomicBoolean mismatch=new AtomicBoolean();
-        volatile Exchange next;int failureStatus=503;
+        volatile Exchange next;int failureStatus=503;String failureCode;
         final CountDownLatch started=new CountDownLatch(1),release;
         Exchange(JsonNode before,JsonNode after,JsonNode result,boolean fail,boolean gated){payload=WIRE.createObjectNode().set("beforeFiles",before);((ObjectNode)payload).set("afterFiles",after);this.result=result;this.fail=fail;release=new CountDownLatch(gated?1:0);}
     }
-    static JsonNode canonical(JsonNode payload){var result=WIRE.createObjectNode();for(String key:List.of("beforeFiles","afterFiles")){var sorted=new TreeMap<String,String>();payload.path(key).forEach(file->sorted.put(file.path("path").asText(),file.path("content").asText()));result.set(key,WIRE.valueToTree(sorted));}return result;}
+    static JsonNode canonical(JsonNode payload){var result=WIRE.createObjectNode();for(String key:List.of("beforeFiles","afterFiles")){var sorted=new TreeMap<String,String>();payload.path(key).forEach(file->sorted.put(file.path("path").asText(),file.path("content").asText()));result.set(key,WIRE.valueToTree(sorted));}if(payload.has("initialContractProjectId"))result.set("initialContractProjectId",payload.get("initialContractProjectId"));return result;}
     @DynamicPropertySource static void runtime(DynamicPropertyRegistry p){p.add("apicc.collaboration.runtime.enabled",()->true);p.add("apicc.collaboration.runtime.base-url",()->"http://127.0.0.1:"+HTTP.getAddress().getPort());p.add("apicc.collaboration.runtime.secret-file",KEY::toString);}
     @Autowired FileVersionRepo files;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
@@ -77,6 +81,30 @@ class ScriptMutationRaceTest extends AccessHttpFixture {
     org.springframework.test.web.servlet.ResultActions atomic(Scope f,JsonNode after) throws Exception {return mvc.perform(put(f.projectUrl()+"/assets").header("Authorization","Bearer "+f.target().token()).contentType("application/json").content(json.writeValueAsString(delta(f,after))));}
     Exchange expect(JsonNode after,JsonNode result,boolean fail,boolean gated){var state=new Exchange(before(),after,result,fail,gated);RPC.set(state);return state;}
     void positiveRpc(Exchange state){assertThat(runtime.call("classify-asset-mutation",state.payload,System.currentTimeMillis()+5000,1_048_576)).isEqualTo(state.result);state.calls.set(0);}
+
+    @ParameterizedTest @ValueSource(strings={"ordinary", "script", "invalid", "viewer"})
+    void onlyServerConfirmedBlankInitialProjectCanUseEmptyScriptBaseline(String operation) throws Exception {
+        var f=scope();member(f,operation.equals("viewer")?"VIEWER":"EDITOR",0).andExpect(status().isOk());
+        if(!operation.equals("invalid")&&!operation.equals("viewer"))denyScript(f);
+        var sample=variant(operation.equals("script")?"collection-script":"metadata");
+        var after=operation.equals("invalid")?json.createArrayNode():sample.path("afterFiles");
+        var first=new Exchange(json.createArrayNode(),after,sample.path("result"),operation.equals("invalid"),false);
+        ((ObjectNode)first.payload).put("initialContractProjectId","10000000-0000-4000-8000-000000000001");
+        if(operation.equals("invalid")){first.failureStatus=400;first.failureCode="PUBLICATION_SOURCE_INVALID";}
+        RPC.set(first);
+        var changes=map(after).entrySet().stream().map(entry->Map.of("path",entry.getKey(),"content",entry.getValue())).toList();
+        var delta=Map.of("format","contract-files-v1","contractProjectId","10000000-0000-4000-8000-000000000001","expectedVersion","0","changes",changes,"deletes",List.of());
+        var response=mvc.perform(put(f.projectUrl()+"/assets").header("Authorization","Bearer "+f.target().token()).contentType("application/json").content(json.writeValueAsString(delta)));
+        switch(operation) {
+            case "ordinary" -> response.andExpect(status().isOk()).andExpect(jsonPath("$.version").value("1"));
+            case "invalid" -> response.andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("invalid_project_assets"));
+            default -> response.andExpect(status().isForbidden());
+        }
+        assertThat(revision(f)).isEqualTo(operation.equals("ordinary")?1:0);
+        assertThat(stored(f).size()).isEqualTo(operation.equals("ordinary")?changes.size():0);
+        assertThat(first.calls.get()).isEqualTo(operation.equals("viewer")?0:1);
+        assertThat(first.mismatch.get()).isFalse();
+    }
 
     // A role-only atomic write must fail for all actual script surfaces, including deletion of owners.
     @ParameterizedTest @ValueSource(strings={"collection-script","ancestor-script","case-script","child-condition","delete-ancestor","delete-collection"})

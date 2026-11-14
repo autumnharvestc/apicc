@@ -62,7 +62,7 @@ const PROJECT_ID_PATTERN = /^\d+$/;
 interface ParsedPath {
   project: string;
   collection?: string;
-  folder?: string;
+  folderIds?: string[];
   kind: "project-config" | "env" | "workflow" | "collection-config" | "folder-config" | "api";
   /** 叶显示名：配置文件取文件名、环境取文件名、工作流/接口取目录名。 */
   name: string;
@@ -82,16 +82,14 @@ function parseWorkspacePath(path: string): ParsedPath | null {
   if (segs[1] !== "collections" || segs.length < 4) return null;
   const collection = segs[2]!;
   if (segs.length === 4) return segs[3] === "collection.yaml" ? { project, collection, kind: "collection-config", name: "collection.yaml" } : null;
-  // 文件夹配置：<projectId>/collections/<c>/folders/<f>/folder.yaml（次要 3 顺修：与 project/collection.yaml 同口径只读叶）
-  if (segs.length === 6 && segs[3] === "folders" && segs[5] === "folder.yaml") {
-    return { project, collection, folder: segs[4]!, kind: "folder-config", name: "folder.yaml" };
+  const folderIds: string[] = [];
+  let index = 3;
+  while (segs[index] === "folders" && segs[index + 1]) { folderIds.push(segs[index + 1]!); index += 2; }
+  if (folderIds.length && segs.length === index + 1 && segs[index] === "folder.yaml") {
+    return { project, collection, folderIds, kind: "folder-config", name: "folder.yaml" };
   }
-  // 接口：collections/<c>/apis/<a>/api.yaml 与 folders/<f>/apis/<a>/api.yaml
-  if (segs[3] === "apis" && segs.length === 6 && segs[5] === "api.yaml") {
-    return { project, collection, kind: "api", name: segs[4]! };
-  }
-  if (segs[3] === "folders" && segs.length === 8 && segs[5] === "apis" && segs[7] === "api.yaml") {
-    return { project, collection, folder: segs[4]!, kind: "api", name: segs[6]! };
+  if (segs.length === index + 3 && segs[index] === "apis" && segs[index + 1] && segs[index + 2] === "api.yaml") {
+    return { project, collection, folderIds, kind: "api", name: segs[index + 1]! };
   }
   return null;
 }
@@ -163,6 +161,10 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupN
     const groupId = projectRows.get(projectId)?.groupId;
     return (groupId !== undefined ? groupNode(groupId) : null) ?? root;
   };
+  for (const projectRow of tree.projects) {
+    const project = ensure("project", projectRow.id, projectRow.name, projectParent(projectRow.id));
+    project.myRole = projectRow.myRole;
+  }
   for (const file of tree.files) {
     if (file.path === "apicc.workspace.yaml") continue;
     const parsed = parseWorkspacePath(file.path);
@@ -188,9 +190,8 @@ export function onlineTreeToDto(tree: OnlineTree, workspaceName?: string, groupN
       collection.children!.push(leaf(file.path, parsed.name));
       continue;
     }
-    const folderNode = parsed.folder
-      ? ensure("folder", `${parsed.project}/collections/${parsed.collection}/folders/${parsed.folder}`, parsed.folder, collection)
-      : collection;
+    let folderNode = collection;
+    for (const folder of parsed.folderIds ?? []) folderNode = ensure("folder", `${folderNode.id}/folders/${folder}`, folder, folderNode);
     if (parsed.kind === "folder-config") {
       // folder.yaml 只读叶挂在 folder 节点（folder 仅为 folder.yaml 存在时也建容器，与 collection-config 同口径）
       folderNode.children!.push(leaf(file.path, parsed.name));
@@ -221,6 +222,7 @@ interface OnlineWorkspaceSession {
   workspaceState: OnlineWorkspaceState;
   baseUrl: string | null;
   treeCache: { tree: OnlineTree; groups: OnlineGroup[] } | null;
+  treeGeneration: number;
 }
 
 export function createOnlineSession(deps: OnlineSessionDeps) {
@@ -281,18 +283,26 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
     /** Only main consumes this capture. Tokens never enter renderer DTOs. */
     captureExecution(context: OnlineExecutionContext) {
       const captured = current;
+      const capturedWorkspace = sessions.get(context.scope.workspaceId);
       const serverId = captured ? `${captured.baseUrl.replace(/\/$/, "")}/api/v1` : "";
       const assertCurrent = () => {
         const workspace = sessions.get(context.scope.workspaceId);
         if (!captured || current !== captured || context.ownerId !== captured.userId || context.serverId !== serverId
-            || activeId !== context.scope.workspaceId || !workspace || (workspace.baseUrl && workspace.baseUrl !== captured.baseUrl)) {
+            || activeId !== context.scope.workspaceId || !workspace || workspace !== capturedWorkspace
+            || (workspace.baseUrl && workspace.baseUrl !== captured.baseUrl)) {
           throw new Error("online-session-changed");
         }
       };
       assertCurrent();
       const base = new URL(serverId);
       if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new Error("execution-requires-https");
-      return { serverId, userId: captured!.userId, token: () => { assertCurrent(); if (!captured!.client.token) throw new Error("online-session-changed"); return captured!.client.token; }, assertCurrent };
+      return { serverId, userId: captured!.userId, token: () => { assertCurrent(); if (!captured!.client.token) throw new Error("online-session-changed"); return captured!.client.token; }, assertCurrent,
+        invalidateTree: () => {
+          if (capturedWorkspace && sessions.get(context.scope.workspaceId) === capturedWorkspace && current === captured) {
+            capturedWorkspace.treeCache = null;
+            capturedWorkspace.treeGeneration += 1;
+          }
+        } };
     },
     /** 当前登录态信息（任务 2 顶栏/登录面板消费）；未登录为 null。 */
     get current(): { baseUrl: string } | null {
@@ -322,6 +332,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
         workspaceState: { id: input.workspaceId, name: input.name, myRole: input.myRole },
         baseUrl,
         treeCache: null,
+        treeGeneration: 0,
       });
       activeId = input.workspaceId;
     },
@@ -359,11 +370,14 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
       const ws = requireWorkspace(workspaceId);
       const client = requireClient();
       const entry = sessions.get(workspaceId)!; // requireWorkspace 已保证活跃驻留
-      entry.treeCache ??= await (async () => {
+      const owner = current;
+      while (!entry.treeCache) {
+        const generation = entry.treeGeneration;
         const tree = await client.getTree(workspaceId);
         const groups = await client.listGroups(workspaceId).catch(() => [] as OnlineGroup[]);
-        return { tree, groups };
-      })();
+        if (current !== owner || sessions.get(workspaceId) !== entry) throw new Error("online-session-changed");
+        if (generation === entry.treeGeneration) entry.treeCache = { tree, groups };
+      }
       const groupNames = new Map(entry.treeCache.groups.map((g) => [g.id, g.name]));
       return {
         workspaceId: ws.id,
@@ -465,7 +479,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
       // 冲突不动缓存——服务端现状以冲突对象带回。按工作区失效（计划 C 任务 1），不扰其他驻留项。
       if (outcome.outcome === "pushed") {
         const entry = sessions.get(workspaceId);
-        if (entry) entry.treeCache = null;
+        if (entry) { entry.treeCache = null; entry.treeGeneration += 1; }
       }
       return outcome;
     },
@@ -476,7 +490,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
       // 任一文件推送成功即该工作区树缓存失效（迁移推送后的树刷新必须见到新文件/新 hash）。
       if (result.results.some((r) => r.status === "pushed")) {
         const entry = sessions.get(workspaceId);
-        if (entry) entry.treeCache = null;
+        if (entry) { entry.treeCache = null; entry.treeGeneration += 1; }
       }
       return result;
     },
@@ -485,7 +499,7 @@ export function createOnlineSession(deps: OnlineSessionDeps) {
       try {
         await requireWorkspaceClient(input.workspaceId).deleteFile(input.workspaceId, { path: input.path, baseVersion: input.baseVersion });
         const entry = sessions.get(input.workspaceId);
-        if (entry) entry.treeCache = null;
+        if (entry) { entry.treeCache = null; entry.treeGeneration += 1; }
         return { outcome: "deleted" };
       } catch (e) {
         if (e instanceof OnlineConflictError) return { outcome: "conflict", conflict: e.conflict };

@@ -72,6 +72,7 @@ const memberErrorMessages: Readonly<Record<string, string>> = {
   script_grant_changed: "保存脚本批准版本已改变 / Saved-script approval changed（script_grant_changed）", material_version_conflict: "固定材料版本已变化 / Captured material version changed（material_version_conflict）",
   credential_version_conflict: "固定凭据版本已变化 / Captured credential version changed（credential_version_conflict）", intent_conflict: "意图与原固定输入冲突，请查询原运行 / Intent conflicts with the captured input; inspect the original run（intent_conflict）",
   version_conflict: "项目版本冲突，请重新读取 / Project version conflict; reload（version_conflict）", job_not_found: "运行不存在或当前成员无权读取 / Run unavailable or not readable by this member（job_not_found）",
+  invalid_project_assets: "首次保存需要完整有效的项目资产 / Initial save requires valid project assets（invalid_project_assets）",
   report_expired: "报告已到期或已清理 / Report expired or removed（report_expired）", report_not_archived: "报告尚未归档 / Report not archived yet（report_not_archived）",
 };
 export function adaptMemberExecutionError(error: unknown): unknown {

@@ -10,7 +10,7 @@ vi.mock('@apicc/core', async original => {
 import { createOnlineExecutionHost } from "../../../src/main/online/execution.js";
 import { createOnlineSession } from "../../../src/main/online/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
-import type { OnlineExecutionContext, OnlineExecutionInput } from "../../../src/shared/online/execution.js";
+import type { OnlineDirectoryWrite, OnlineExecutionContext, OnlineExecutionInput } from "../../../src/shared/online/execution.js";
 import { ContractWorkspaceSchema, encodeContractProjectFiles } from "@apicc/core";
 import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
 import { projectAssetsManifestHash } from "@apicc/execution/host";
@@ -80,6 +80,71 @@ async function fixture(extra?: (url: string, init?: RequestInit) => Response | P
   return { session, requests, fetcher, host: createOnlineExecutionHost({ session, fetch: fetcher }) };
 }
 describe("online execution main boundary", () => {
+  it("directory first write applies one atomic delta and an uncertain receipt recovers by exact API identity", async () => {
+    const empty = { ...context.scope, format: null, contractProjectId: null, version: "0", manifestHash: projectAssetsManifestHash([]), files: [] };
+    let remote: unknown = empty;
+    let submitted = 0;
+    const instance = await fixture((url, init) => {
+      if (!url.endsWith("/assets")) return;
+      if (init?.method !== "PUT") return Response.json(remote);
+      submitted += 1;
+      const delta = JSON.parse(String(init.body));
+      expect(delta.expectedVersion).toBe("0");
+      expect(delta.deletes).toEqual([]);
+      const files = (delta.changes as { path: string; content: string }[]).map(file => ({ ...file, version: "1", hash: createHash("sha256").update(file.content).digest("hex"), size: Buffer.byteLength(file.content) }));
+      remote = { ...empty, format: delta.format, contractProjectId: delta.contractProjectId, version: "1", files, manifestHash: projectAssetsManifestHash(files) };
+      throw new TypeError("lost synthetic write receipt");
+    });
+    const input: OnlineDirectoryWrite = { context, operation: "directoryWrite", expectedVersion: "0", expectedContractProjectId: null,
+      initialProjectId: randomUUID(), projectName: "Blank project", change: { kind: "create-api", apiId: randomUUID(), caseId: randomUUID(), defaultNonce: randomUUID(),
+        name: "First request", target: { kind: "project-default", expectedCollectionId: null }, request: { protocol: "soap", method: "POST", baseUrl: "https://api.test", path: "/soap",
+          envelope: "<Envelope />", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" } } } };
+    try {
+      const initial = await instance.host.handle(input);
+      expect(initial).toMatchObject({ status: "saved", recovered: true, view: { assets: { version: "1", contractProjectId: input.initialProjectId },
+        project: { collections: [{ name: "未分类接口", apis: [{ contract: { id: input.change.kind === "create-api" ? input.change.apiId : "", request: { protocol: "soap", method: "POST", path: "/soap" } } }] }] } } });
+      expect(await instance.host.handle({ ...input, verifyOnly: true })).toEqual(initial);
+      expect(submitted).toBe(1);
+      expect(await instance.host.handle({ ...input, initialProjectId: randomUUID() })).toMatchObject({ status: "version-conflict" });
+      expect(submitted).toBe(1);
+    } finally { await instance.host.close(); }
+  });
+  it("directory add to an initialized project leaves unrelated YAML bytes and file versions alone", async () => {
+    const { project, assets } = assetsFixture();
+    const collection = project.collections[0]!;
+    const existingPath = assets.files.find(file => file.path.endsWith("/api.yaml"))!.path;
+    let remote = { ...assets, files: assets.files.map(file => {
+      if (file.path !== existingPath) return file;
+      const content = `# keep this API annotation\n${file.content}`;
+      return { ...file, content, hash: createHash("sha256").update(content).digest("hex"), size: Buffer.byteLength(content) };
+    }) };
+    remote.manifestHash = projectAssetsManifestHash(remote.files);
+    const original = remote.files.find(file => file.path === existingPath)!;
+    const changes: string[] = [];
+    const deletes: string[] = [];
+    const instance = await fixture((url, init) => {
+      if (!url.endsWith("/assets")) return;
+      if (init?.method !== "PUT") return Response.json(remote);
+      const delta = JSON.parse(String(init.body)) as { changes: Array<{ path: string; content: string }>; deletes: string[] };
+      changes.push(...delta.changes.map(file => file.path));
+      deletes.push(...delta.deletes);
+      const files = new Map(remote.files.map(file => [file.path, file]));
+      for (const file of delta.changes) files.set(file.path, { ...file, version: "2", hash: createHash("sha256").update(file.content).digest("hex"), size: Buffer.byteLength(file.content) });
+      remote = { ...remote, version: "2", files: [...files.values()], manifestHash: projectAssetsManifestHash([...files.values()]) };
+      return Response.json(remote);
+    });
+    const apiId = randomUUID();
+    const request = { protocol: "http" as const, method: "GET" as const, baseUrl: "https://api.test", path: "/second", pathParams: [], query: [], headers: [], cookies: [], auth: { kind: "none" as const }, body: { kind: "none" as const } };
+    try {
+      expect(await instance.host.handle({ context, operation: "directoryWrite", expectedVersion: "1", expectedContractProjectId: project.id,
+        initialProjectId: randomUUID(), projectName: project.name, change: { kind: "create-api", apiId, caseId: randomUUID(), defaultNonce: randomUUID(),
+          name: "Second API", target: { kind: "container", collectionId: collection.id, folderIds: [] }, request } })).toMatchObject({ status: "saved" });
+      const directory = `collections/${collection.id}`;
+      expect(changes.filter(path => !path.startsWith(`${directory}/apis/${apiId}/`))).toEqual([`${directory}/collection.yaml`]);
+      expect(deletes).toEqual([]);
+      expect(remote.files.find(file => file.path === existingPath)).toEqual(original);
+    } finally { await instance.host.close(); }
+  });
   it('F7f desktop status consumes exact minimum DTO and server scope without inventing task',async()=>{
     const minimum={jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:true,view:'active-status',scope:context.scope};
     const f=await fixture(url=>url.endsWith('/jobs/99')?Response.json(minimum):undefined);

@@ -8,6 +8,7 @@ import type { OnlineExecutionStore } from '../../stores/onlineExecution.js';
 import StressLoadEditor from '../StressLoadEditor.vue';
 import {resolveStressExecutionConfig} from '@apicc/execution/contract';
 import { isFullOnlineJob } from '../../../../shared/online/execution.js';
+import { onlineSessionErrorKey } from '../../i18n/index.js';
 const props = defineProps<{ execution: OnlineExecutionStore; readOnly?: boolean }>();
 const { t } = useI18n();
 const selected = ref('');
@@ -57,7 +58,12 @@ const workerLimit=computed(()=>{
 });
 const environmentMismatch = computed(() => !!plan.value?.environmentId && !!props.execution.environmentId && plan.value.environmentId !== props.execution.environmentId);
 const canRun = computed(() => !!plan.value && valid.value && !dirty.value && !props.execution.dirty && !props.execution.running && !unavailable.value && !environmentMismatch.value && !(props.execution.location.kind === 'agent' && props.execution.localOnlyRefIds.length) && props.execution.isStressConfirmed(plan.value));
-const errorText = computed(() => error.value === 'version_conflict' ? t('onlineStress.conflict') : ['stress-local-budget-exceeded','stress-worker-policy-exceeded','stress-capacity-exceeded'].includes(error.value) ? t(`stressFinal.codes.${error.value}`) : error.value);
+const errorText = computed(() => {
+  const key = onlineSessionErrorKey(error.value);
+  if (key) return t(key);
+  if (error.value === 'version_conflict') return t('onlineStress.conflict');
+  return ['stress-local-budget-exceeded','stress-worker-policy-exceeded','stress-capacity-exceeded'].includes(error.value) ? t(`stressFinal.codes.${error.value}`) : error.value;
+});
 const selectedJob = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection && isFullOnlineJob(selection.job) && selection.job.task.target.kind === 'stress' ? props.execution.jobs.find(job => job.jobId === selection.job.jobId && job.executionId === selection.job.executionId) : undefined; });
 const stopTarget = computed(() => {
   const selection = props.execution.resultSelection;

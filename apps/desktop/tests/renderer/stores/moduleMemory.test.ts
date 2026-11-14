@@ -20,12 +20,17 @@ describe("module memory local identity", () => {
     memory.activateProject("C:/workspace-a", first);
     memory.apiTree.expanded = [JSON.stringify(["local", "collection", first.workspaceId, first.groupId, first.projectId, "collection-a"])];
     memory.apiTree.lastApiLocator = firstApi;
+    memory.apiTree.filter = "first project only";
+    const folder = { ...first, collectionId: firstApi.collectionId, folderIds: [firstApi.apiId] };
+    memory.apiTree.selection = { kind: "folder", locator: folder };
     memory.test.apiLocator = firstApi;
     memory.touch();
 
     memory.activateProject("C:/workspace-a", second);
     expect(memory.apiTree.expanded).toEqual([]);
     expect(memory.apiTree.lastApiLocator).toBeNull();
+    expect(memory.apiTree.filter).toBe("");
+    expect(memory.apiTree.selection).toBeNull();
     expect(memory.test.apiLocator).toBeNull();
     memory.apiTree.lastApiLocator = secondApi;
     memory.test.apiLocator = secondApi;
@@ -35,7 +40,12 @@ describe("module memory local identity", () => {
     expect(memory.apiTree.lastApiLocator).toBeNull();
     memory.activateProject("C:/workspace-a", first);
     expect(memory.apiTree.lastApiLocator).toEqual(firstApi);
+    expect(memory.apiTree.filter).toBe("first project only");
+    expect(memory.apiTree.selection).toEqual({ kind: "folder", locator: folder });
     expect(memory.test.apiLocator).toEqual(firstApi);
+    const reopened = useModuleMemoryStore();
+    reopened.activateProject("C:/workspace-a", first);
+    expect(reopened.apiTree.selection).toEqual({ kind: "folder", locator: folder });
   });
 
   it("does not restore legacy id-only module memory", () => {

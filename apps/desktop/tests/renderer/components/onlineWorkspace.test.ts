@@ -192,6 +192,89 @@ describe('online execution readable projection', () => {
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
     } finally { restoreLayout(); }
   });
+  it('keeps the online stress draft mounted when a directory draft opens and closes', async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const api = createMemoryApi();
+    const online = createOnlineStore({ api });
+    const execution = online.execution;
+    execution.activate(EXECUTION_CONTEXT);
+    execution.project = project;
+    execution.view = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
+    online.activeWorkspaceId = EXECUTION_CONTEXT.scope.workspaceId;
+    online.sessions[EXECUTION_CONTEXT.scope.workspaceId] = { workspace: { id: EXECUTION_CONTEXT.scope.workspaceId, name: 'Team', myRole: 'EDITOR' },
+      projects: [{ id: EXECUTION_CONTEXT.scope.projectId, name: project.name, myRole: 'EDITOR' }], tree: null, buffers: {}, activeEditorPath: null };
+    const adapter = createOnlineProjectAdapter(execution, api, () => false, () => true);
+    const { i18n } = createI18nInstance();
+    i18n.global.locale.value = 'zh-CN';
+    const wrapper = mount(OnlineProjectAssets, { attachTo: document.body, props: { online, adapter, localProjects: [] },
+      slots: { draft: '<input data-testid="new-online-api" />' }, global: { plugins: [i18n] } });
+    try {
+      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'))!.trigger('click');
+      await wrapper.get('[data-testid="online-stress-new"]').trigger('click');
+      const name = wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]');
+      await name.setValue('Unsaved load profile');
+      await wrapper.setProps({ directoryDraft: true });
+      expect(wrapper.get('[data-testid="new-online-api"]').isVisible()).toBe(true);
+      expect(wrapper.get('[data-testid="online-stress-panel"]').isVisible()).toBe(false);
+      await wrapper.setProps({ directoryDraft: false });
+      const restored = wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]');
+      expect(restored.isVisible()).toBe(true);
+      expect(restored.element).toBe(name.element);
+      expect(restored.element.value).toBe('Unsaved load profile');
+      await wrapper.setProps({ directoryDraft: true });
+      const session = online.sessions[EXECUTION_CONTEXT.scope.workspaceId]!;
+      const created = project.collections[0]!.apis[0]!;
+      const path = `${EXECUTION_CONTEXT.scope.projectId}/collections/${project.collections[0]!.id}/apis/${created.contract.id}/api.yaml`;
+      session.buffers[path] = { path, kind: 'api', api: structuredClone(created), version: 1, raw: '', snapshot: JSON.stringify(created), problems: [], loading: false };
+      session.activeEditorPath = path;
+      await wrapper.setProps({ directoryDraft: false });
+      expect(wrapper.get('[data-testid="online-api-select"]').isVisible()).toBe(true);
+      expect(wrapper.get('[data-testid="online-stress-panel"]').isVisible()).toBe(false);
+      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'))!.trigger('click');
+      expect(wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]').element).toBe(name.element);
+      expect(name.element.value).toBe('Unsaved load profile');
+    } finally { wrapper.unmount(); adapter.stop(); }
+  });
+  it('selecting another online API and back through the existing dropdown preserves the first API draft', async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const collection = project.collections[0]!;
+    const first = collection.apis[0]!;
+    const second = structuredClone(first);
+    second.contract.id = crypto.randomUUID();
+    second.contract.metadata.name = 'Second API';
+    collection.apis.push(second);
+    const remote = [first, second].map(api => ({ path: `collections/${collection.id}/apis/${api.contract.id}/api.yaml`, api }));
+    const api = createMemoryApi();
+    const read = vi.fn<ApiccApi['onlineFilesGet']>(async ({ paths }) => ({ missing: [], files: paths.map(path => ({ path, content: '', version: 1, hash: 'a'.repeat(64) })) }));
+    api.onlineFilesGet = read;
+    const online = createOnlineStore({ api });
+    const execution = online.execution;
+    execution.activate(EXECUTION_CONTEXT);
+    execution.project = project;
+    const files = remote.map(({ path }) => ({ path, content: '', hash: 'a'.repeat(64), size: 0, version: '1' }));
+    execution.view = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files } };
+    online.activeWorkspaceId = EXECUTION_CONTEXT.scope.workspaceId;
+    online.sessions[EXECUTION_CONTEXT.scope.workspaceId] = { workspace: { id: EXECUTION_CONTEXT.scope.workspaceId, name: 'Team', myRole: 'EDITOR' },
+      projects: [{ id: EXECUTION_CONTEXT.scope.projectId, name: project.name, myRole: 'EDITOR' }], tree: null, buffers: {}, activeEditorPath: null };
+    const adapter = createOnlineProjectAdapter(execution, api, () => false, () => true);
+    const { i18n } = createI18nInstance();
+    const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+    try {
+      const selector = wrapper.get<HTMLSelectElement>('[data-testid="online-api-select"]');
+      await selector.setValue(first.contract.id);
+      await flushPromises();
+      expect(online.editorApi?.contract.id, online.error ?? '').toBe(first.contract.id);
+      online.editorApi!.contract.metadata.name = 'First API local draft';
+      await selector.setValue(second.contract.id);
+      await flushPromises();
+      expect(online.editorApi?.contract.metadata.name).toBe('Second API');
+      await selector.setValue(first.contract.id);
+      await flushPromises();
+      expect(online.editorApi?.contract.metadata.name).toBe('First API local draft');
+      expect(online.editorDirty).toBe(true);
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally { wrapper.unmount(); adapter.stop(); }
+  });
   it('shows connection, cancellation, release and missing evidence in Chinese and English without opening raw data', () => {
     for (const language of ['zh-CN', 'en'] as const) {
       const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
@@ -211,6 +294,19 @@ describe('online execution readable projection', () => {
       expect(text).not.toContain('onlineExecution.');
       wrapper.unmount();
     }
+  });
+  it('explains how to preserve a conflicted whole-project draft in both languages', async () => {
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+    execution.error = 'online-directory-project-draft-conflict';
+    const { i18n } = createI18nInstance();
+    const wrapper = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
+    i18n.global.locale.value = 'zh-CN';
+    await flushPromises();
+    expect(wrapper.get('[data-testid="online-execution-error"]').text()).toContain('请先复制需要保留的修改');
+    i18n.global.locale.value = 'en';
+    await flushPromises();
+    expect(wrapper.get('[data-testid="online-execution-error"]').text()).toContain('Copy the edits you want to keep');
+    wrapper.unmount();
   });
 });
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）

@@ -8,8 +8,25 @@ import { createMockConfiguredProject, mockFixtureIds } from "../helpers/mockFixt
 import { createProjectSnapshot } from "../../src/assets/snapshot.js";
 import { createProjectAssetContext } from "../../src/assets/context.js";
 import { WorkflowSchema } from "../../src/workflow/model.js";
+import { createDefaultCollectionId, isDefaultCollectionId } from "../../src/assets/defaultCollection.js";
 
 const newProjectId = "00000000-0000-4000-8000-000000000900";
+
+it("rekeys the default collection for the cloned project and maps environment references to that identity", () => {
+  const { project: source } = sourceProject();
+  const collection = source.collections[0]!;
+  collection.id = createDefaultCollectionId(source.id, collection.id);
+  collection.name = "Renamed inbox";
+  source.environments[0]!.baseUrls = { [collection.id]: "https://inbox.example.test" };
+  const { project, idMap } = cloneProjectDefinition(source, { newId: deterministicIdFactory() });
+  const target = project.collections[0]!;
+  expect(target.name).toBe("Renamed inbox");
+  expect(target.id).not.toBe(collection.id);
+  expect(isDefaultCollectionId(project.id, target.id)).toBe(true);
+  expect(isDefaultCollectionId(source.id, target.id)).toBe(false);
+  expect(mapped(idMap, "collection", collection.id, source.id)).toBe(target.id);
+  expect(project.environments[0]!.baseUrls).toEqual({ [target.id]: "https://inbox.example.test" });
+});
 
 it("clones v2 structural child/branch/handler identities while preserving literal business values", () => {
   const { project: source } = sourceProject();

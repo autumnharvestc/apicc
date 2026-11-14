@@ -60,6 +60,7 @@ export interface LocalProjectTreeNodeDTO extends LocalBase<"project", ProjectLoc
 }
 
 export interface LocalCollectionTreeNodeDTO extends LocalBase<"collection", CollectionLocator> {
+  isDefault?: boolean;
   children: LocalTreeNodeDTO[];
 }
 
@@ -102,6 +103,7 @@ export interface OnlineTreeNodeDTO {
   key: string;
   label: string;
   method?: string;
+  isDefault?: boolean;
   myRole?: OnlineProjectRole;
   children?: OnlineTreeNodeDTO[];
 }

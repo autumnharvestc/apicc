@@ -65,7 +65,10 @@ export async function handleOperation(operation: string, value: unknown, context
       // narrower union. Core still performs its own full source/report parsing.
       return projectPublication(input as PublicationInput, policy);
     }
-    case "classify-asset-mutation": { const { beforeFiles, afterFiles } = parsePayload("classify-asset-mutation", value); return classifyAssetMutation(uniqueFiles(beforeFiles), uniqueFiles(afterFiles)); }
+    case "classify-asset-mutation": {
+      const { beforeFiles, afterFiles, initialContractProjectId } = parsePayload("classify-asset-mutation", value);
+      return classifyAssetMutation(uniqueFiles(beforeFiles), uniqueFiles(afterFiles), { initialContractProjectId });
+    }
     case "compile-mock": {
       const { input, policy } = parsePayload("compile-mock", value);
       if (input.maxResponseBytes !== undefined && input.maxResponseBytes !== policy.maxResponseBytes) throw new Error("RPC_POLICY_MISMATCH");

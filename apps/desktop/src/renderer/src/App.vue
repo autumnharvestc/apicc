@@ -112,6 +112,8 @@ import { currentLocale } from "./i18n/bridge.js";
 import { onlineSessionErrorKey } from "./i18n/index.js";
 import { themePreference, resolveTheme, applyTheme } from "./theme.js";
 import { localTreeNodeKey, type LocalTreeIdentity } from "../../shared/tree-dto.js";
+import { isOnlineDirectoryBlank, labelOnlineProjectTree, onlineApiTitlePath, onlineProjectTree, onlineSaveTargets } from "./onlineDirectory.js";
+import { useOnlineDirectory } from "./stores/onlineDirectory.js";
 
 const ARadioGroup = ARadio.Group;
 const ARadioButton = ARadio.Button;
@@ -282,6 +284,9 @@ const tabs = createTabsStore({
   workflowDesign,
   requestTabs,
   evictProjectSessions: async (tab) => {
+    if (tab.workspaceRef.kind === 'online' && 'projectId' in tab) onlineDirectory.discardTab({
+      ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
+    });
     await evictSessions(tab);
     if (tab.workspaceRef.kind === 'local' && 'projectLocator' in tab) await testing.evict(tab.workspaceRef.dir, tab.projectLocator);
   },
@@ -289,6 +294,9 @@ const tabs = createTabsStore({
   confirmWorkflowDraft,
   confirmTestingDraft: () => testing.leave(),
   testingHasDrafts: (root, project) => testing.dirty && testing.view?.context.root === root && sameProjectLocator(testing.view.context.project, project),
+  onlineDirectoryHasDraft: (tab) => onlineDirectory.tabHasDraft({
+    ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
+  }),
 });
 
 // 启动恢复由签表驱动；模块选择与树状态由按 root+ProjectLocator 分区的 moduleMemory 持久化。
@@ -312,7 +320,7 @@ function projectOfLocator(locator: ProjectLocator | ApiLocator | WorkflowLocator
 }
 
 /** One local API activation path keeps editor, project assets, and design drafts on the same locator. */
-async function activateRequestTab(tabId: string, showRequestEditor = true, navigationIsCurrent: () => boolean = () => true): Promise<void> {
+async function activateRequestTab(tabId: string, showRequestEditor = true, navigationIsCurrent: () => boolean = () => true, selectDirectory = true): Promise<void> {
   const tab = requestTabs.tabs[tabId];
   if (!tab || tab.root !== workspace.root || !navigationIsCurrent()) return;
   requestTabs.activate(tabId);
@@ -331,18 +339,23 @@ async function activateRequestTab(tabId: string, showRequestEditor = true, navig
   }
   const nodeKey = localTreeNodeKey({ source: "local", kind: "api", locator: tab.source.locator });
   const node = findLocalNodeByKey(nodeKey);
-  if (node?.kind === "api") tree.select(node);
+  if (node?.kind === "api" && selectDirectory) selectDirectoryNode(node);
   await loadApiIntoEditor(tab.source.locator, isCurrent, false);
 }
 
-function openFreeRequestTab(): void {
+function openFreeRequestTab(saveParent?: ApiParentLocator | null): void {
   const context = selectedProjectContext.value;
-  if (!context || isHome.value || onlineMode.value || context.root !== workspace.root) return;
+  if (!context || isHome.value || onlineMode.value || context.root !== workspace.root
+    || (saveParent && !sameProjectLocator(saveParent, context.locator))) return;
   requestContextRoot = context.root;
   requestProjectContext = { ...context.locator };
   try {
-    const tabId = requestTabs.open({ kind: "free", project: { ...context.locator }, draftId: crypto.randomUUID() });
-    void activateRequestTab(tabId).catch(reportError);
+    const tabId = requestTabs.open({ kind: "free", project: { ...context.locator }, draftId: crypto.randomUUID(), saveParent });
+    void activateRequestTab(tabId).then(() => {
+      if (saveParent === undefined || requestTabs.activeId !== tabId || localProjectToolsKey.value !== projectSessionKey(context.root, context.locator)) return;
+      if (directoryOverlay.value) directoryOpen.value = false;
+      void nextTick(() => document.querySelector<HTMLElement>('[data-testid="editor-full-url"]')?.focus({ preventScroll: true }));
+    }).catch(reportError);
   } catch (error) {
     reportError(error);
   }
@@ -380,11 +393,17 @@ async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean =
 async function restoreLastApiForTab(tab: ProjectTab, isCurrent: () => boolean = () => true): Promise<void> {
   if (!isCurrent() || !("projectLocator" in tab) || workspace.root !== tab.workspaceRef.dir) return;
   moduleMemory.activateProject(tab.workspaceRef.dir, tab.projectLocator);
+  const remembered = moduleMemory.apiTree.selection;
+  const project = workspace.findProject(tab.projectLocator);
+  const workflow = remembered?.kind === "workflow" ? project?.workflows.find((item) => item.id === remembered.locator.workflowId) : undefined;
+  const restoredNode = workflow ? { ...workflow, kind: "workflow" as const, label: workflow.name }
+    : remembered ? findLocalNodeByKey(localTreeNodeKey({ source: "local", ...remembered })) : null;
+  if (restoredNode) tree.select(restoredNode);
   requestContextRoot = tab.workspaceRef.dir;
   requestProjectContext = { ...tab.projectLocator };
   const retainedRequestTabId = requestTabs.activateProject(tab.workspaceRef.dir, tab.projectLocator);
   if (retainedRequestTabId) {
-    await activateRequestTab(retainedRequestTabId, false);
+    await activateRequestTab(retainedRequestTabId, false, isCurrent, !restoredNode);
     return;
   }
   try {
@@ -394,8 +413,8 @@ async function restoreLastApiForTab(tab: ProjectTab, isCurrent: () => boolean = 
       const node = findLocalNodeByKey(key);
       if (node?.kind === "api") {
         if (!isCurrent() || workspace.root !== tab.workspaceRef.dir) return;
-        tree.select(node);
-        await loadApiIntoEditor(node.locator, isCurrent);
+        const requestId = requestTabs.open({ kind: "asset", locator: node.locator });
+        await activateRequestTab(requestId, false, isCurrent, !restoredNode);
         if (!isCurrent() || workspace.root !== tab.workspaceRef.dir) return;
         return;
       }
@@ -465,6 +484,7 @@ const directoryOverlay = computed(() => apiDirectory.value && (workbenchWidth.va
 const directoryVisible = computed(() => apiDirectory.value && (!directoryOverlay.value || directoryOpen.value));
 const useDirectoryTools = computed(() => apiDirectory.value && !directoryOverlay.value && workbenchHeight.value >= 300);
 const treeSearch = ref<{ focus(): void }>();
+const sideTree = ref<InstanceType<typeof SideTree>>();
 const projectToolsMenu = ref<InstanceType<typeof ActionMenu>>();
 function setWorkbenchBody(component: Element | ComponentPublicInstance | null) {
   workbenchBody.value = component instanceof HTMLElement ? component : undefined;
@@ -647,13 +667,92 @@ const homeActiveOnlineProjectId = computed(() => {
   const tab = tabs.activeTab;
   return tab && !isLocalProjectTab(tab) && onlineProjectContextAvailable.value ? tab.projectId : null;
 });
+const onlineDirectoryContext = computed(() => !isHome.value && onlineMode.value ? online.executionContext(homeActiveOnlineProjectId.value) : null);
+const onlineDirectoryRoot = computed(() => {
+  const context = onlineDirectoryContext.value;
+  if (!context) return null;
+  const root = onlineProjectTree(online.onlineTree, context.scope.projectId);
+  if (!root) return null;
+  const project = JSON.stringify(online.execution.context) === JSON.stringify(context) ? online.execution.view?.project ?? null : null;
+  const labeled = labelOnlineProjectTree(root, project);
+  const workspaceConfig = online.onlineTree?.source === 'online'
+    ? online.onlineTree.children?.find(node => node.kind === 'file' && node.id === 'apicc.workspace.yaml') : undefined;
+  return workspaceConfig ? { ...labeled, children: [workspaceConfig, ...(labeled.children ?? [])] } : labeled;
+});
+function findOnlineDirectoryNode(node: OnlineTreeNodeDTO | null, match: (node: OnlineTreeNodeDTO) => boolean): OnlineTreeNodeDTO | undefined {
+  if (!node) return;
+  if (match(node)) return node;
+  for (const child of node.children ?? []) {
+    const found = findOnlineDirectoryNode(child, match);
+    if (found) return found;
+  }
+}
+function showOnlineDirectoryPath(path: string) {
+  const selected = findOnlineDirectoryNode(onlineDirectoryRoot.value, node => node.id === path)?.key;
+  if (!selected) return;
+  onlineDirectory.updateTree({ selected });
+  void nextTick(() => sideTree.value?.revealOnline(path));
+}
+const onlineDirectory = useOnlineDirectory(online, onlineDirectoryContext, onlineDirectoryRoot, showOnlineDirectoryPath);
+const onlineDirectoryTargets = computed(() => onlineSaveTargets(online.execution.view?.project ?? null, t("projectDirectory.defaultCollectionName"),
+  name => t("projectDirectory.defaultTarget", { name })));
+const onlineSavedApiPath = computed(() => onlineApiTitlePath(onlineDirectoryRoot.value, online.editorPath));
+let onlineDirectoryOrigin: HTMLElement | null = null;
+let onlineDirectoryOriginScope = '';
+function startOnlineDirectoryAction(action: string, node: OnlineTreeNodeDTO) {
+  const origin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const previous = onlineDirectory.draft.value;
+  onlineDirectory.start(action, node);
+  if (!onlineDirectory.dialog.value && (!onlineDirectory.draft.value || onlineDirectory.draft.value === previous)) return;
+  onlineDirectoryOrigin = origin;
+  onlineDirectoryOriginScope = onlineDirectory.key.value;
+  if (action === 'api') {
+    if (directoryOverlay.value) directoryOpen.value = false;
+    void nextTick(() => {
+      if (onlineDirectoryOriginScope !== onlineDirectory.key.value) return;
+      document.querySelector<HTMLElement>('[data-testid="online-draft"] [data-testid="online-editor-name"]')?.focus({ preventScroll: true });
+    });
+  }
+}
+function restoreOnlineDirectoryFocus() {
+  const origin = onlineDirectoryOrigin;
+  const scope = onlineDirectoryOriginScope;
+  onlineDirectoryOrigin = null;
+  onlineDirectoryOriginScope = '';
+  void nextTick(() => {
+    if (scope !== onlineDirectory.key.value) return;
+    const target = directoryVisible.value && origin?.isConnected ? origin
+      : document.querySelector<HTMLElement>('[data-testid="rail-directory"], [data-testid="directory-create"]');
+    target?.focus({ preventScroll: true });
+  });
+}
+function cancelOnlineDirectoryDialog() {
+  onlineDirectory.dialog.value = undefined;
+  restoreOnlineDirectoryFocus();
+}
+function confirmOnlineDirectoryDialog(name: string | null) {
+  void onlineDirectory.confirmName(name);
+  if (!onlineDirectory.dialog.value) restoreOnlineDirectoryFocus();
+}
+function cancelOnlineDirectoryDraft() {
+  onlineDirectory.discard(onlineDirectoryContext.value);
+  restoreOnlineDirectoryFocus();
+}
+let onlineActivation = 0;
 watch(() => JSON.stringify([isHome.value, onlineMode.value, homeActiveOnlineProjectId.value, online.activeBaseUrl, online.user?.id]), async () => {
+  const activation = ++onlineActivation;
   const context = online.executionContext(homeActiveOnlineProjectId.value);
   online.execution.activate(context);
   online.execution.setVisible(!isHome.value && onlineMode.value && context !== null);
-  if (online.execution.visible) {
+  if (context && online.execution.visible) {
     await online.execution.load();
-    if (online.editorPath && online.editorKind === 'api' && !online.editorDirty) await online.selectNode('api', online.editorPath, { force: true });
+    if (activation !== onlineActivation || JSON.stringify(onlineDirectoryContext.value) !== JSON.stringify(context)) return;
+    const selected = findOnlineDirectoryNode(onlineDirectoryRoot.value, node => node.key === onlineDirectory.tree.value.selected);
+    if (!online.editorPath && (selected?.kind === 'api' || selected?.kind === 'file')) {
+      await online.selectNode(selected.kind, selected.id);
+    } else if (online.editorPath?.startsWith(`${context.scope.projectId}/`) && online.editorKind === 'api' && !online.editorDirty) {
+      await online.selectNode('api', online.editorPath, { force: true });
+    }
   }
 }, { immediate: true });
 const onlinePublishProjects = computed(() => workspace.workspace?.groups.flatMap(group => group.projects.map(project => ({ label: `${group.name} / ${project.name}`, project }))) ?? []);
@@ -672,9 +771,14 @@ watch(
 // —— 树面板头（M8）：模块标题 + 前端搜索（SideTree 按 label 过滤）——
 // 模块侧栏记忆（M11）：接口树过滤、测试页签/选中接口——重启保留
 const moduleMemory = useModuleMemoryStore();
+function selectDirectoryNode(node: LocalTreeNodeDTO) {
+  tree.select(node);
+  moduleMemory.rememberDirectorySelection(workspace.root, node);
+}
 const treeFilter = computed({
-  get: () => moduleMemory.apiTree.filter,
+  get: () => onlineDirectoryContext.value ? onlineDirectory.tree.value.filter : moduleMemory.apiTree.filter,
   set: (v: string) => {
+    if (onlineDirectoryContext.value) { onlineDirectory.updateTree({ filter: v }); return; }
     moduleMemory.apiTree.filter = v;
     moduleMemory.touch();
   },
@@ -777,6 +881,7 @@ async function onSelect(node: TreeNodeDTO | NodeCreatedDTO) {
   if (node.source === "online") {
     if (node.kind === "project") openProjectTabFor(node);
     else {
+      onlineDirectory.updateTree({ selected: node.key });
       try { await online.selectNode(node.kind, node.id); }
       catch (e) { reportError(e); }
     }
@@ -831,7 +936,7 @@ async function locateExecutionEvidence(identity: import("@apicc/core").EvidenceI
     cases.selectedCase = caseIdentity;
     const requestTab = editor.activeKey ? debug.requestTabForSession(editor.activeKey) : null;
     if (requestTab) debug.requestTabState(requestTab).selectedCase = { ...caseIdentity };
-    tree.select(node);
+    selectDirectoryNode(node);
     moduleMemory.test.apiLocator = { ...locator, folderIds: [...locator.folderIds] };
     moduleMemory.apiTree.lastApiLocator = { ...locator, folderIds: [...locator.folderIds] };
     moduleMemory.test.pane = "api-cases"; moduleMemory.touch();
@@ -879,7 +984,7 @@ function onWfSwitchCancel() {
   if (locator && workflowDesign.root === workspace.root) {
     const key = localTreeNodeKey({ source: "local", kind: "workflow", locator });
     const node = findLocalNodeByKey(key);
-    if (node?.kind === "workflow") tree.select(node);
+    if (node?.kind === "workflow") selectDirectoryNode(node);
   }
 }
 
@@ -922,6 +1027,7 @@ function onRequestTabCloseCancel() { finishRequestTabClose(false); }
 // 槽 dirty + workflowDesign 单会话 + online 各驻留会话任一缓冲槽 dirty（遍历全表，任务 4
 // 移交口径；判定先例同 editorDirty/projectHasDrafts 的快照比对）。
 function aggregateHasDrafts(): boolean {
+  if (onlineDirectory.dirty.value) return true;
   if (testing.dirty) return true;
   for (const session of Object.values(editor.sessions)) {
     if ((session.api !== null && JSON.stringify(session.api) !== session.snapshot) || design.hasControlDrafts(session)) return true;
@@ -942,23 +1048,6 @@ function aggregateHasDrafts(): boolean {
   return false;
 }
 apicc.onDirtyCheck(aggregateHasDrafts);
-
-function projectOfLocalNode(node: LocalTreeIdentity): ProjectLocator | null {
-  switch (node.kind) {
-    case "project": return { ...node.locator };
-    case "collection":
-    case "folder":
-    case "api":
-    case "workflow": return projectOfLocator(node.locator);
-    case "environment": return {
-      workspaceId: node.locator.workspaceId,
-      groupId: node.locator.groupId,
-      projectId: node.locator.projectId,
-    };
-    case "root":
-    case "group": return null;
-  }
-}
 
 function collectionOfLocalNode(node: LocalTreeIdentity): CollectionLocator | null {
   switch (node.kind) {
@@ -982,10 +1071,9 @@ const selectedProjectContext = computed(() => {
     const retained = retainedLocalProjectTab.value;
     return retained ? { root: retained.workspaceRef.dir, locator: { ...retained.projectLocator } } : null;
   }
-  const selected = tree.selected;
-  if (onlineMode.value || selected?.source !== "local") return null;
-  const locator = projectOfLocalNode(selected);
-  return locator ? { root: workspace.root, locator } : null;
+  const tab = activeLocalProjectTab.value;
+  if (onlineMode.value || !tab || tab.workspaceRef.dir !== workspace.root) return null;
+  return workspace.findProject(tab.projectLocator) ? { root: workspace.root, locator: { ...tab.projectLocator } } : null;
 });
 const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
 const localProjectTools = computed(() => {
@@ -995,6 +1083,32 @@ const localProjectTools = computed(() => {
   return project ? { root: workspace.root, project, key: projectSessionKey(workspace.root, project.locator) } : null;
 });
 const localProjectToolsKey = computed(() => localProjectTools.value?.key ?? "");
+function localTabForProject(root: string, locator: ProjectLocator) {
+  return tabs.tabs.find((tab) => isLocalProjectTab(tab) && tab.workspaceRef.dir === root && sameProjectLocator(tab.projectLocator, locator));
+}
+
+function onDirectoryProjectRenamed(root: string, locator: ProjectLocator, name: string) {
+  const tab = localTabForProject(root, locator);
+  const project = workspace.root === root ? workspace.findProject(locator) : null;
+  if (project) project.label = name;
+  if (tab) { tab.projectName = name; tabs.persist(); }
+}
+
+async function onDirectoryProjectDeleted(root: string, locator: ProjectLocator) {
+  if (workspace.root === root && workspace.tree?.id === locator.workspaceId) {
+    const group = workspace.tree.children.find((node) => node.kind === "group" && node.id === locator.groupId);
+    if (group?.kind === "group") group.children = group.children.filter((node) => node.id !== locator.projectId);
+  }
+  const tab = localTabForProject(root, locator);
+  if (!tab) return;
+  const active = tabs.activeTabId === tab.tabId;
+  await tabs.closeTab(tab.tabId);
+  if (active) await nextTick(() => {
+    if (document.activeElement === document.body) {
+      document.querySelector<HTMLElement>('[data-testid="project-tabs"] [aria-selected="true"]')?.focus({ preventScroll: true });
+    }
+  });
+}
 const localTool = ref<"assets" | "mock" | null>(null);
 const lastLocalTool = ref<"assets" | "mock">("assets");
 const mockPanelMounted = ref(false);
@@ -1221,20 +1335,28 @@ const activeRequestTab = computed(() => {
 });
 const requestPath = computed(() => {
   const tab = activeRequestTab.value;
+  if (tab?.source.kind === "free") {
+    if (tab.source.saveParent === undefined) return "";
+    if (!tab.source.saveParent) return t("projectDirectory.noSavePosition");
+    return apiParentPath(tab.source.saveParent) || t("projectDirectory.noSavePosition");
+  }
   const locator = tab?.source.kind === "asset" ? tab.source.locator : !tab ? editor.locator : null;
-  if (!locator) return "";
+  return locator ? apiParentPath(locator) : "";
+});
+function apiParentPath(locator: ApiParentLocator): string {
   const project = workspace.findProject(locator);
   if (!project) return "";
   const module = project.children.find((node) => node.kind === "collection" && node.locator.collectionId === locator.collectionId);
-  const path = [project.label];
-  if (module) path.push(module.label);
+  if (!module) return "";
+  const path = [module.label];
   let parent: LocalTreeNodeDTO | undefined = module;
-  for (const folderId of locator.folderIds) {
+  for (const folderId of "folderIds" in locator ? locator.folderIds : []) {
     parent = parent?.children?.find((node) => node.kind === "folder" && node.id === folderId);
-    if (parent) path.push(parent.label);
+    if (!parent) return "";
+    path.push(parent.label);
   }
   return path.join(" / ");
-});
+}
 const showDebugEnvironment = computed(() => !isHome.value && !onlineMode.value && view.value === "api" && apiSubView.value === "debug");
 const environmentSelection = computed(() => {
   if (!showDebugEnvironment.value || !selectedProjectContext.value || selectedProjectContext.value.root !== workspace.root) return null;
@@ -1286,9 +1408,26 @@ async function createFreeRequestModule(tab: RequestTab, name: string): Promise<A
   return { ...created.locator };
 }
 
+async function reloadDirectorySaveTargets(tab: RequestTab): Promise<void> {
+  const free = editor.freeSessions[tab.tabId];
+  const navigation = historyNavigationGeneration.value;
+  const isCurrent = () => !!free && workspace.root === tab.root && !workspace.readOnly
+    && requestTabs.activeId === tab.tabId && requestTabs.isCurrent(tab.tabId, tab.generation, tab.root)
+    && editor.freeSessions[tab.tabId] === free && historyNavigationGeneration.value === navigation
+    && localProjectToolsKey.value === projectSessionKey(tab.root, tab.project);
+  if (!isCurrent() || !free || tab.source.kind !== "free" || tab.source.saveParent === undefined) return;
+  const context = await apicc.debugProjectContext(tab.project);
+  if (!isCurrent() || !sameProjectLocator(context.project, tab.project)) throw new Error(t("projectDirectory.targetMissing"));
+  await workspace.refresh();
+  if (!isCurrent()) throw new Error(t("projectDirectory.targetMissing"));
+  free.sourceProjectRevision = context.sourceProjectRevision;
+  free.envs = context.envs.map((environment) => ({ ...environment, locator: { ...environment.locator } }));
+  await ensureProjectAssets(tab.root, tab.project, true);
+}
+
 async function saveFreeRequestAsApi(
   tab: RequestTab,
-  targetParent: ApiParentLocator,
+  targetParent: import("../../shared/locations.js").RequestSaveTarget,
   name: string,
   request: ApiRequest,
   fields: DebugFieldState[],
@@ -1309,8 +1448,7 @@ async function saveFreeRequestAsApi(
   if (workspace.readOnly || workspace.root !== root || !requestTabs.isCurrent(tab.tabId, tab.generation, root)
     || !sameProjectLocator(selectedProjectContext.value?.locator ?? sourceProject, sourceProject)
     || selectedProjectContext.value?.root !== root) throw new Error("项目上下文已变化或处于只读模式，拒绝保存 Free 请求。");
-  if (targetParent.workspaceId !== sourceProject.workspaceId || targetParent.groupId !== sourceProject.groupId
-    || targetParent.projectId !== sourceProject.projectId) throw new Error("保存目标必须属于 Free 请求的来源项目。");
+  if (!("kind" in targetParent) && !sameProjectLocator(targetParent, sourceProject)) throw new Error("保存目标必须属于 Free 请求的来源项目。");
   if (debug.isRequestTabRunning(tab.tabId)) throw new Error("请求运行期间不能保存为正式接口。");
   if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存为正式接口。");
 
@@ -1358,14 +1496,25 @@ async function saveFreeRequestAsApi(
   const converted = requestTabs.commitFreeToAsset(tab.tabId, created.locator);
   debug.commitRequestTabConversion(converted, adopted.generation);
 
-  await workspace.refresh();
+  let refreshFailed = false;
+  try {
+    await workspace.refresh();
+  } catch {
+    refreshFailed = true;
+    if (workspace.root === root && localProjectToolsKey.value === projectSessionKey(root, sourceProject)) {
+      reportError(t("projectDirectory.savedRefreshFailed"));
+    }
+  }
   if (!wasActive || requestTabs.activeId !== tab.tabId || workspace.root !== root
     || !requestTabs.isCurrent(tab.tabId, converted.generation, root)) return;
   const node = findLocalNodeByKey(localTreeNodeKey({ source: "local", kind: "api", locator: created.locator }));
-  if (node?.kind === "api") tree.select(node);
+  if (node?.kind === "api") {
+    selectDirectoryNode(node);
+    sideTree.value?.reveal(node.locator);
+  }
   view.value = "api";
   apiSubView.value = "debug";
-  await activateRequestTab(tab.tabId, true);
+  if (!refreshFailed) await activateRequestTab(tab.tabId, true);
   return { tabId: tab.tabId, generation: converted.generation };
 }
 
@@ -1560,7 +1709,7 @@ function onTestPickApi(locator: ApiLocator) {
   moduleMemory.touch();
   const node = findLocalNodeByKey(localTreeNodeKey({ source: "local", kind: "api", locator }));
   if (!node || node.kind !== "api") return;
-  tree.select(node);
+  selectDirectoryNode(node);
   loadApiIntoEditor(locator).catch(reportError);
 }
 
@@ -1886,6 +2035,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
                在线上下文（任务 5：内容上下文由活跃签驱动）：treeRoot 切在线树视图、readonly
                只读装饰、空态文案覆写 -->
           <SideTree
+            ref="sideTree"
             class="side-col"
             :api="apicc"
             :workspace="workspace"
@@ -1899,11 +2049,22 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :compact="compactDirectory"
             :hidden="!directoryVisible"
             :active-project-locator="activeProjectLocator"
+            :scope-key="onlineMode ? onlineDirectory.key.value || undefined : localProjectToolsKey"
+            :online-project="onlineDirectoryRoot"
+            :online-writable="onlineDirectory.writable.value"
+            :online-expanded="onlineDirectoryContext ? onlineDirectory.tree.value.expanded : undefined"
+            :online-selected-key="onlineDirectory.tree.value.selected"
+            :project-drafts="!!activeLocalProjectTab && tabs.projectHasDrafts(activeLocalProjectTab.tabId)"
             :tree-root="onlineMode ? (onlineProjectContextAvailable ? online.onlineTree : null) : undefined"
             :readonly="onlineMode"
-            :empty-text="onlineMode ? t('online.treeEmpty') : undefined"
+            :empty-text="onlineMode ? t(online.execution.busy ? 'onlineExecution.loading' : 'online.treeEmpty') : undefined"
             @select="onSelect"
             @import-interfaces="openDirectoryImport"
+            @new-interface="openFreeRequestTab"
+            @project-renamed="onDirectoryProjectRenamed"
+            @project-deleted="onDirectoryProjectDeleted"
+            @online-directory-action="startOnlineDirectoryAction"
+            @online-expanded="keys => onlineDirectory.updateTree({ expanded: keys })"
           >
             <template #search>
               <a-input ref="treeSearch" v-model:value="treeFilter" size="small" allow-clear data-testid="tree-search"
@@ -1967,7 +2128,15 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @online-workspace-action="requestOnlineWorkspaceAction"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
-          <OnlineProjectAssets v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects" @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome"><OnlineApiEditor :online="online" /></OnlineProjectAssets>
+          <OnlineProjectAssets v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects"
+            :blank="isOnlineDirectoryBlank(online.execution.view)" :directory-writable="onlineDirectory.writable.value" :directory-draft="!!onlineDirectory.draft.value"
+            @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome" @api-selected="showOnlineDirectoryPath">
+            <template #draft>
+              <OnlineApiEditor :online="online" :draft="onlineDirectory.draft.value" :targets="onlineDirectoryTargets" :draft-writable="onlineDirectory.writable.value"
+                @save-draft="onlineDirectory.save()" @verify-draft="onlineDirectory.save(true)" @cancel-draft="cancelOnlineDirectoryDraft" />
+            </template>
+            <OnlineApiEditor :online="online" :title-path="onlineSavedApiPath" />
+          </OnlineProjectAssets>
           <OnlineApiEditor v-else-if="onlineMode && onlineProjectContextAvailable" class="panel-view" :online="online" />
           <div v-else-if="onlineMode" class="panel-view online-context-unavailable">
             <p>{{ t("online.sessionErrors.online-workspace-session-missing") }}</p>
@@ -2026,6 +2195,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
                   :project-node="activeRequestTab ? workspace.findProject(activeRequestTab.project) : null"
                   :create-free-module="createFreeRequestModule"
                   :save-free-request="saveFreeRequestAsApi"
+                  :reload-save-targets="reloadDirectorySaveTargets"
                   @new-free-request="openFreeRequestTab"
                   @collaboration-history="openDebugHistory"
                 />
@@ -2202,6 +2372,15 @@ function focusDebugSection(section: HTMLElement | undefined) {
     <AiConfigDialog :ai="ai" :for-suggestion="aiSettingsForSuggestion" />
     <AiSuggestionsDrawer :ai="ai" :open-case-settings="openSuggestionSettings" />
     <DebugHistory :ai="ai" :open="historyOpen" :api="apicc" :history="debugHistory" :debug="debug" :editor="editor" :project-locator="selectedProjectLocator" :restore-free="restoreFreeHistory" :replay-free="replayFreeHistory" @collaboration="chooseCollaborationTarget" @close="closeDebugHistory" @after-close="restoreHistoryFocus" />
+    <ConfirmDialog :open="!!onlineDirectory.dialog.value" :title="t(onlineDirectory.dialog.value?.action === 'rename' ? 'tree.rename' : 'tree.newCollection')"
+      :input-placeholder="t('tree.namePlaceholder')" :initial-value="onlineDirectory.dialog.value?.action === 'rename' ? onlineDirectory.dialog.value.node.label : undefined"
+      @confirm="confirmOnlineDirectoryDialog" @cancel="cancelOnlineDirectoryDialog" />
+    <div v-if="onlineDirectory.error.value" role="alert" class="online-directory-feedback">
+      {{ t(`onlineDirectory.errors.${onlineDirectory.error.value}`) }}
+      <a-button v-if="onlineDirectory.error.value === 'refresh-failed'" size="small" @click="onlineDirectory.refreshSaved()">{{ t('onlineDirectory.refresh') }}</a-button>
+      <a-button v-if="onlineDirectory.structurePending.value" size="small" @click="onlineDirectory.reconcileStructure()">{{ t('onlineDirectory.verify') }}</a-button>
+      <a-button v-if="onlineDirectory.structureReadyToRetry.value" size="small" @click="onlineDirectory.reconcileStructure(true)">{{ t('onlineDirectory.retry') }}</a-button>
+    </div>
     <aside v-if="pendingCollaborationSource" class="collaboration-drawer" role="dialog" data-testid="collaboration-target-picker"><h2>{{ t('collaboration.chooseTarget') }}</h2><p>{{ t('collaboration.localNoNetwork') }}</p><p v-if="!online.loggedIn || !online.projects.length">{{ t('collaboration.connectTarget') }}</p><select v-model="collaborationTargetId" data-testid="collaboration-target"><option value="">{{ t('collaboration.chooseTarget') }}</option><option v-for="project in online.projects" :key="project.id" :value="project.id">{{ online.activeName }} · {{ online.activeWorkspace?.name }} / {{ project.name }}</option></select><button :disabled="!online.executionContext(collaborationTargetId)" data-testid="collaboration-prepare-local" @click="prepareLocalCollaboration().catch(reportError)">{{ t('collaboration.prepareLocal') }}</button><button @click="pendingCollaborationSource = null">{{ t('collaboration.close') }}</button></aside>
     <aside v-if="collaboration.visible" class="collaboration-drawer" role="dialog" :aria-label="t('collaboration.title')"><button @click="collaboration.close().catch(reportError)">{{ t('collaboration.close') }}</button><CollaborationPanel :collaboration="collaboration" :saved="online.execution.view ? { revision: online.execution.view.assets.version, manifestHash: online.execution.view.assets.manifestHash } : undefined" :dirty="online.editorDirty || onlineProjectAdapter.editor.dirty || onlineProjectAdapter.testing.dirty || onlineProjectAdapter.workflowDesign.dirty" /></aside>
   </a-layout>
@@ -2211,6 +2390,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
 <style>
 .exit-impact { max-height: min(240px, 48vh); overflow: auto; overflow-wrap: anywhere; }
 .online-context-unavailable { padding: 16px; }
+.online-directory-feedback { position: fixed; z-index: 12; inset: auto 16px 12px auto; max-width: min(440px, calc(100vw - 28px)); padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
 .sync-workbench{position:fixed;inset:54px 12px 12px max(12px,9vw);z-index:1040;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;min-width:0;overflow:hidden}
 .project-tool-content { max-height: min(70vh, 720px); overflow: auto; min-width: 0; }
 .collaboration-drawer{position:fixed;inset:24px 24px 24px max(24px,20vw);z-index:1050;background:var(--bg);border:1px solid var(--border);box-shadow:0 8px 36px #0004;padding:16px;overflow:auto;min-width:0}

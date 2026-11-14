@@ -20,6 +20,7 @@ import {
 } from "../../src/storage/paths.js";
 import { modelAssetFixture, workspaceFixture } from "../helpers/contractFixtures.js";
 import { createMockConfiguredProject } from "../helpers/mockFixtures.js";
+import { createDefaultCollectionId, isDefaultCollectionId } from "../../src/assets/defaultCollection.js";
 
 const roots: string[] = [];
 const groupId = "00000000-0000-4000-8000-000000000017";
@@ -55,6 +56,24 @@ afterEach(async () => {
 function fixtureWorkspace(): ContractWorkspace {
   return ContractWorkspaceSchema.parse(workspaceFixture());
 }
+
+it("round-trips default module UUIDs through the unchanged strict files with no name dependency", async () => {
+  const workspace = fixtureWorkspace();
+  const project = workspace.groups[0]!.projects[0]!;
+  project.id = "ABCDEF00-0000-4000-A000-000000000001";
+  const ordinary = project.collections[0]!;
+  ordinary.name = "未分类接口";
+  const id = createDefaultCollectionId(project.id, "00000000-0000-4000-A123-000000000123").toUpperCase();
+  project.collections.push({ ...ordinary, id, name: "Renamed inbox", apis: [], folders: [] });
+  const root = await temporaryRoot();
+  await save(root, encodeContractWorkspace(workspace));
+  const loaded = (await fileStorage.load(root)).workspace.groups[0]!.projects[0]!;
+  expect(loaded.collections.find((item) => item.id === id)?.name).toBe("Renamed inbox");
+  expect(isDefaultCollectionId(project.id.toLowerCase(), id)).toBe(true);
+  expect(isDefaultCollectionId(project.id, ordinary.id)).toBe(false);
+  expect(isDefaultCollectionId(projectId, id)).toBe(false);
+  expect(createDefaultCollectionId(project.id, "00000000-0000-4000-A124-000000000123")).not.toBe(id.toLowerCase());
+});
 
 function testingWorkspace() {
   const workspace = fixtureWorkspace();

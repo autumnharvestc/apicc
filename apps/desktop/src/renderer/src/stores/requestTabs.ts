@@ -1,9 +1,9 @@
 import { createPinia, defineStore } from "pinia";
-import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { ApiLocator, ApiParentLocator, ProjectLocator } from "../../../shared/locations.js";
 
 export type RequestTabSource =
   | { kind: "asset"; locator: ApiLocator }
-  | { kind: "free"; project: ProjectLocator; draftId: string };
+  | { kind: "free"; project: ProjectLocator; draftId: string; saveParent?: ApiParentLocator | null };
 
 export interface RequestTab {
   tabId: string;
@@ -80,7 +80,8 @@ export function createRequestTabsStore(deps: RequestTabsDeps) {
         const tabId = `request-${++this.seq}`;
         const copiedSource: RequestTabSource = source.kind === "asset"
           ? { kind: "asset", locator: { ...source.locator, folderIds: [...source.locator.folderIds] } }
-          : { kind: "free", project: { ...source.project }, draftId: source.draftId };
+          : { ...source, project: { ...source.project }, ...(source.saveParent ? { saveParent: "folderIds" in source.saveParent
+            ? { ...source.saveParent, folderIds: [...source.saveParent.folderIds] } : { ...source.saveParent } } : {}) };
         this.tabs[tabId] = { tabId, root: context.root, project: { ...project }, source: copiedSource, generation: ++this.generation };
         this.order.push(tabId);
         this.activate(tabId);

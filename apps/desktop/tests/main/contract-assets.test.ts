@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultRegistry, createProjectSnapshot, fileStorage, getSourceApiRevision, listContractWorkspaceDefinitionFiles, type ApiRequest, type StorageAdapter } from "@apicc/core";
+import { createDefaultCollectionId, createDefaultRegistry, createProjectSnapshot, fileStorage, getSourceApiRevision, isDefaultCollectionId, listContractWorkspaceDefinitionFiles, type ApiRequest, type StorageAdapter } from "@apicc/core";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { IpcChannel } from "../../src/shared/channels.js";
 import { createTestingController } from "../../src/main/testing.js";
@@ -425,7 +425,7 @@ describe("desktop contract workspace session", () => {
       const projectDefinition = session.locateProject(project)?.project;
       if (!projectDefinition) throw new Error("Project fixture is unavailable");
       const sourceProjectRevision = createProjectSnapshot(projectDefinition).definitionRevision;
-      const targetParent = { ...project, collectionId: IDS.collectionOne };
+      const targetParent = { kind: "project-default" as const, expectedCollectionId: null };
       const request: ApiRequest = {
         protocol: "http", method: "GET", baseUrl: "https://free.example.test", path: "/items",
         pathParams: [],
@@ -456,11 +456,57 @@ describe("desktop contract workspace session", () => {
       expect(saved.detail.api.contract.request).toEqual(request);
       expect(saved.locator.projectId).toBe(project.projectId);
       expect(saved.detail.locator).toEqual(saved.locator);
-      expect(session.locateProject(project)?.project.collections[0]?.apis).toHaveLength(2);
+      expect(isDefaultCollectionId(project.projectId, saved.locator.collectionId)).toBe(true);
+      expect(session.locateProject(project)?.project.collections[0]?.apis).toHaveLength(1);
+      expect(session.locateApi(saved.locator)?.collection.apis).toHaveLength(1);
       expect(saved.detail.api.contract.id).not.toBe(IDS.sharedApi);
+      await session.renameNode({ kind: "collection", locator: { ...project, collectionId: saved.locator.collectionId } }, "Intake");
+      await session.open(temporary.path);
+      const afterRename = createProjectSnapshot(session.locateProject(project)!.project).definitionRevision;
+      const reuse = await session.createApiFromRequestDraft({ ...input, name: "second", sourceProjectRevision: afterRename,
+        targetParent: { kind: "project-default", expectedCollectionId: saved.locator.collectionId } });
+      expect(reuse.locator.collectionId).toBe(saved.locator.collectionId);
+      expect(session.locateApi(reuse.locator)?.collection.name).toBe("Intake");
+      await session.deleteNode({ kind: "collection", locator: { ...project, collectionId: reuse.locator.collectionId } });
+      const afterDelete = createProjectSnapshot(session.locateProject(project)!.project).definitionRevision;
+      await expect(session.createApiFromRequestDraft({ ...input, sourceProjectRevision: afterDelete,
+        targetParent: { kind: "project-default", expectedCollectionId: saved.locator.collectionId } })).rejects.toThrow("REQUEST_SAVE_TARGET_MISSING");
+      const rebuilt = await session.createApiFromRequestDraft({ ...input, sourceProjectRevision: afterDelete });
+      expect(rebuilt.locator.collectionId).not.toBe(saved.locator.collectionId);
+      expect(session.locateApi(saved.locator)).toBeUndefined();
     } finally {
       await temporary.dispose();
     }
+  });
+
+  it("rejects ambiguous project-default save and preserves ordinary module identity on module-only import", async () => {
+    const temporary = await makeTempRoot();
+    try {
+      const workspace = makeWorkspace();
+      const source = structuredClone(projectOne(workspace));
+      const definition = projectOne(workspace);
+      for (const nonce of ["first default", "second default"]) definition.collections.push({
+        id: createDefaultCollectionId(definition.id, nonce), name: nonce, variables: {}, preOperations: [], postOperations: [], folders: [], apis: [],
+      });
+      source.collections = [{ ...source.collections[0]!, id: createDefaultCollectionId(source.id, "module import") }];
+      source.workflows = [];
+      source.environments = [];
+      for (const api of source.collections[0]!.apis) api.cases = [];
+      await persistWorkspace(temporary.path, workspace);
+      const project = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      const session = createSession();
+      await session.open(temporary.path);
+      const before = session.revision;
+      await expect(session.createApiFromRequestDraft({ project, name: "ambiguous", fields: [],
+        request: definition.collections[0]!.apis[0]!.contract.request,
+        sourceProjectRevision: createProjectSnapshot(session.locateProject(project)!.project).definitionRevision,
+        targetParent: { kind: "project-default", expectedCollectionId: null },
+      })).rejects.toThrow("REQUEST_SAVE_DEFAULT_AMBIGUOUS");
+      expect(session.revision).toBe(before);
+      const modules = await session.importModuleToProject(project, "Imported default module", { project: source });
+      expect(modules).toHaveLength(1);
+      expect(isDefaultCollectionId(project.projectId, modules[0]!.id)).toBe(false);
+    } finally { await temporary.dispose(); }
   });
 
   it("rejects saving a free request from a stale project revision without a second write", async () => {

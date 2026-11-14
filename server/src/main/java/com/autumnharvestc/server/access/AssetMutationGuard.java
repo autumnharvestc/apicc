@@ -36,12 +36,16 @@ public class AssetMutationGuard {
         if(!classification.summary().equals("script-unchanged")&&!current.capabilities().contains(Capability.SCRIPT_EDIT))throw denied("当前脚本编辑权限已失效，无法提交本次资产变更");
     }
     public Classification classify(UserAccount caller,long ws,long project,JsonNode beforeFiles,JsonNode afterFiles,List<String> changedPaths) {
+        return classify(caller,ws,project,beforeFiles,afterFiles,changedPaths,null);
+    }
+    public Classification classify(UserAccount caller,long ws,long project,JsonNode beforeFiles,JsonNode afterFiles,List<String> changedPaths,String initialContractProjectId) {
         boolean scripts=access.resolve(caller.id(),ws,project).capabilities().contains(Capability.SCRIPT_EDIT);
         if(!properties.isEnabled()) {
             if(!scripts)throw denied("脚本分类服务未启用，无法确认本次资产变更不含脚本");
             return new Classification("classification-disabled",List.copyOf(changedPaths));
         }
         var payload=json.createObjectNode();payload.set("beforeFiles",beforeFiles);payload.set("afterFiles",afterFiles);
+        if(initialContractProjectId!=null)payload.put("initialContractProjectId",initialContractProjectId);
         try {
             var result=runtime.call("classify-asset-mutation",payload,System.currentTimeMillis()+10_000,1_048_576);
             boolean changed=result.path("scriptChanged").booleanValue();
@@ -49,6 +53,8 @@ public class AssetMutationGuard {
             var locations=new ArrayList<String>();result.path("locations").forEach(location->locations.add(location.textValue()));
             return new Classification(changed?"script-changed":"script-unchanged",List.copyOf(locations));
         } catch(CollaborationRuntimeClient.Failure failure) {
+            if(initialContractProjectId!=null&&"PUBLICATION_SOURCE_INVALID".equals(failure.code()))
+                throw new ApiException(HttpStatus.BAD_REQUEST,"invalid_project_assets","首次保存需要完整、有效的项目资产");
             if(!scripts)throw denied("脚本分类不可用或项目布局无法解析，无法确认本次变更不含脚本");
             return new Classification("classification-unavailable",List.copyOf(changedPaths));
         }

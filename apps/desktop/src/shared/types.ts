@@ -173,7 +173,7 @@ export interface OpenResult { workspace: ContractWorkspace; problems: LoadProble
 export interface ApiDetail { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
 export interface CreateApiFromRequestDraftInput {
   project: ProjectLocator;
-  targetParent: ApiParentLocator;
+  targetParent: import("./locations.js").RequestSaveTarget;
   name: string;
   request: ApiRequest;
   sourceProjectRevision: string;

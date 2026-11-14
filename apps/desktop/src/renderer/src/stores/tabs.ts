@@ -181,6 +181,7 @@ export interface TabsStoreDeps {
   confirmWorkflowDraft?: () => Promise<boolean>;
   confirmTestingDraft?: () => boolean | Promise<boolean>;
   testingHasDrafts?: (root: string, project: ProjectLocator) => boolean;
+  onlineDirectoryHasDraft?: (tab: OnlineProjectTab) => boolean;
   /** 持久化存储（缺省 localStorage；测试注入内存 Storage 隔离）。 */
   storage?: Storage;
 }
@@ -457,6 +458,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           && (!wf.root || wf.root === tab.workspaceRef.dir)
           && sameProjectLocator(tab.projectLocator, wf.locator)) return true;
         if (hasOnlineProjectId(tab)) {
+          if (deps.onlineDirectoryHasDraft?.(tab)) return true;
           const session = deps.online.sessions[tab.workspaceRef.workspaceId];
           if (!session || tab.workspaceRef.baseUrl !== normalizeOnlineBaseUrl(session.baseUrl)) return false;
           const prefix = `${tab.projectId}/`;

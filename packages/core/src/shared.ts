@@ -233,6 +233,7 @@ export type {
 export { createProjectSnapshot } from "./assets/snapshot.js";
 export type { ProjectSnapshot } from "./assets/snapshot.js";
 export { cloneProjectDefinition, cloneAssetBundle } from "./assets/clone.js";
+export { createDefaultCollectionId, isDefaultCollectionId } from "./assets/defaultCollection.js";
 export type { CloneIdFactory, CloneIdKind, CloneIdMapping, ClonedAssetBundle, ClonedProjectDefinition } from "./assets/clone.js";
 export { MockConditionSchema, MockProjectConfigSchema, MockResponseSourceSchema, MockRuleSchema } from "./mock/config.js";
 export type { MockCondition, MockDiagnostic, MockProjectConfig, MockResponseSource, MockRule } from "./mock/config.js";

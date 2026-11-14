@@ -14,6 +14,9 @@ import { createMemoryApi, ONLINE_SEED_PROJECT_ID } from "../../../src/renderer/s
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import type { OnlineBatchResult, OnlineWorkspaceSummary } from "../../../src/shared/online/contract.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
+import { ContractWorkspaceSchema } from "@apicc/core/schema";
+import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
+import type { OnlineProjectView } from "../../../src/shared/online/execution.js";
 
 const SERVER = "http://127.0.0.1:8080";
 // path 实体化（2026-09-08）：种子内容 path 首段=项目实体 UUID（memory 替身种子常量防漂移）
@@ -542,11 +545,66 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     // 收紧只影响配置叶：EDITOR 工作区角色下项目内 api 叶仍按项目 ACL 放行
     activeSession().projects = [{ id: pid, name: "示例项目", myRole: "EDITOR" }];
     expect(store.canEdit(pidPath)).toBe(true);
-    // 工作区级 VIEWER：一切只读
+    // 项目授权可以将工作区 VIEWER 提升为单项目 EDITOR。
     activeSession().workspace.myRole = "VIEWER";
-    expect(store.canEdit(pidPath)).toBe(false);
+    expect(store.canEdit(pidPath)).toBe(true);
+    expect(store.canEdit("999/collections/c/apis/a/api.yaml")).toBe(false);
     expect(store.canEdit("apicc.workspace.yaml")).toBe(false);
     expect(store.canEdit(null)).toBe(false);
+  });
+
+  it("online directory keeps a separately edited API save on the confirmed project and rejects an overlapping edit", async () => {
+    const { api, store } = await setup();
+    const workspace = { id: "11", name: "Team", myRole: "VIEWER" as const };
+    const projectId = "33";
+    store.user = { ...store.user!, id: "7" };
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const module = project.collections[0]!;
+    const original = module.apis[0]!;
+    const path = `${projectId}/collections/${module.id}/apis/${original.contract.id}/api.yaml`;
+    store.sessions[workspace.id] = { workspace, baseUrl: SERVER, tree: null, projects: [{ id: projectId, groupId: "22", name: project.name, myRole: "EDITOR" }],
+      buffers: { [path]: { path, kind: "api", api: structuredClone(original), raw: "", version: 1, problems: [], snapshot: JSON.stringify(original), loading: false } }, activeEditorPath: path };
+    store.activeWorkspaceId = workspace.id;
+    const scope = store.executionContext(projectId)!;
+    expect(store.canWriteDirectory(scope)).toBe(true);
+    store.execution.activate(scope);
+    store.execution.setVisible(true);
+    const assets = { ...scope.scope, format: "contract-files-v1" as const, contractProjectId: project.id, version: "1", manifestHash: "a".repeat(64), files: [] };
+    store.execution.acceptDirectoryView(scope, { assets, project, problems: [] });
+    store.execution.project!.name = "Unsaved whole-project edit";
+    store.editorApi!.contract.metadata.name = "Edited existing API";
+    const confirmed = structuredClone(project);
+    const added = structuredClone(original);
+    added.contract.id = crypto.randomUUID();
+    added.contract.metadata.name = "Created from the directory";
+    confirmed.collections[0]!.apis.push(added);
+    store.execution.acceptDirectoryView(scope, { assets: { ...assets, version: "2" }, project: confirmed, problems: [] });
+    const put = vi.fn<ApiccApi["onlineExecution"]>(async (input): Promise<OnlineProjectView> => {
+      if (input.operation !== "saveProject") throw new Error("Unexpected operation");
+      expect(input.expectedVersion).toBe("2");
+      expect(input.project.collections[0]!.apis.map(asset => asset.contract.metadata.name)).toEqual(["Edited existing API", "Created from the directory"]);
+      expect(input.project.name).toBe(project.name);
+      return { assets: { ...assets, version: "3" }, project: input.project, problems: [] };
+    });
+    api.onlineExecution = put;
+    try {
+      await expect(store.execution.saveProject(store.execution.project!)).rejects.toThrow("online-directory-project-draft-conflict");
+      expect(put).not.toHaveBeenCalled();
+      await store.saveApi();
+      expect(put).toHaveBeenCalledOnce();
+      expect(store.editorDirty).toBe(false);
+      expect(store.execution.project!.name).toBe("Unsaved whole-project edit");
+      expect(store.execution.view?.project?.collections[0]?.apis).toHaveLength(2);
+      const overlapping = JSON.parse(JSON.stringify(store.execution.view!.project)) as typeof project;
+      overlapping.collections[0]!.apis[0]!.contract.metadata.name = "Other editor changed this API";
+      store.execution.acceptDirectoryView(scope, { assets: { ...assets, version: "4" }, project: overlapping, problems: [] });
+      store.editorApi!.contract.metadata.name = "Second unsaved local name";
+      await store.saveApi();
+      expect(store.error).toBe("version_conflict");
+      expect(store.editorApi?.contract.metadata.name).toBe("Second unsaved local name");
+      expect(store.editorDirty).toBe(true);
+      expect(put).toHaveBeenCalledOnce();
+    } finally { store.execution.setVisible(false); }
   });
 
   it("saveApi：序列化回文本 putFile（baseVersion=当前 version）→ 版本前移、dirty 复位", async () => {

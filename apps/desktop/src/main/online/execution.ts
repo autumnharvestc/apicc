@@ -7,8 +7,9 @@ import { createMemberExecutionClient, createMemberMaterialsClient } from "@apicc
 import { readBuildIdentity } from "@apicc/execution/buildIdentity";
 import { OnlineExecutionInputSchema, OnlineJobSchema, OnlineLocalResultSchema, OnlineReportSchema, type OnlineExecutionInput, type OnlineLocalResult, type OnlineReport } from "../../shared/online/execution.js";
 import type { OnlineSession } from "./session.js";
-import { createExecutionRequest, adaptMemberExecutionError } from "./client.js";
-import { readOnlineProject, assertAssetsScope, onlineProjectDelta } from "./projectAssets.js";
+import { createExecutionRequest, adaptMemberExecutionError, OnlineApiError } from "./client.js";
+import { readOnlineProject, assertAssetsScope, isBlankOnlineProject, onlineDirectoryDelta, onlineProjectDelta } from "./projectAssets.js";
+import { prepareOnlineDirectoryWrite, recoverOnlineDirectoryWrite } from "./directory.js";
 import { encodeContractProjectFiles } from "@apicc/core";
 import { createOnlineLocalCredentialStore } from "./projectCredentials.js";
 import type { PluginsRuntime } from "../plugins/runtime.js";
@@ -186,35 +187,85 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
         return job;
       };
       switch (input.operation) {
-        case "assets": return member.assets(input.context, trusted.signal ?? new AbortController().signal);
+        case "assets": {
+          const view = await member.assets(input.context, trusted.signal ?? new AbortController().signal);
+          return isBlankOnlineProject(view.assets) ? { ...view, problems: [] } : view;
+        }
+        case "directoryWrite": {
+          const fetchView = async () => readOnlineProject(await request("GET", `${path}/assets`, undefined, ProjectAssetsSchema), input.context);
+          const before = await fetchView();
+          if (input.verifyOnly) {
+            const recovered = recoverOnlineDirectoryWrite(before, input);
+            if (!recovered) return { status: "unknown", view: before };
+            binding.invalidateTree();
+            return recovered;
+          }
+          const prepared = prepareOnlineDirectoryWrite(before, input);
+          if ("status" in prepared) {
+            if (prepared.status === "saved" || prepared.status === "version-conflict") binding.invalidateTree();
+            return prepared;
+          }
+          const delta = onlineDirectoryDelta(prepared.project, before);
+          if (!delta.changes.length && !delta.deletes.length) return { status: "saved", view: before, path: prepared.path, recovered: false };
+          try {
+            const raw = await request("PUT", `${path}/assets`, delta, ProjectAssetsSchema);
+            binding.invalidateTree();
+            const view = await readOnlineProject(raw, input.context);
+            if (!recoverOnlineDirectoryWrite(view, input)) throw new Error("online-write-receipt-unconfirmed");
+            return { status: "saved", view, path: prepared.path, recovered: false };
+          } catch (error) {
+            if (error instanceof OnlineApiError && error.status >= 400 && error.status < 500 && error.status !== 409) throw error;
+            binding.invalidateTree();
+            try {
+              const view = await fetchView();
+              const recovered = recoverOnlineDirectoryWrite(view, input);
+              if (recovered) return recovered;
+              if (error instanceof OnlineApiError && error.status === 409) return { status: "version-conflict", view };
+              return { status: "unknown", view };
+            } catch {
+              return { status: "unknown" };
+            }
+          }
+        }
         case "save": {
           const current = await request("GET", `${path}/assets`, undefined, ProjectAssetsSchema); assertAssetsScope(current, input.context);
           if (current.format !== "contract-files-v1" || current.contractProjectId !== input.delta.contractProjectId) throw new Error("legacy-format-read-only");
-          return readOnlineProject(await request("PUT", `${path}/assets`, input.delta, ProjectAssetsSchema), input.context);
+          const stored = await request("PUT", `${path}/assets`, input.delta, ProjectAssetsSchema);
+          binding.invalidateTree();
+          return readOnlineProject(stored, input.context);
         }
         case "saveProject": {
           const current = await request("GET", `${path}/assets`, undefined, ProjectAssetsSchema); assertAssetsScope(current, input.context);
           if (current.version !== input.expectedVersion) throw new Error("version_conflict");
           const delta = onlineProjectDelta(input.project, current);
-          return readOnlineProject(await request("PUT", `${path}/assets`, delta, ProjectAssetsSchema), input.context);
+          const stored = await request("PUT", `${path}/assets`, delta, ProjectAssetsSchema);
+          binding.invalidateTree();
+          return readOnlineProject(stored, input.context);
         }
         case "publish": {
           const current = await request("GET", `${path}/assets`, undefined, ProjectAssetsSchema); assertAssetsScope(current, input.context);
           if (current.files.length || current.format !== null || current.version !== "0") throw new Error("publish-requires-empty-project");
           const delta = { format: "contract-files-v1", contractProjectId: input.project.id, expectedVersion: "0", changes: [...encodeContractProjectFiles(input.project).files].map(([path, content]) => ({ path, content })), deletes: [] };
-          return readOnlineProject(await request("PUT", `${path}/assets`, delta, ProjectAssetsSchema), input.context);
+          const stored = await request("PUT", `${path}/assets`, delta, ProjectAssetsSchema);
+          binding.invalidateTree();
+          return readOnlineProject(stored, input.context);
         }
         case "publishNew": {
           // Creating a new entity is explicit; the existing project's files are never a target.
           await request("GET", `${path}/assets`, undefined, ProjectAssetsSchema);
           const created = await request("POST", `workspaces/${input.context.scope.workspaceId}/projects`, { groupId: input.context.scope.groupId, name: input.name }, z.object({ id: z.string().regex(/^[1-9]\d*$/), groupId: z.string(), name: z.string(), createdAt: z.string() }).strict());
+          binding.invalidateTree();
           const scope = { ...input.context.scope, groupId: created.groupId, projectId: created.id };
           const targetPath = `workspaces/${scope.workspaceId}/projects/${scope.projectId}/assets`;
           const empty = await request("GET", targetPath, undefined, ProjectAssetsSchema);
           assertAssetsScope(empty, { ...input.context, scope });
           if (empty.files.length || empty.format !== null || empty.version !== "0") throw new Error(`publish-requires-empty-project: ${created.id}`);
           const delta = { format: "contract-files-v1", contractProjectId: input.project.id, expectedVersion: "0", changes: [...encodeContractProjectFiles(input.project).files].map(([path, content]) => ({ path, content })), deletes: [] };
-          try { return { scope, view: await readOnlineProject(await request("PUT", targetPath, delta, ProjectAssetsSchema), { ...input.context, scope }) }; }
+          try {
+            const stored = await request("PUT", targetPath, delta, ProjectAssetsSchema);
+            binding.invalidateTree();
+            return { scope, view: await readOnlineProject(stored, { ...input.context, scope }) };
+          }
           catch (error) { throw new Error(`publish-created-project-save-failed: ${created.id}; ${error instanceof Error ? error.message : "execution-request-failed"}`); }
         }
         case "agents": return projectAgents();

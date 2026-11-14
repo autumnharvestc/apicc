@@ -4,9 +4,10 @@ import { useI18n } from "vue-i18n";
 import { DownOutlined, EllipsisOutlined, SlidersOutlined } from "@ant-design/icons-vue";
 import { Alert as AAlert, Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, RadioButton as ARadioButton, RadioGroup as ARadioGroup, Select as ASelect, TabPane as ATabPane, Tabs as ATabs, Textarea as ATextarea } from "ant-design-vue";
 import type { ApiRequest, ComponentAsset, DebugFieldState, ModelAsset, MultipartEntry, ParameterBinding, RequestBody } from "@apicc/core";
+import { CollectionLocatorSchema, FolderLocatorSchema } from "../../../shared/locations.js";
 import type { SchemaNode } from "@apicc/core/schema";
 import type { ApiccApi, CreateComponentInput, CreateModelInput } from "../../../shared/types.js";
-import type { ApiParentLocator, ComponentLocator, ModelLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { ApiParentLocator, ComponentLocator, ModelLocator, ProjectLocator, RequestSaveTarget } from "../../../shared/locations.js";
 import type { LocalProjectTreeNodeDTO } from "../../../shared/tree-dto.js";
 import type { ParameterListKey, useEditorStore } from "../stores/editor.js";
 import type { useDebugStore } from "../stores/debug.js";
@@ -59,7 +60,8 @@ const props = defineProps<{
   hasDrafts?: boolean;
   projectNode?: LocalProjectTreeNodeDTO | null;
   createFreeModule?: (tab: RequestTab, name: string) => Promise<ApiParentLocator>;
-  saveFreeRequest?: (tab: RequestTab, targetParent: ApiParentLocator, name: string, request: ApiRequest, fields: DebugFieldState[]) => Promise<{ tabId: string; generation: number } | undefined>;
+  saveFreeRequest?: (tab: RequestTab, targetParent: RequestSaveTarget, name: string, request: ApiRequest, fields: DebugFieldState[]) => Promise<{ tabId: string; generation: number } | undefined>;
+  reloadSaveTargets?: (tab: RequestTab) => Promise<void>;
 }>();
 const { t } = useI18n();
 const isFreeRequest = computed(() => props.requestTab?.source.kind === "free");
@@ -125,14 +127,14 @@ const credentialContextKey = computed(() => {
     generation: session.generation,
   });
 });
-const saveFeedback = ref("");
+const saveFeedback = ref<"" | "debugLoop.freeSavedInherited" | "debugLoop.requestSaved" | "editor.saved">("");
 const saveError = ref("");
 const freeSaveOpen = ref(false);
 const freeSaveBusy = ref(false);
+const freeSaveNeedsReload = ref(false);
 const freeSaveName = ref("");
 const freeSaveParentKey = ref("");
 const freeModuleName = ref("");
-const createdFreeSaveParents = ref<Array<{ key: string; label: string; locator: ApiParentLocator }>>([]);
 let freeSaveOperation = 0;
 const settingsOpen = ref(false);
 const metadataOpen = ref(false);
@@ -227,32 +229,37 @@ function toggleParameterDetails(id: string) {
 const freeSaveParents = computed(() => {
   const project = props.projectNode;
   const tab = props.requestTab;
-  const result: Array<{ key: string; label: string; locator: ApiParentLocator }> = [];
+  const result: Array<{ key: string; label: string; target: RequestSaveTarget; disabled?: boolean }> = [];
   if (project && tab && tab.source.kind === "free"
     && project.locator.workspaceId === tab.project.workspaceId
     && project.locator.groupId === tab.project.groupId
     && project.locator.projectId === tab.project.projectId) {
+    const defaults = project.children.filter((child) => child.kind === "collection" && child.isDefault);
+    const defaultCollection = defaults.length === 1 ? defaults[0] : undefined;
+    const target: RequestSaveTarget = { kind: "project-default", expectedCollectionId: defaultCollection?.id ?? null };
+    result.push({ key: JSON.stringify(target), target, disabled: defaults.length > 1,
+      label: t("projectDirectory.defaultTarget", { name: defaultCollection?.label ?? t("projectDirectory.defaultCollectionName") }) });
     for (const child of project.children) {
       if (child.kind !== "collection") continue;
-      const collectionLocator: ApiParentLocator = { ...child.locator };
-      result.push({ key: JSON.stringify(collectionLocator), label: child.label, locator: collectionLocator });
+      const collectionLocator = CollectionLocatorSchema.parse(child.locator);
+      if (child.id !== defaultCollection?.id) result.push({ key: JSON.stringify(collectionLocator), label: child.label, target: collectionLocator });
       const visitFolders = (nodes: typeof child.children, prefix: string): void => {
         for (const node of nodes ?? []) {
           if (node.kind !== "folder") continue;
-          const folderLocator: ApiParentLocator = { ...node.locator, folderIds: [...node.locator.folderIds] };
-          const label = `${prefix}/${node.label}`;
-          result.push({ key: JSON.stringify(folderLocator), label, locator: folderLocator });
+          const folderLocator = FolderLocatorSchema.parse(node.locator);
+          const label = `${prefix} / ${node.label}`;
+          result.push({ key: JSON.stringify(folderLocator), label, target: folderLocator });
           visitFolders(node.children ?? [], label);
         }
       };
       visitFolders(child.children ?? [], child.label);
     }
   }
-  for (const created of createdFreeSaveParents.value) {
-    if (!result.some((item) => item.key === created.key)) result.push(created);
-  }
   return result;
 });
+const freeSaveTarget = computed(() => freeSaveParents.value.find((item) => item.key === freeSaveParentKey.value && !item.disabled));
+const freeSaveAmbiguous = computed(() => freeSaveParents.value.some((item) => item.disabled));
+const freeSaveTargetMissing = computed(() => !!freeSaveParentKey.value && !freeSaveParents.value.some((item) => item.key === freeSaveParentKey.value));
 
 watch(credentialContextKey, () => {
   saveOperation += 1;
@@ -261,10 +268,10 @@ watch(credentialContextKey, () => {
   freeSaveOperation += 1;
   freeSaveOpen.value = false;
   freeSaveBusy.value = false;
+  freeSaveNeedsReload.value = false;
   freeSaveParentKey.value = "";
   freeSaveName.value = "";
   freeModuleName.value = "";
-  createdFreeSaveParents.value = [];
   metadataOpen.value = false;
   parameterDetails.value = [];
   settingsOpen.value = false;
@@ -275,9 +282,35 @@ watch(runId, () => { cancelError.value = ""; });
 function openFreeSaveDialog() {
   saveError.value = "";
   saveFeedback.value = "";
-  freeSaveName.value = "";
-  freeSaveParentKey.value = "";
+  const source = props.requestTab?.source;
+  const parent = source?.kind === "free" ? source.saveParent : undefined;
+  const currentDefault = freeSaveParents.value.find((item) => "kind" in item.target);
+  freeSaveParentKey.value = parent === null ? currentDefault?.key ?? "" : parent ?
+    freeSaveParents.value.find((item) => "kind" in item.target && !("folderIds" in parent)
+      && item.target.expectedCollectionId === parent.collectionId)?.key ?? JSON.stringify("folderIds" in parent ? FolderLocatorSchema.parse(parent) : CollectionLocatorSchema.parse(parent)) : "";
   freeSaveOpen.value = true;
+}
+
+function closeFreeSaveDialog() {
+  if (!freeSaveBusy.value) freeSaveOpen.value = false;
+}
+
+async function reloadSaveTargets() {
+  const tab = props.requestTab;
+  if (!tab || tab.source.kind !== "free" || tab.source.saveParent === undefined || !props.reloadSaveTargets || freeSaveBusy.value) return;
+  const operation = ++freeSaveOperation;
+  freeSaveBusy.value = true;
+  try {
+    await props.reloadSaveTargets(tab);
+    if (operation !== freeSaveOperation) return;
+    freeSaveParentKey.value = "";
+    freeSaveNeedsReload.value = false;
+    saveError.value = "";
+  } catch (error) {
+    if (operation === freeSaveOperation) saveError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (operation === freeSaveOperation) freeSaveBusy.value = false;
+  }
 }
 
 async function onCreateFreeModule() {
@@ -291,8 +324,7 @@ async function onCreateFreeModule() {
     const locator = await props.createFreeModule(tab, name);
     if (operation !== freeSaveOperation || props.requestTab?.tabId !== tab.tabId
       || props.requestTab.generation !== tab.generation || props.requestTab.source.kind !== "free") return;
-    const key = JSON.stringify(locator);
-    createdFreeSaveParents.value = [...createdFreeSaveParents.value, { key, label: name, locator }];
+    const key = JSON.stringify("folderIds" in locator ? FolderLocatorSchema.parse(locator) : CollectionLocatorSchema.parse(locator));
     freeSaveParentKey.value = key;
     freeModuleName.value = "";
   } catch (error) {
@@ -305,8 +337,9 @@ async function onCreateFreeModule() {
 async function submitFreeSave() {
   const tab = props.requestTab;
   const current = request.value;
-  const target = freeSaveParents.value.find((item) => item.key === freeSaveParentKey.value)?.locator;
-  if (!tab || tab.source.kind !== "free" || !current || !target || !props.saveFreeRequest || !freeSaveName.value.trim()) return;
+  const target = freeSaveTarget.value?.target;
+  if (!tab || tab.source.kind !== "free" || !current || !target || !props.saveFreeRequest || !freeSaveName.value.trim()
+    || freeSaveBusy.value || freeSaveNeedsReload.value) return;
   if (freeSession.value?.urlDraftInvalid) {
     saveError.value = t("editor.invalidFullUrl");
     return;
@@ -324,10 +357,18 @@ async function submitFreeSave() {
     const active = props.requestTab;
     if (!receipt || !active || active.source.kind !== "asset" || active.tabId !== receipt.tabId
       || active.generation !== receipt.generation) return;
-    saveFeedback.value = t("debugLoop.freeSavedInherited");
+    saveFeedback.value = "debugLoop.freeSavedInherited";
     freeSaveOpen.value = false;
   } catch (error) {
-    if (operation === freeSaveOperation) saveError.value = error instanceof Error ? error.message : String(error);
+    if (operation === freeSaveOperation) {
+      const message = error instanceof Error ? error.message : String(error);
+      const targetMissing = message.includes("REQUEST_SAVE_TARGET_MISSING");
+      const revisionConflict = /project source revision conflict/i.test(message);
+      if (tab.source.saveParent !== undefined && (targetMissing || revisionConflict)) freeSaveNeedsReload.value = true;
+      saveError.value = targetMissing ? t("projectDirectory.targetMissing")
+        : message.includes("REQUEST_SAVE_DEFAULT_AMBIGUOUS") ? t("projectDirectory.defaultAmbiguous")
+          : revisionConflict ? t(tab.source.saveParent === undefined ? "projectDirectory.revisionConflictFree" : "projectDirectory.revisionConflict") : message;
+    }
   } finally {
     if (operation === freeSaveOperation) freeSaveBusy.value = false;
   }
@@ -675,7 +716,7 @@ async function saveRequest(requestOnly: boolean) {
     if (requestOnly) {
       await props.editor.saveRequestDraft(currentRestoreMatches.value ? tabDebugState.value?.fields ?? props.debug.restoredFields : []);
     } else await props.editor.save();
-    if (operation === saveOperation) saveFeedback.value = t(requestOnly ? "debugLoop.requestSaved" : "editor.saved");
+    if (operation === saveOperation) saveFeedback.value = requestOnly ? "debugLoop.requestSaved" : "editor.saved";
   } catch (error) {
     if (operation === saveOperation) saveError.value = error instanceof Error ? error.message : String(error);
   }
@@ -687,7 +728,7 @@ async function saveRequest(requestOnly: boolean) {
     <header class="editor-header">
       <div class="request-heading">
         <div class="request-heading-text">
-          <div v-if="requestPath && !isFreeRequest" class="request-path" :title="requestPath" tabindex="0">{{ requestPath }}</div>
+          <div v-if="requestPath" class="request-path" :title="requestPath" tabindex="0">{{ requestPath }}</div>
           <h2 :title="editorTitle">{{ editorTitle }}</h2>
         </div>
         <span v-if="hasDrafts || editor.dirty" class="dirty">{{ t("editor.unsaved") }}</span>
@@ -727,25 +768,32 @@ async function saveRequest(requestOnly: boolean) {
       <p v-if="freeSession?.urlDraftInvalid" class="request-feedback error" role="alert" data-testid="free-url-draft-error">{{ t('editor.invalidFullUrl') }}</p>
       <p v-if="environmentUnavailable" class="request-feedback error" role="status">{{ t("environmentShortcut.unavailable") }}</p>
       <p v-if="cancelError" class="request-feedback error" role="alert">{{ cancelError }}</p>
-      <span v-if="saveFeedback" class="request-feedback" role="status" data-testid="save-feedback">{{ saveFeedback }}</span>
+      <span v-if="saveFeedback" class="request-feedback" role="status" data-testid="save-feedback">{{ t(saveFeedback) }}</span>
       <span v-if="saveError" class="request-feedback error" role="alert" data-testid="save-error">{{ saveError }}</span>
     </header>
 
-    <a-modal :open="freeSaveOpen" :title="t('debugLoop.freeSaveTitle')" :confirm-loading="freeSaveBusy" @cancel="freeSaveOpen = false">
+    <a-modal :open="freeSaveOpen" :title="t('debugLoop.freeSaveTitle')" :confirm-loading="freeSaveBusy" @cancel="closeFreeSaveDialog">
       <a-input v-model:value="freeSaveName" data-testid="free-save-name" :placeholder="t('debugLoop.freeSaveName')" />
       <template v-if="freeSaveParents.length">
-        <a-select v-model:value="freeSaveParentKey" class="free-save-target" :placeholder="t('debugLoop.freeSaveTarget')" :options="freeSaveParents.map((item) => ({ label: item.label, value: item.key }))" data-testid="free-save-target" />
+        <a-select :value="freeSaveTargetMissing ? undefined : freeSaveParentKey || undefined" class="free-save-target"
+          :placeholder="t('debugLoop.freeSaveTarget')" :aria-label="t('debugLoop.freeSaveTarget')"
+          :options="freeSaveParents.map((item) => ({ label: item.label, value: item.key, disabled: item.disabled }))"
+          data-testid="free-save-target" @update:value="(value) => { freeSaveParentKey = String(value); saveError = '' }" />
+        <p v-if="freeSaveTargetMissing" role="alert" data-testid="free-save-target-missing">{{ t('projectDirectory.targetMissing') }}</p>
+        <p v-if="freeSaveAmbiguous" role="status">{{ t('projectDirectory.defaultAmbiguous') }}</p>
         <p class="note">{{ t("debugLoop.freeSaveInheritanceNote") }}</p>
+        <a-button v-if="requestTab?.source.kind === 'free' && requestTab.source.saveParent !== undefined && (freeSaveNeedsReload || freeSaveTargetMissing)"
+          data-testid="free-save-reload-targets" :loading="freeSaveBusy" @click="reloadSaveTargets">{{ t('projectDirectory.reloadTargets') }}</a-button>
       </template>
-      <template v-else>
-        <a-alert type="warning" show-icon :message="t('debugLoop.freeSaveNeedsModule')" data-testid="free-save-needs-module" />
+      <a-alert v-if="!projectNode?.children.length" type="info" show-icon :message="t('debugLoop.freeSaveNeedsModule')" data-testid="free-save-needs-module" />
+      <div v-if="createFreeModule" class="free-save-new-module">
         <a-input v-model:value="freeModuleName" data-testid="free-save-module-name" :placeholder="t('debugLoop.freeSaveModuleName')" />
         <a-button data-testid="free-save-create-module" :disabled="editor.readOnly || !freeModuleName.trim() || !props.createFreeModule" :loading="freeSaveBusy" @click="onCreateFreeModule">{{ t("debugLoop.freeSaveCreateModule") }}</a-button>
-      </template>
+      </div>
       <a-alert v-if="saveError" type="error" show-icon :message="saveError" data-testid="free-save-error" />
       <template #footer>
-        <a-button @click="freeSaveOpen = false">{{ t("debugLoop.freeSaveCancel") }}</a-button>
-        <a-button type="primary" data-testid="free-save-submit" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || !freeSaveParents.some((item) => item.key === freeSaveParentKey) || !freeSaveName.trim() || !props.saveFreeRequest || pendingRestoreFields.length > 0 || tabDebugState?.fields.some((field) => field.needsInput)" :loading="freeSaveBusy" @click="submitFreeSave">{{ t("debugLoop.freeSaveSubmit") }}</a-button>
+        <a-button data-testid="free-save-cancel" :disabled="freeSaveBusy" @click="closeFreeSaveDialog">{{ t("debugLoop.freeSaveCancel") }}</a-button>
+        <a-button type="primary" data-testid="free-save-submit" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || !freeSaveTarget || freeSaveNeedsReload || !freeSaveName.trim() || !props.saveFreeRequest || pendingRestoreFields.length > 0 || tabDebugState?.fields.some((field) => field.needsInput)" :loading="freeSaveBusy" @click="submitFreeSave">{{ t("debugLoop.freeSaveSubmit") }}</a-button>
       </template>
     </a-modal>
 
@@ -931,6 +979,8 @@ async function saveRequest(requestOnly: boolean) {
 .editor { container-type: inline-size; display: flex; flex: 1; flex-direction: column; gap: 5px; min-height: 0; padding: 8px 12px 10px; box-sizing: border-box; overflow: hidden; background: var(--bg); }
 .editor-header { flex: none; display: flex; flex-direction: column; gap: 5px; }
 .request-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.free-save-target { width: 100%; margin-top: 10px; }
+.free-save-new-module { display: flex; gap: 8px; margin-top: 12px; }
 .request-heading-text { flex: 1; min-width: 0; }
 .request-heading-text h2, .request-path { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .request-heading-text h2 { color: var(--text); font-size: 20px; line-height: 1.35; }

@@ -58,4 +58,19 @@ describe("script-sensitive mutation of fixed decoded assets", () => {
     const valid = files(documentProject());
     await expect(classifyAssetMutation(which === "before" ? new Map() : valid, which === "after" ? new Map() : valid)).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
   });
+  it("classifies a server-authorized empty initial project and still decodes the complete candidate", async () => {
+    const initial = documentProject();
+    const scripted = files(initial);
+    initial.collections = [];
+    initial.workflows = [];
+    const ordinary = files(initial);
+    const before = new Map<string, string>();
+    const allowed = { initialContractProjectId: initial.id };
+    await expect(classifyAssetMutation(before, ordinary, allowed)).resolves.toEqual({ scriptChanged: false, locations: [] });
+    await expect(classifyAssetMutation(before, scripted, allowed)).resolves.toMatchObject({ scriptChanged: true });
+    await expect(classifyAssetMutation(before, new Map(), allowed)).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+    await expect(classifyAssetMutation(before, ordinary, { initialContractProjectId: "10000000-0000-4000-8000-000000000999" })).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+    await expect(classifyAssetMutation(ordinary, scripted, allowed)).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+    await expect(classifyAssetMutation(new Map([["legacy.json", "{}"]]), ordinary, allowed)).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+  });
 });

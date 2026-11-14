@@ -103,6 +103,7 @@ export type {
   WebSocketRequest,
 } from "./contract/model.js";
 export { JsonValueSchema, SchemaNodeSchema, StringRecordSchema } from "./contract/schemaNode.js";
+export { isDefaultCollectionId } from "./assets/defaultCollection.js";
 export type { JsonValue, SchemaAnnotations, SchemaNode } from "./contract/schemaNode.js";
 export { MockConditionSchema, MockProjectConfigSchema, MockResponseSourceSchema, MockRuleSchema } from "./mock/config.js";
 export type { MockCondition, MockDiagnostic, MockProjectConfig, MockResponseSource, MockRule } from "./mock/config.js";

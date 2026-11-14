@@ -50,6 +50,18 @@ it("dispatches mutation script changes through real Core classifier", async () =
   expect(await handleOperation("classify-asset-mutation", { beforeFiles: before, afterFiles: changed })).toMatchObject({ scriptChanged: true });
   expect(await handleOperation("classify-asset-mutation", { beforeFiles: after, afterFiles: after })).toEqual({ scriptChanged: false, locations: [] });
 });
+it("requires an explicit initial-project classification for a fixed empty before snapshot", async () => {
+  const project = createMockConfiguredProject();
+  const collection = project.collections[0]!;
+  project.collections = [{ ...collection, preOperations: [], postOperations: [], folders: [], apis: [] }];
+  delete project.mock;
+  const afterFiles = [...encodeContractProjectFiles(project).files].map(([path, content]) => ({ path, content }));
+  await expect(handleOperation("classify-asset-mutation", { beforeFiles: [], afterFiles, initialContractProjectId: project.id })).resolves.toEqual({ scriptChanged: false, locations: [] });
+  await expect(handleOperation("classify-asset-mutation", { beforeFiles: [], afterFiles })).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+  await expect(handleOperation("classify-asset-mutation", { beforeFiles: [], afterFiles, initialContractProjectId: "10000000-0000-4000-8000-000000000999" })).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+  await expect(handleOperation("classify-asset-mutation", { beforeFiles: afterFiles, afterFiles, initialContractProjectId: project.id })).rejects.toThrow("PUBLICATION_SOURCE_INVALID");
+  await expect(handleOperation("classify-asset-mutation", { beforeFiles: [], afterFiles, initialContractProjectId: true })).rejects.toThrow("RPC_INVALID_REQUEST");
+});
 it("posthoc accepted fixture correction proves both wire byte conversion boundaries", async () => {
   // Original handwritten segments omitted Core's leading empty path segment.
   // This corrected proof is postimplementation, explicitly accepted by the user.

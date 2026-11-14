@@ -179,7 +179,7 @@ describe("complete-locator IPC bridge", () => {
       const request = structuredClone(definition.collections[0]!.apis[0]!.contract.request);
       const input = {
         project,
-        targetParent: locators().collection,
+        targetParent: { kind: "project-default" as const, expectedCollectionId: null },
         name: "project one API",
         request,
         sourceProjectRevision: createProjectSnapshot(definition).definitionRevision,
@@ -196,7 +196,10 @@ describe("complete-locator IPC bridge", () => {
       expect(result.detail.api.contract.metadata.name).toBe("project one API");
       expect(result.detail.api.contract.request).toEqual(request);
       expect(session.locateApi(result.locator)?.api).toEqual(result.detail.api);
+      expect(result.locator.collectionId).not.toBe(locators().collection.collectionId);
+      expect(session.locateApi(result.locator)?.collection.name).toBe("未分类接口");
       expect(() => parseIpcArgs(IpcChannel.ApiCreateFromRequestDraft, [{ ...input, unexpected: true }])).toThrow(/unexpected|校验/i);
+      expect(() => parseIpcArgs(IpcChannel.ApiCreateFromRequestDraft, [{ ...input, targetParent: { ...input.targetParent, collectionId: IDS.collectionOne } }])).toThrow();
     } finally {
       await temporary.dispose();
     }

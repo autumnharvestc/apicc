@@ -65,12 +65,14 @@ public class ProjectAssetsService {
     /** Trusted composition seam: caller owns a short transaction; all existing validation is shared. */
     public AtomicAssetWrite prepareAtomic(UserAccount caller,String ws,String project,AssetDelta delta) {
         var fixed=prepare(caller,ws,project,delta);
-        return new AtomicAssetWrite(fixed.entity().workspaceId(),fixed.entity().id(),mutations.wireFiles(fixed.current().files()),fixed.after(),fixed.paths());
+        var current=fixed.current();
+        boolean initialProject=current.version().equals("0")&&current.format()==null&&current.contractProjectId()==null&&current.files().isEmpty();
+        return new AtomicAssetWrite(fixed.entity().workspaceId(),fixed.entity().id(),mutations.wireFiles(current.files()),fixed.after(),fixed.paths(),initialProject?delta.contractProjectId():null);
     }
-    public record AtomicAssetWrite(long workspace,long project,com.fasterxml.jackson.databind.JsonNode before,com.fasterxml.jackson.databind.JsonNode after,List<String> paths) {}
+    public record AtomicAssetWrite(long workspace,long project,com.fasterxml.jackson.databind.JsonNode before,com.fasterxml.jackson.databind.JsonNode after,List<String> paths,String initialContractProjectId) {}
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public com.autumnharvestc.server.access.AssetMutationGuard.Classification classifyAtomic(UserAccount caller,AtomicAssetWrite fixed) {
-        return mutations.classify(caller,fixed.workspace(),fixed.project(),fixed.before(),fixed.after(),fixed.paths());
+        return mutations.classify(caller,fixed.workspace(),fixed.project(),fixed.before(),fixed.after(),fixed.paths(),fixed.initialContractProjectId());
     }
     /** Joins the owning short transaction; never performs classification or any RPC. */
     public ProjectAssets commitAtomic(UserAccount caller,String ws,String project,AssetDelta delta,com.autumnharvestc.server.access.AssetMutationGuard.Classification classification) {

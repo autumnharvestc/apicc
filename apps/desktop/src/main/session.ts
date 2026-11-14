@@ -15,6 +15,8 @@ import {
   StressPolicySchema,
   WorkflowSchema,
   cloneProjectDefinition,
+  createDefaultCollectionId,
+  isDefaultCollectionId,
   buildImportMergePlan,
   projectAssetImportDiagnostics,
   createProjectSnapshot,
@@ -69,6 +71,7 @@ import {
   ModelLocatorSchema,
   NodeLocatorSchema,
   ProjectLocatorSchema,
+  RequestSaveTargetSchema,
   WorkflowLocatorSchema,
   WorkflowImpactLocatorSchema,
   WorkspaceLocatorSchema,
@@ -83,6 +86,7 @@ import {
   type ModelLocator,
   type NodeLocator,
   type ProjectLocator,
+  type RequestSaveTarget,
   type WorkflowLocator,
   type WorkflowImpactLocator,
   type WorkspaceLocator,
@@ -124,7 +128,7 @@ export interface CreateApiInput {
 
 export interface CreateApiFromRequestDraftInput {
   project: ProjectLocator;
-  targetParent: ApiParentLocator;
+  targetParent: RequestSaveTarget;
   name: string;
   request: ApiRequest;
   sourceProjectRevision: string;
@@ -289,6 +293,28 @@ function allProjectIds(project: ContractProject): Set<string> {
   };
   visit(project);
   return ids;
+}
+
+function resolveDefaultCollection(project: ContractProject, expectedCollectionId: string | null): ContractCollection | undefined {
+  const matches = project.collections.filter((collection) => isDefaultCollectionId(project.id, collection.id));
+  if (matches.length > 1) throw new Error("REQUEST_SAVE_DEFAULT_AMBIGUOUS");
+  const current = matches[0];
+  if (expectedCollectionId !== (current?.id ?? null)) throw new Error("REQUEST_SAVE_TARGET_MISSING");
+  return current;
+}
+
+function appendDefaultCollection(project: ContractProject): ContractCollection {
+  const occupied = new Set([...allProjectIds(project)].map((id) => id.toLowerCase()));
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const id = createDefaultCollectionId(project.id);
+    if (occupied.has(id)) continue;
+    const collection: ContractCollection = {
+      id, name: "未分类接口", variables: {}, preOperations: [], postOperations: [], folders: [], apis: [],
+    };
+    project.collections.push(collection);
+    return collection;
+  }
+  throw new Error("REQUEST_SAVE_DEFAULT_ID_COLLISION");
 }
 
 function secretRefsInProject(project: ContractProject): Set<string> {
@@ -537,12 +563,9 @@ function checkedCloneFactory(
   existingIds: ReadonlySet<string>,
   existingSecretRefs: ReadonlySet<string>,
   allowedProjectId?: string,
-): CloneIdFactory {
+): { newId: CloneIdFactory; reserveId: (kind: Parameters<CloneIdFactory>[0], targetId: string) => void } {
   const generated = new Set<string>();
-  return (kind, sourceId, ownerId) => {
-    const targetId = kind === "project" && allowedProjectId
-      ? allowedProjectId
-      : (factory ?? (() => randomUUID()))(kind, sourceId, ownerId);
+  function reserveId(kind: Parameters<CloneIdFactory>[0], targetId: string) {
     if (typeof targetId !== "string" || targetId.length === 0) throw new TypeError(`ID factory returned invalid ${kind} identity`);
     if (kind !== "project" && (existingIds.has(targetId) || targetId === allowedProjectId)) {
       throw new Error(`Target identity collision for ${kind}:${targetId}`);
@@ -553,11 +576,17 @@ function checkedCloneFactory(
     if (kind === "secretRef" && existingSecretRefs.has(targetId)) throw new Error(`Target secret reference collision: ${targetId}`);
     if (generated.has(targetId)) throw new Error(`ID factory returned duplicate target identity: ${targetId}`);
     generated.add(targetId);
+  }
+  return { reserveId, newId: (kind, sourceId, ownerId) => {
+    const targetId = kind === "project" && allowedProjectId
+      ? allowedProjectId
+      : (factory ?? (() => randomUUID()))(kind, sourceId, ownerId);
+    reserveId(kind, targetId);
     return targetId;
-  };
+  } };
 }
 
-function makeDefaultApi(input: CreateApiInput, newId: SessionOptions["newId"], projectId: string): ApiAsset {
+export function makeDefaultApi(input: CreateApiInput, newId: SessionOptions["newId"], projectId: string): ApiAsset {
   const id = (kind: string, ownerId?: string) => (newId ?? (() => randomUUID()))(kind, undefined, ownerId);
   const protocol = input.protocol ?? "http";
   const common = {
@@ -1044,7 +1073,7 @@ function setContainerOperations(
     draftWriteContext?: DraftWriteContext,
   ): Promise<{ locator: ApiLocator; detail: { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> } }> {
     const projectLocator = parseLocator(ProjectLocatorSchema, inputValue.project, "project");
-    const targetParent = parseLocator(ApiParentLocatorSchema, inputValue.targetParent, "API parent");
+    const target = parseLocator(RequestSaveTargetSchema, inputValue.targetParent, "request save target");
     const request = ApiRequestSchema.parse(clone(inputValue.request));
     const name = inputValue.name;
     const expectedProjectRevision = inputValue.sourceProjectRevision;
@@ -1056,52 +1085,48 @@ function setContainerOperations(
       if (containsKnownCredentialLiteral(request, knownCredentialLiterals)) {
         throw new Error("拒绝保存包含已知凭据字面值的请求草稿。");
       }
-      if (targetParent.workspaceId !== projectLocator.workspaceId
-        || targetParent.groupId !== projectLocator.groupId
-        || targetParent.projectId !== projectLocator.projectId) {
+      if (!("kind" in target) && (target.workspaceId !== projectLocator.workspaceId
+        || target.groupId !== projectLocator.groupId || target.projectId !== projectLocator.projectId)) {
         throw new Error("Free request target module must belong to its captured project.");
       }
-      const located = locateCollectionInCandidate(candidate, targetParent);
-      if (located.project.id !== projectLocator.projectId) {
-        throw new Error(`Project mismatch for free request target: ${JSON.stringify(targetParent)}`);
-      }
-      const actualProjectRevision = createProjectSnapshot(located.project).definitionRevision;
+      const { project } = locateProjectInCandidate(candidate, projectLocator);
+      const collection = "kind" in target ? resolveDefaultCollection(project, target.expectedCollectionId)
+        : single(project.collections.filter((item) => item.id === target.collectionId), `collection ${target.collectionId}`);
+      const folder = collection && "folderIds" in target ? findFolder(collection, target.folderIds)?.folder : undefined;
+      if (!("kind" in target) && (!collection || ("folderIds" in target && !folder))) throw new Error("REQUEST_SAVE_TARGET_MISSING");
+      const actualProjectRevision = createProjectSnapshot(project).definitionRevision;
       if (actualProjectRevision !== expectedProjectRevision) {
         throw new Error(`Project source revision conflict at ${JSON.stringify(projectLocator)}: expected ${expectedProjectRevision}, received ${actualProjectRevision}`);
       }
+      const targetCollection = collection ?? appendDefaultCollection(project);
+      const container = folder ?? targetCollection;
       const api = makeDefaultApi({
         name,
         protocol: request.protocol,
         ...(request.protocol === "http" || request.protocol === "soap" ? { method: request.method } : {}),
         baseUrl: request.baseUrl,
         path: request.path,
-      }, newId, located.project.id);
+      }, newId, project.id);
       const completeApi = ApiAssetSchema.parse({
         ...api,
         contract: { ...api.contract, request },
       });
-      if (allProjectIds(located.project).has(completeApi.contract.id)) {
+      if (allProjectIds(project).has(completeApi.contract.id)) {
         throw new Error(`Target identity collision for contract:${completeApi.contract.id}`);
       }
-      const container = "folderIds" in targetParent
-        ? findFolder(located.collection, targetParent.folderIds)?.folder
-        : located.collection;
-      if (!container) throw new Error(`Parent folder not found: ${JSON.stringify(targetParent)}`);
       container.apis.push(completeApi);
       const locator: ApiLocator = {
-        workspaceId: targetParent.workspaceId,
-        groupId: targetParent.groupId,
-        projectId: targetParent.projectId,
-        collectionId: targetParent.collectionId,
-        folderIds: "folderIds" in targetParent ? [...targetParent.folderIds] : [],
+        ...projectLocator,
+        collectionId: targetCollection.id,
+        folderIds: "folderIds" in target ? [...target.folderIds] : [],
         apiId: completeApi.contract.id,
       };
       const detail = {
         api: completeApi,
         locator,
         sourceApiRevision: getSourceApiRevision(completeApi),
-        sourceProjectRevision: createProjectSnapshot(located.project).definitionRevision,
-        envs: located.project.environments.map((environment) => ({
+        sourceProjectRevision: createProjectSnapshot(project).definitionRevision,
+        envs: project.environments.map((environment) => ({
           id: environment.id,
           name: environment.name,
           locator: { ...projectLocator, environmentId: environment.id },
@@ -1794,7 +1819,7 @@ function setContainerOperations(
       const occupiedProjectIds = new Set(found.group.projects.map((project) => project.id));
       const occupiedSecrets = allSecretRefs(candidate);
       const factory = checkedCloneFactory(newId, new Set(), occupiedSecrets);
-      const cloned = cloneProjectDefinition(found.project, { newId: factory });
+      const cloned = cloneProjectDefinition(found.project, factory);
       if (occupiedProjectIds.has(cloned.project.id)) throw new Error(`Target identity collision for project:${cloned.project.id}`);
       found.group.projects.push(cloned.project);
       return { value: cloned.project };
@@ -1856,7 +1881,7 @@ function setContainerOperations(
     normalized.name = sanitizeNodeName(projectName.trim() || normalized.name);
     const occupiedProjectIds = new Set(target.projects.map((project) => project.id));
     const factory = checkedCloneFactory(newId, new Set(), allSecretRefs(candidate));
-    const project = cloneProjectDefinition(normalized, { newId: factory }).project;
+    const project = cloneProjectDefinition(normalized, factory).project;
     if (occupiedProjectIds.has(project.id)) throw new Error(`Target identity collision for project:${project.id}`);
     assertImportAssetGraph(project);
     target.projects.push(project);
@@ -1917,7 +1942,7 @@ function setContainerOperations(
     }
     module.id = temporaryProjectId;
     const factory = checkedCloneFactory(newId, existingIds, secretIds, target.id);
-    const cloned = cloneProjectDefinition(module, { newId: factory }).project;
+    const cloned = cloneProjectDefinition(module, factory).project;
     if (cloned.collections.some((collection) => target.collections.some((item) => item.id === collection.id))) {
       throw new Error("Target collection identity collision during module import");
     }

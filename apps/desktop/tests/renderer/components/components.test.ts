@@ -238,6 +238,7 @@ async function mountWith(component: Parameters<typeof mount>[0], props: Record<s
   const plugins = createPluginsStore({ api });
   const { i18n } = createI18nInstance();
   const wrapper = mount(component, {
+    attachTo: component === SideTree ? document.body : undefined,
     props: { api, workspace, tree, editor, debug, workflowDesign, online, tabs, importW, plugins, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
@@ -356,16 +357,17 @@ describe("SideTree", () => {
     }
     if (!row?.exists()) throw new Error(`Expected the ${kind} row to be rendered`);
 
-    const rename = row.find('[data-testid="node-rename"]');
-    const remove = row.find('[data-testid="node-delete"]');
-    expect(rename.attributes("aria-label")).toBe("重命名");
-    expect(rename.attributes("title")).toBe("重命名");
-    expect(rename.text()).toBe("");
-    expect(remove.attributes("aria-label")).toBe("删除");
-    expect(remove.attributes("title")).toBe("删除");
-    expect(remove.classes()).toContain("danger");
-
-    if (kind !== "api") {
+    if (kind === "api") {
+      const rename = row.get('[data-testid="node-rename"]');
+      const remove = row.get('[data-testid="node-delete"]');
+      expect(rename.attributes("aria-label")).toBe("重命名");
+      expect(rename.attributes("title")).toBe("重命名");
+      expect(rename.text()).toBe("");
+      expect(remove.attributes("aria-label")).toBe("删除");
+      expect(remove.attributes("title")).toBe("删除");
+      expect(remove.classes()).toContain("danger");
+      await rename.trigger("click");
+    } else {
       expect(row.find(".label").attributes("title")).toBe(expectedLabel);
       const expandedBefore = row.find('[data-testid="tree-group-toggle"]').text();
       await row.find('[data-testid="tree-more"]').trigger("click");
@@ -374,10 +376,11 @@ describe("SideTree", () => {
       expect(bodyHas("new-folder")).toBe(true);
       expect(bodyHas("container-manage")).toBe(true);
       expect(wrapper.emitted("select")).toBeUndefined();
-      await new DOMWrapper(document.body).get('[role="menu"]').trigger("keydown", { key: "Escape" });
+      const menu = new DOMWrapper(document.body).get('[role="menu"][data-menu-owner="tree-more"]');
+      expect(menu.get('[data-testid="node-delete"]').classes()).toContain("menu-danger");
+      await menu.get('[data-testid="node-rename"]').trigger("click");
     }
 
-    await rename.trigger("click");
     expect(wrapper.emitted("select")).toBeUndefined();
     await expectBody("dialog-cancel").trigger("click");
 
@@ -435,22 +438,32 @@ describe("SideTree", () => {
     expect(wrapper.text()).toContain("新接口");
   });
 
-  it("R7 目录首行的新建菜单以当前模块为目标，窄树的更多菜单保留具名操作", async () => {
+  it("R7 项目目录标题固定项目级入口，窄树行菜单保留精确容器", async () => {
     const { wrapper, workspace } = await mountWith(SideTree, { showCreateInHeader: true, compact: true });
     const { collection } = seededProjectAndApi(workspace);
-    await expandAllCollapsedTreeContainers(wrapper);
+    const project = workspace.findProject(collection.locator)!;
+    await (wrapper as unknown as VueWrapper<InstanceType<typeof SideTree>>).setProps({ activeProjectLocator: project.locator, importTargetKey: "current-import-target" });
+    expect(wrapper.findAll('.row-title').some((row) => row.text() === project.label)).toBe(false);
     const module = wrapper.findAll(".node").find((row) => row.find(".kind-icon.mod").exists())!;
     await module.get(".row-title").trigger("click");
-    await wrapper.get('[data-testid="directory-create"]').trigger("click");
-    expect(wrapper.get('[data-testid="directory-create"]').attributes("aria-label")).toContain(collection.label);
-    expect(bodyHas("new-api")).toBe(true);
-    expect(bodyHas("new-folder")).toBe(true);
-    expect(bodyHas("new-group")).toBe(false);
-    await new DOMWrapper(document.body).get('[role="menu"]').trigger("keydown", { key: "Escape" });
-    await module.get('[data-testid="tree-more"]').trigger("click");
+    const header = wrapper.get('[data-testid="directory-create"]');
+    await header.trigger("click");
+    expect(header.attributes("aria-label")).toContain(project.label);
+    const menu = () => new DOMWrapper(document.body).get('[role="menu"]');
+    expect(menu().findAll('[role="menuitem"]').map((item) => item.attributes("data-testid"))).toEqual(["new-collection", "new-api", "directory-import-interfaces"]);
+    await expectBody("new-api").trigger("click");
+    expect(wrapper.emitted("new-interface")).toEqual([[null]]);
+    const more = module.get('[data-testid="tree-more"]');
+    await more.trigger("keydown", { key: "ArrowDown" });
     expect(module.find('[data-testid="node-rename"]').exists()).toBe(false);
+    expect(menu().findAll('[role="menuitem"]').map((item) => item.attributes("data-testid"))).toEqual(["new-api", "new-folder", "container-manage", "node-rename", "node-delete"]);
     expect(expectBody("node-rename").text()).toBe("重命名");
-    expect(expectBody("node-delete").text()).toBe("删除");
+    expect(expectBody("node-delete").classes()).toContain("menu-danger");
+    await menu().trigger("keydown", { key: "Escape" });
+    expect(document.activeElement === more.element).toBe(true);
+    await more.trigger("click");
+    await expectBody("new-api").trigger("click");
+    expect(wrapper.emitted("new-interface")).toEqual([[null], [collection.locator]]);
     expect(wrapper.emitted("select")).toHaveLength(1);
   });
 
@@ -728,6 +741,26 @@ describe("SideTree", () => {
     await vi.waitFor(() => expect(wrapper.find('[data-testid="tree-workflow"]').exists()).toBe(false));
     expect(await api.wfList(seeded.projectLocator)).toEqual([]);
     expect(wrapper.find('[data-testid="tree-workflow"]').exists()).toBe(false);
+  });
+
+  it("工作流变更迟到时仍刷新原目录，保留进行中产生的编辑", async () => {
+    const { wrapper, api, workspace, workflowDesign } = await mountWith(SideTree);
+    const seeded = await seedTreeWorkflow(api, workspace, "旧工作流名称");
+    await workflowDesign.load(workspace.root, seeded.workflowLocator);
+    await expandAllCollapsedTreeContainers(wrapper);
+    const rename = api.wfRename.bind(api);
+    let finishRename!: () => void;
+    const held = new Promise<void>((resolve) => { finishRename = resolve; });
+    api.wfRename = async (...args) => { const saved = await rename(...args); await held; return saved; };
+    await wrapper.get('[data-testid="tree-workflow-row"]').get('[data-testid="node-rename"]').trigger("click");
+    await expectBody("dialog-input").setValue("新工作流名称");
+    await expectBody("dialog-confirm").trigger("click");
+    workflowDesign.update({ ...workflowDesign.workflow!, status: "published" });
+    await (wrapper as unknown as VueWrapper<InstanceType<typeof SideTree>>).setProps({ scopeKey: "new project surface" });
+    finishRename();
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="tree-workflow"]').text()).toContain("新工作流名称"));
+    expect(workflowDesign.workflow).toMatchObject({ name: "新工作流名称", status: "published" });
+    expect(workflowDesign.dirty).toBe(true);
   });
 });
 

@@ -34,6 +34,17 @@ function child(node: TreeNodeDTO, kind: TreeNodeDTO["kind"], label: string): Tre
 }
 
 describe("onlineTreeToDto（裁定 A：path 集合 → 侧树层级，path 实体化形态）", () => {
+  it("retains blank project rows and every nested folder with its original config and API paths", () => {
+    const path = `${P1}/collections/module/folders/outer/folders/inner`;
+    const dto = onlineTreeToDto(treeOf([`${path}/folder.yaml`, `${path}/apis/api/api.yaml`], [
+      { id: P1, name: "With files", groupId: GID, myRole: "EDITOR" }, { id: P2, name: "Blank", groupId: GID, myRole: "VIEWER" },
+    ]));
+    expect(child(dto, "project", "Blank").children).toEqual([]);
+    const inner = child(child(child(child(dto, "project", "With files"), "collection", "module"), "folder", "outer"), "folder", "inner");
+    expect(inner.id).toBe(path);
+    expect(child(inner, "file", "folder.yaml").id).toBe(`${path}/folder.yaml`);
+    expect(child(inner, "api", "api").id).toBe(`${path}/apis/api/api.yaml`);
+  });
   it("完整层级：<projectId>/collections/apis/folders → 项目直接挂根；api 节点 id = api.yaml 全路径；项目名取 projects 行", () => {
     const dto = onlineTreeToDto(
       treeOf(
@@ -228,7 +239,7 @@ describe("onlineTreeToDto 分组层（计划 C 任务 3：groupNames → group:<
     expect(dto.children!.some((c) => c.kind === "project" && c.id === P3)).toBe(true);
   });
 
-  it("组名可得但组内无文件的项目（projects 行在、内容清单空）→ 不造空项目节点（文件驱动口径不变）", () => {
+  it("retains group project identities even when a project has no files", () => {
     const dto = onlineTreeToDto(
       treeOf([`${P1}/collections/c/apis/a/api.yaml`], [
         { id: P1, name: "有文件", groupId: GID, myRole: "EDITOR" },
@@ -238,7 +249,8 @@ describe("onlineTreeToDto 分组层（计划 C 任务 3：groupNames → group:<
       new Map([[GID, "电商组"]]),
     );
     const group = child(dto, "group", "电商组");
-    expect(group.children!.map((c) => c.id)).toEqual([P1]);
+    expect(group.children!.map((c) => c.id)).toEqual([P1, P2]);
+    expect(group.children?.[1]?.children).toEqual([]);
   });
 
   it("未提供组清单（第三参缺席）→ 项目直挂根（既有扁平口径不变，既有调用零破坏）", () => {

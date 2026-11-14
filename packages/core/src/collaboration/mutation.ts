@@ -5,6 +5,7 @@ import type { Operation } from "../domain/common.js";
 export async function classifyAssetMutation(
   beforeFiles: ReadonlyMap<string, string | Uint8Array>,
   afterFiles: ReadonlyMap<string, string | Uint8Array>,
+  options?: { initialContractProjectId?: string },
 ): Promise<{ scriptChanged: boolean; locations: readonly string[] }> {
   const decode = async (files: ReadonlyMap<string, string | Uint8Array>): Promise<ContractProject> => {
     let result: Awaited<ReturnType<typeof decodeContractProjectFiles>>;
@@ -12,8 +13,12 @@ export async function classifyAssetMutation(
     if (!result.project || result.readOnly || result.problems.length > 0) throw new Error("PUBLICATION_SOURCE_INVALID");
     return result.project;
   };
-  const before = scriptSurface(await decode(beforeFiles));
-  const after = scriptSurface(await decode(afterFiles));
+  const initialId = options?.initialContractProjectId;
+  if (initialId !== undefined && beforeFiles.size !== 0) throw new Error("PUBLICATION_SOURCE_INVALID");
+  const before = initialId !== undefined ? new Map<string, string>() : scriptSurface(await decode(beforeFiles));
+  const candidate = await decode(afterFiles);
+  if (initialId !== undefined && candidate.id !== initialId) throw new Error("PUBLICATION_SOURCE_INVALID");
+  const after = scriptSurface(candidate);
   const locations = [...new Set([...before.keys(), ...after.keys()])].filter((path) => before.get(path) !== after.get(path)).sort();
   return { scriptChanged: locations.length > 0, locations };
 }
