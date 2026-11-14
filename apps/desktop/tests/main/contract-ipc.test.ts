@@ -1270,7 +1270,7 @@ describe("complete-locator IPC bridge", () => {
       expect(savedName).toBe("project one.html");
       expect(savedFormat).toBe("html");
       expect(savedContent).toContain("<!doctype html>");
-      expect(savedContent).toContain("<td>token=****</td><td>base</td><td>1</td>");
+      expect(savedContent).toContain('<td>token=****</td><td><span data-reader-zh="基础" data-reader-en="base">基础</span></td><td>1</td>');
       expect(savedContent).not.toContain("case-name-secret");
       expect(savedContent).not.toContain("case-parameter-secret");
       expect(savedContent).not.toContain("case-script-secret");

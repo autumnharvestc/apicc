@@ -2472,7 +2472,10 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
         workflow: { name: string } | null;
       };
     expect(designOf().workflowId).toBe(wf.id);
-    // 侧树重命名该流：workflow 行内动作钮（作用域限定 tree-workflow-row，避开容器节点同名钮）
+    // 目录在接口页。返回目录时，刚才的设计器缓冲应仍驻留。
+    await wrapper.get('[data-testid="rail-api"]').trigger("click");
+    expect(designStore.workflowId).toBe(wf.id);
+    expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(true);
     const row = wrapper
       .findAll('[data-testid="tree-workflow-row"]')
       .find((r) => r.text().includes("旧名流"))!;
@@ -2484,7 +2487,7 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
       renameTask = originalRename(...args);
       return renameTask;
     };
-    const workspace = wrapper.findComponent(WfDesigner).props("workspace") as ReturnType<typeof useWorkspaceStore>;
+    const workspace = wrapper.getComponent(SideTree).props("workspace") as ReturnType<typeof useWorkspaceStore>;
     const originalRefresh = workspace.refresh.bind(workspace);
     let refreshTask: ReturnType<typeof originalRefresh> | null = null;
     workspace.refresh = () => {
@@ -2503,8 +2506,8 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     }
     await flushPromises();
     // 修复前：缓冲仍持旧名（workflowId 不变）——此后保存按缓冲整体替换，改名被静默回滚
-    expect(designOf().workflowId).toBeNull();
-    expect(designOf().workflow).toBeNull();
+    expect(designStore.workflowId).toBeNull();
+    expect(designStore.workflow).toBeNull();
     // 再次打开（树已 refresh 显示新名）：走重新 load 拿新名
     const loadRenamed = captureWorkflowLoad(designStore);
     await wfNode("新名流").trigger("click");
@@ -2521,7 +2524,7 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     const treeDto = await failingApi.treeGet();
     const project = projectByLabel(treeDto, "示例项目");
     const wfA = await failingApi.wfCreate({ locator: project.locator, name: "旁路流甲" });
-    await failingApi.wfCreate({ locator: project.locator, name: "旁路流乙" });
+    const wfB = await failingApi.wfCreate({ locator: project.locator, name: "旁路流乙" });
     await openLocalDir(wrapper);
     await flushPromises();
     const wfNode = (name: string) =>
@@ -2532,16 +2535,26 @@ describe("App 侧树重命名与设计器缓冲同步（审查 I2）", () => {
     await wfNode("旁路流甲").trigger("click");
     await loadA.settle();
     loadA.restore();
+    await wrapper.get('[data-testid="rail-api"]').trigger("click");
+    expect(designStore.workflowId).toBe(wfA.id);
+    expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(true);
     const row = wrapper
       .findAll('[data-testid="tree-workflow-row"]')
       .find((r) => r.text().includes("旁路流乙"))!;
     await row.find('[data-testid="node-rename"]').trigger("click");
     await expectBody("dialog-input").setValue("旁路流乙改");
-    await expectBody("dialog-confirm").trigger("click");
-    await flushPromises();
+    const rename = vi.spyOn(failingApi, "wfRename");
+    try {
+      await expectBody("dialog-confirm").trigger("click");
+      expect(rename).toHaveBeenCalledOnce();
+      await expect(rename.mock.results[0]?.value).resolves.toMatchObject({ id: wfB.id, name: "旁路流乙改" });
+      await vi.waitFor(() => expect(wfNode("旁路流乙改")?.exists()).toBe(true));
+    } finally {
+      rename.mockRestore();
+    }
     // 命中条件 workflowId === 被改名 id 不成立：流甲会话不受旁路重命名影响
-    const design = wrapper.findComponent(WfDesigner).props("workflowDesign") as { workflowId: string | null };
-    expect(design.workflowId).toBe(wfA.id);
+    expect(designStore.workflowId).toBe(wfA.id);
+    expect(designStore.workflow?.name).toBe("旁路流甲");
   });
 });
 
@@ -2620,15 +2633,11 @@ describe("App 侧树工作流入口", () => {
     await load.settle();
     load.restore();
     expectAppShellAboveWorkspace();
-    const workflowLayout = wrapper.findComponent(WfDesigner).find(".wf-body");
-    expect(workflowLayout.classes()).toContain("ant-layout");
-    expect(workflowLayout.classes()).toContain("ant-layout-has-sider");
-    expect((workflowLayout.element as HTMLElement).style.background).toBe("transparent");
-    expect((workflowLayout.element as HTMLElement).style.color).toBe("inherit");
-    expect(wrapper.find('[data-testid="wf-canvas"]').exists()).toBe(true);
-    const propertyPanel = wrapper.find('[data-testid="wf-panel"]');
-    expect(propertyPanel.classes()).toContain("ant-layout-sider");
-    expect(propertyPanel.attributes("style")).toMatch(/width:\s*280px/);
+    const workflowLayout = wrapper.getComponent(WfDesigner).get(".wf-body").element;
+    const canvas = wrapper.get('[data-testid="wf-canvas"]').element;
+    const propertyPanel = wrapper.get('aside[data-testid="wf-panel"]').element;
+    expect(Array.from(workflowLayout.children)).toEqual([canvas, propertyPanel]);
+    expect(wrapper.get('[data-testid="sidebar-api"]').isVisible()).toBe(false);
     // 视图切到 wf（rail 选中态）
     expect(wrapper.find('[data-testid="rail-wf"]').classes()).toContain("active");
     // 设计器载入点击的工作流（而非空态列表）

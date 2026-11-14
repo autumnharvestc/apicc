@@ -8,7 +8,9 @@ import { ContractProjectSchema } from '../../../../packages/core/dist/contract/w
 const directory=process.argv[2], privateRoot=join(directory,'private');
 await mkdir(privateRoot,{recursive:true});
 const project=ContractProjectSchema.parse({id:'00000000-0000-4000-8000-000000000070',name:'T9',globals:{},collections:[{id:'00000000-0000-4000-8000-000000000071',name:'Target',apis:[],folders:[]},{id:'00000000-0000-4000-8000-000000000072',name:'Second',apis:[],folders:[]}],models:[],components:[]});
-const files=[...encodeContractProjectFiles(project).files].map(([path,content])=>({path,content}));
+const projectFiles = value => [...encodeContractProjectFiles(value).files].map(([path, content]) => ({ path, content }));
+const initialFiles = projectFiles({ ...project, name: 'T7' });
+const files = projectFiles(project);
 const rawText=JSON.stringify({openapi:'3.0.3',info:{title:'Target',version:'1.0.0'},paths:{'/pets':{get:{operationId:'listPets',responses:{200:{description:'OK'}}}}}});
 const changedText=JSON.stringify({openapi:'3.0.3',info:{title:'Target',version:'1.0.0'},paths:{'/pets':{get:{operationId:'listPets',summary:'Changed upstream operation',responses:{200:{description:'OK'}}}}}});
 let calls=0,cache304=0,dropNextRead=false,lostResponse,holdResolve=false,releaseResolve,failClassify=false;const blocked=new Map(),revisions=new Map();
@@ -66,6 +68,6 @@ function failFixture(error){
   void stop().catch(shutdownError=>{console.error('Shared sync fixture shutdown failed:',shutdownError);process.exit(1);});
 }
 await new Promise(done=>proxy.listen(0,'127.0.0.1',done));
-console.log(JSON.stringify({url:`http://127.0.0.1:${proxy.address().port}`,origin,secretFile,rawText,files,definitionRevision:createProjectSnapshot(project).definitionRevision}));
+console.log(JSON.stringify({url:`http://127.0.0.1:${proxy.address().port}`,origin,secretFile,rawText,initialFiles,files,definitionRevision:createProjectSnapshot(project).definitionRevision}));
 let stopping;const stop=()=>stopping??=(async()=>{await runtime.close();proxy.closeAllConnections();await new Promise(done=>proxy.close(done));source.closeAllConnections();await new Promise(done=>source.close(done));process.stdin.destroy();})();
 process.stdin.once('data',()=>void stop());process.stdin.once('end',()=>void stop());

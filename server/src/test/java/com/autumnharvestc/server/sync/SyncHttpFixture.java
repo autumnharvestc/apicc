@@ -17,11 +17,14 @@ abstract class SyncHttpFixture extends AccessHttpFixture {
     final String module="00000000-0000-4000-8000-000000000071", secondModule="00000000-0000-4000-8000-000000000072";
     @BeforeEach void validProject() throws Exception {
         f=scope(); member(f,"EDITOR",0).andExpect(status().isOk());
-        var files=List.of(Map.of("path","project.yaml","content","id: 00000000-0000-4000-8000-000000000070\nname: T7\n"),
-            Map.of("path","collections/"+module+"/collection.yaml","content","id: "+module+"\nname: Target\n"),
-            Map.of("path","collections/"+secondModule+"/collection.yaml","content","id: "+secondModule+"\nname: Second\n"));
         mvc.perform(put(f.projectUrl()+"/assets").header("Authorization","Bearer "+f.owner().token()).contentType("application/json")
-            .content(json.writeValueAsString(Map.of("format","contract-files-v1","contractProjectId","00000000-0000-4000-8000-000000000070","expectedVersion","0","changes",files,"deletes",List.of())))).andExpect(status().isOk()).andExpect(jsonPath("$.version").value("1"));
+            .content(json.writeValueAsString(Map.of("format","contract-files-v1","contractProjectId","00000000-0000-4000-8000-000000000070","expectedVersion","0","changes",initialProjectFiles(),"deletes",List.of())))).andExpect(status().isOk()).andExpect(jsonPath("$.version").value("1"));
+    }
+    JsonNode initialProjectFiles() {
+        // Java-only source metadata tests do not enable Core asset decoding.
+        return json.valueToTree(List.of(Map.of("path","project.yaml","content","id: 00000000-0000-4000-8000-000000000070\nname: T7\n"),
+            Map.of("path","collections/"+module+"/collection.yaml","content","id: "+module+"\nname: Target\n"),
+            Map.of("path","collections/"+secondModule+"/collection.yaml","content","id: "+secondModule+"\nname: Second\n")));
     }
     String anotherProject() throws Exception {
         String group=body(mvc.perform(get(f.projectUrl()+"/assets").header("Authorization","Bearer "+f.owner().token())).andExpect(status().isOk())).path("groupId").asText();

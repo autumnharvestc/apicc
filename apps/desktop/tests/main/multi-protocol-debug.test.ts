@@ -1,13 +1,13 @@
+// @vitest-environment jsdom
 // Real local WS/SOAP execution through the formal persisted contract-asset and full-locator path.
 import { createServer, type Server } from "node:http";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import type { VueWrapper } from "@vue/test-utils";
-import type { Component } from "vue";
+import { mount, type VueWrapper } from "@vue/test-utils";
 import { createSession } from "../../src/main/session.js";
 import { sendDebug } from "../../src/main/debug.js";
+import ResponseViewer from "../../src/renderer/src/components/ResponseViewer.vue";
+import { createI18nInstance } from "../../src/renderer/src/i18n/index.js";
 import type { DebugOutput } from "../../src/shared/types.js";
 import type { ApiLocator } from "../../src/shared/locations.js";
 import { IDS, makeApi, makeWorkspace, makeTempRoot, persistWorkspace, projectOne, uuid } from "./helpers/contract-assets.js";
@@ -21,51 +21,13 @@ let http: Server | undefined;
 let httpBase = "";
 let session: ReturnType<typeof createSession>;
 let root: Awaited<ReturnType<typeof makeTempRoot>> | undefined;
-let dom: MinimalJSDOM | undefined;
-let mountComponent: typeof import("@vue/test-utils").mount;
-let responseViewer: Component;
-let createI18nInstance: typeof import("../../src/renderer/src/i18n/index.js").createI18nInstance;
-const domGlobalNames = ["window", "document", "navigator", "localStorage", "getComputedStyle", "Node", "Element", "HTMLElement", "SVGElement", "ShadowRoot", "MutationObserver"] as const;
-const previousDomGlobals = new Map<(typeof domGlobalNames)[number], PropertyDescriptor | undefined>();
 const mountedViewers: VueWrapper[] = [];
 const caseIds: Record<string, string> = {};
 const apiLocators = new Map<string, ApiLocator>();
 const SOAP_API_ID = uuid(30);
 const FAULT_API_ID = uuid(31);
-type DomWindow = Window & {
-  Node: typeof Node;
-  Element: typeof Element;
-  HTMLElement: typeof HTMLElement;
-  SVGElement: typeof SVGElement;
-  ShadowRoot: typeof ShadowRoot;
-  MutationObserver: typeof MutationObserver;
-};
-type MinimalJSDOM = { window: DomWindow & { close(): void } };
-const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
-  JSDOM: new (html: string, options: { url: string; pretendToBeVisual: boolean }) => MinimalJSDOM;
-};
-
 beforeAll(async () => {
-  dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/", pretendToBeVisual: true });
-  const domWindow = dom.window;
-  const globals: Record<(typeof domGlobalNames)[number], unknown> = {
-    window: domWindow,
-    document: domWindow.document,
-    navigator: domWindow.navigator,
-    localStorage: domWindow.localStorage,
-    getComputedStyle: domWindow.getComputedStyle.bind(domWindow),
-    Node: domWindow.Node,
-    Element: domWindow.Element,
-    HTMLElement: domWindow.HTMLElement,
-    SVGElement: domWindow.SVGElement,
-    ShadowRoot: domWindow.ShadowRoot,
-    MutationObserver: domWindow.MutationObserver,
-  };
-  for (const name of domGlobalNames) {
-    previousDomGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { configurable: true, enumerable: true, writable: true, value: globals[name] });
-  }
-  Object.defineProperty(domWindow, "matchMedia", {
+  Object.defineProperty(window, "matchMedia", {
     writable: true,
     configurable: true,
     value: (query: string) => ({
@@ -73,44 +35,6 @@ beforeAll(async () => {
       addListener() {}, removeListener() {},
     }),
   });
-
-  const testUtils = await import("@vue/test-utils");
-  const i18n = await import("../../src/renderer/src/i18n/index.js");
-  const vue = await import("vue");
-  const compiler = await import("vue/compiler-sfc");
-  const typescript = await import("typescript");
-  const vueI18n = await import("vue-i18n");
-  const antDesign = await import("ant-design-vue");
-  const emptyState = await import("../../src/renderer/src/components/EmptyState.vue");
-  mountComponent = testUtils.mount;
-  createI18nInstance = i18n.createI18nInstance;
-  // Both SFCs need this existing client compiler: Node-environment imports yield SSR-only SFCs.
-  const compileClientComponent = (filename: "ResponseViewer.vue" | "CaseEvidencePanel.vue", evidencePanel?: Component): Component => {
-  const source = readFileSync(new URL(`../../src/renderer/src/components/${filename}`, import.meta.url), "utf8");
-  const { descriptor, errors } = compiler.parse(source, { filename });
-  if (errors.length > 0 || !descriptor.template) throw new Error(`Could not parse ${filename} for the manual DOM harness.`);
-  const compiled = compiler.compileScript(descriptor, { id: `manual-${filename}`, inlineTemplate: true });
-  const moduleBody = typescript.transpileModule(compiled.content, {
-    compilerOptions: { module: typescript.ModuleKind.ESNext, target: typescript.ScriptTarget.ES2022 },
-  }).outputText
-    .replace(/^\s*import\s+.*?from\s+["'][^"']+["'];?\s*$/gm, "")
-    .replace(/export default\s+/, "return ");
-  const compileComponent = new Function(
-    "vueRuntime", "vueI18n", "antDesign", "EmptyState", "CaseEvidencePanel",
-    `const { defineComponent: _defineComponent, unref: _unref, Fragment: _Fragment, renderList: _renderList, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, computed, nextTick, ref, watch } = vueRuntime;
-const { useI18n } = vueI18n;
-const { Alert: AAlert, Button: AButton, Input: AInput, Select: ASelect, TabPane: ATabPane, Tabs: ATabs, Tag: ATag, Table: ATable, Typography: ATypography } = antDesign;
-${moduleBody}`,
-  ) as (
-    vueRuntime: typeof vue,
-    vueI18nRuntime: typeof vueI18n,
-    antDesignRuntime: typeof antDesign,
-    emptyStateComponent: Component,
-    caseEvidenceComponent?: Component,
-  ) => Component;
-  return compileComponent(vue, vueI18n, antDesign, emptyState.default, evidencePanel);
-  };
-  responseViewer = compileClientComponent("ResponseViewer.vue", compileClientComponent("CaseEvidencePanel.vue"));
 
   const websocketServer = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   wss = websocketServer;
@@ -210,40 +134,29 @@ afterEach(() => {
 afterAll(async () => {
   const errors: unknown[] = [];
   try {
-    try {
-      if (wss) {
-        for (const client of wss.clients) client.terminate();
-        await new Promise<void>((resolve, reject) => wss!.close((error) => error ? reject(error) : resolve()));
-      }
-    } catch (error) {
-      errors.push(error);
+    if (wss) {
+      for (const client of wss.clients) client.terminate();
+      await new Promise<void>((resolve, reject) => wss!.close((error) => error ? reject(error) : resolve()));
     }
-    try {
-      if (http?.listening) await new Promise<void>((resolve, reject) => http!.close((error) => error ? reject(error) : resolve()));
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      await root?.dispose();
-    } catch (error) {
-      errors.push(error);
-    }
-  } finally {
-    for (const name of domGlobalNames) {
-      const descriptor = previousDomGlobals.get(name);
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else Reflect.deleteProperty(globalThis, name);
-    }
-    previousDomGlobals.clear();
-    dom?.window.close();
-    dom = undefined;
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    if (http?.listening) await new Promise<void>((resolve, reject) => http!.close((error) => error ? reject(error) : resolve()));
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await root?.dispose();
+  } catch (error) {
+    errors.push(error);
   }
   if (errors.length > 0) throw new AggregateError(errors, "Multi-protocol test resources failed to clean up.");
 });
 
 function mountViewer(result: DebugOutput): VueWrapper {
   const { i18n } = createI18nInstance();
-  const wrapper = mountComponent(responseViewer, { props: { result }, global: { plugins: [i18n] } });
+  const wrapper = mount(ResponseViewer, { props: { result }, global: { plugins: [i18n] } });
   mountedViewers.push(wrapper);
   return wrapper;
 }

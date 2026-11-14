@@ -253,7 +253,10 @@ it.each(['relogin', 'actor', 'server', 'workspace', 'project', 'local-source'])(
     else if (change === 'workspace') { context.scope.workspaceId = '12'; f.online.openWorkspace({ workspaceId: '12', name: 'Other workspace', myRole: 'EDITOR' }); }
     else {
       if (change === 'actor') { f.setUser('8'); context.ownerId = '8'; }
-      if (change === 'server') context.serverId = 'https://other.test/api/v1';
+      if (change === 'server') {
+        context.serverId = 'https://other.test/api/v1';
+        f.online.closeWorkspace(context.scope.workspaceId);
+      }
       await f.online.login({ baseUrl: change === 'server' ? 'https://other.test' : 'https://control.test', username: 'member', password: 'synthetic' });
       f.online.openWorkspace({ workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' });
     }

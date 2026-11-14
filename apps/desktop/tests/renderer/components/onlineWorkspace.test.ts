@@ -505,12 +505,19 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
   it("VIEWER（工作区只读）：无保存钮、输入禁用、只读徽标", async () => {
     const f = await fixture();
     await seedValidApi(f);
-    f.online.sessions[f.online.activeWorkspaceId!]!.workspace.myRole = "VIEWER";
+    const session = f.online.sessions[f.online.activeWorkspaceId!]!;
+    session.workspace.myRole = "VIEWER";
+    const project = session.projects.find(({ id }) => id === ONLINE_SEED_PROJECT_ID)!;
+    project.myRole = "VIEWER";
     await f.online.selectNode("api", API_PATH);
     const wrapper = await f.mount(OnlineApiEditor);
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="online-readonly-badge"]').exists()).toBe(true);
     expect((wrapper.find('[data-testid="online-editor-name"]').element as HTMLInputElement).disabled).toBe(true);
+    project.myRole = "EDITOR";
+    await flushPromises();
+    expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="online-readonly-badge"]').exists()).toBe(false);
   });
 
   it("项目级 ACL 覆盖 VIEWER：该项目子树接口同样只读（path 实体化：按 projects.id 前缀定位）", async () => {

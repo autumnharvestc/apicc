@@ -54,6 +54,10 @@ abstract class SyncCheckHttpFixture extends SyncHttpFixture {
     @Autowired ProjectAssetsService assets;
     @Autowired UserRepo users;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Override JsonNode initialProjectFiles() {
+        node.requireAlive();
+        return node.info.required("initialFiles");
+    }
     @BeforeEach void canonicalAssets() throws Exception {
         node.requireAlive();
         var delta=json.createObjectNode().put("format","contract-files-v1").put("contractProjectId","00000000-0000-4000-8000-000000000070").put("expectedVersion","1");delta.set("changes",node.info.path("files"));delta.set("deletes",json.createArrayNode());
