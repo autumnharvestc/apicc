@@ -322,3 +322,13 @@ Windows x64 目录包冒烟及隔离实跑通过。实包记录 200、503、收�
 桌面定向在 Windows 通过 21 项，在从 Git 快照构建的 Linux 环境通过 55 项，均覆盖 9 个失败用例。TypeScript 及 Vue 类型检查通过。Java 在与 CI 指纹一致的 Linux 环境对 14 个失败类复验，172 项全部通过。另有 42 项脚本权限与原子写入回归通过。Windows 套件对照中发现现有工作树的旧 CRLF Core 字节会触发运行时握手失配，原始记录保留，已改用干净 Linux 产物验证。
 
 按 CI 五个任务逐项核查。Windows 打包采用 CI105 的 20 步通过记录，本轮变更只涉及测试与记录。品牌中立扫描通过。Runner 的传输、公开就绪和账本压缩在 Linux 与 Windows 各通过 43 项。CLI 在 Linux 通过 8 项、Windows 通过 6 项，覆盖嵌套资源定位、真实 CLI 请求、定义或网络身份变化的提前拒绝，以及 Linux 的 MCP 成员绑定。协作、同步和 Runner 部署冒烟使用从 `94a2b8af` 的 Git 快照构建的三个 Linux 生产镜像。协作验证 Java-only、Node 断开和重启后的恢复，同步验证 URL、Git HTTPS、Git SSH、人工应用与回滚，Runner 验证镜像运行依赖及 HTTP／私有 CA HTTPS 健康。19 项阶段与部署脚本契约测试及 3 项 Windows 门禁与品牌脚本测试通过。独审确认原业务断言和权限边界仍有覆盖。日志见 `local/f8-frontend-project-directory/ci105/`，脚本独审记录见 `local/f8-ci105-review/script-contracts.log`。未执行本地全量、完整本地门禁或新的远端 CI。
+
+### CI106 CLI 工作流离线报告断言
+
+在提交 `55c42eb2` 的 CI106 中核对全部四份任务日志及部署依赖。品牌和 Windows 打包分别通过 3 步和 20 步。Java 2203 项通过。Linux 桌面 2417 项、Runner 147 项通过，分别有 2 项、15 项跳过。CLI 514 项通过、2 项跳过、1 项失败。部署任务依赖 Linux 各包任务，本次未运行。任务日志里的脚本单测使用替身执行器验证部署指令顺序，真实部署结果须另查。
+
+唯一失败在 `packages/cli/tests/e2e.test.ts` 的 `run-workflow` 端到端用例。P4b 将非请求失败单列为双语诊断表，旧 CLI 用例仍在 HTML 查找 JUnit 用的英文标识。CI105 定向选测集中在 CLI 资源定位、执行身份和成员绑定，遗漏了实际导出 HTML 的工作流入口。今后共享输出格式变更时，沿生成器、消费者入口和产物比对找受影响测试。报告至少核查 Core 渲染、CLI 真实导出及受影响的桌面或公共查看器，沿用各格式自己的验收条件。
+
+在 Linux 复现原断言失败后，改为核对唯一诊断区的双语标题、唯一诊断行，以及折叠详情外可读的失败状态和原因。真实请求行数、JSON、JUnit、退出码和草稿严格校验断言均保留。Linux 的 CLI 工作流定向 8 项、受影响的端到端文件 27 项及 Core 渲染 21 项通过，重复用例不另计覆盖。Windows CLI 类型检查通过。独审复核通过。
+
+CI106 的 Git／SSH 夹具及 agent 镜像已在 GitHub Linux 上构建通过。本地在干净 `55c42eb2` 副本重建 Git／SSH 夹具，用已验证生产输入相同的 `94a2b8af` Linux 镜像，从 Windows 宿主实跑 Runner、协作及外部同步，三项通过并完成清理。独立 Linux 容器驱动遇到 Docker Desktop 的子容器 bind 路径限制，保留真实 Windows 宿主运行证据。19 项脚本契约在具备构建和依赖的工作树通过。日志归档在 `local/f8-frontend-project-directory/ci106/`。本轮未跑本地全量，GitHub Ubuntu 新镜像组合结果仍待 CI。

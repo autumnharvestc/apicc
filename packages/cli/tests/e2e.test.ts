@@ -577,7 +577,20 @@ describe("CLI 端到端", () => {
     expect(badHtml).toMatch(/总计 0 · 通过 0 · 失败 0 · 跳过 0/);
     expect((badHtml.match(/<tr class="fail">/g) ?? [])).toHaveLength(0);
     expect((badHtml.match(/<tr class="skip">/g) ?? [])).toHaveLength(0);
-    expect(badHtml).toContain("NON-HTTP entry-diagnostic");
+    const diagnosticSections = [...badHtml.matchAll(/<section id="entry-diagnostics">([\s\S]*?)<\/section>/g)];
+    expect(diagnosticSections).toHaveLength(1);
+    const visibleDiagnostics = diagnosticSections[0]![1]!.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, "");
+    expect(visibleDiagnostics).toMatch(/<h2><span[^>]*data-reader-en="Non-HTTP entry diagnostics"[^>]*>非请求诊断<\/span><\/h2>/);
+    const diagnosticBody = visibleDiagnostics.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+    const diagnosticRows = [...diagnosticBody.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)];
+    expect(diagnosticRows).toHaveLength(1);
+    const cells = [...diagnosticRows[0]![1]!.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)].map((cell) => cell[1]!.replace(/<[^>]*>/g, ""));
+    expect(cells.slice(0, 4)).toEqual([
+      "condition-source",
+      "工作流",
+      "失败（failed）",
+      expect.stringMatching(/bad-condition 条件求值失败: missingConditionValue is not defined/),
+    ]);
     const badXml = readFileSync(join(badDir, readdirSync(badDir).find((file) => file.endsWith(".xml"))!), "utf8");
     expect(badXml).toMatch(/<testsuites tests="1" failures="1" skipped="0">/);
     expect(badXml).toMatch(/<testsuite name="坏条件流" tests="1" failures="1" skipped="0">/);
