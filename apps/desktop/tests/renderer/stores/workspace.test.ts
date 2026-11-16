@@ -1,11 +1,27 @@
 // @vitest-environment node
 // 注：pinia/vue 响应式需要 DOM 环境，渲染层 store 测试用文件级 pragma 指定 jsdom。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
 import { contractAssetFixture } from "../helpers/contract-assets.js";
 
 describe("workspace store", () => {
+  it("keeps the existing renderer tree and metadata on a canonical reuse receipt", async () => {
+    const { api, root } = await contractAssetFixture();
+    const store = useWorkspaceStore(api);
+    const actualOpen = api.wsOpen.bind(api);
+    const opens = vi.spyOn(api, "wsOpen").mockImplementation((path) => actualOpen(path === "alias" ? root : path));
+    const treeGet = vi.spyOn(api, "treeGet");
+    await store.open(root);
+    const firstTree = store.tree;
+    const firstWorkspace = store.workspace;
+    await expect(store.open("alias")).resolves.toBe(root);
+    expect(opens).toHaveBeenCalledTimes(2);
+    expect(treeGet).not.toHaveBeenCalled();
+    expect(store.tree).toBe(firstTree);
+    expect(store.workspace).toBe(firstWorkspace);
+  });
+
   it("open 持有工作区名称、完整局部树、revision 与只读状态", async () => {
     const { api, tree } = await contractAssetFixture();
     const store = useWorkspaceStore(api);

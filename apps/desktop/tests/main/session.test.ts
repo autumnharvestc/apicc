@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   StressReportSchema,
   StressPlanSchema,
+  fileStorage,
   type ApiAsset,
   type GeneratorMetricsCollector,
   type ProtocolClient,
@@ -43,6 +44,24 @@ const apiLocator: ApiLocator = {
   folderIds: [],
   apiId: IDS.sharedApi,
 };
+
+describe("physical workspace opens", () => {
+  it("reuses a directory alias without reading the workspace or rotating its context", async () => {
+    const temporary = await tempRoot();
+    const root = join(temporary.path, "Workspace");
+    await persistWorkspace(root, makeWorkspace());
+    const alias = join(temporary.path, "alias");
+    symlinkSync(root, alias, "junction");
+    const load = vi.fn(fileStorage.load);
+    const session = createSession({ storage: { ...fileStorage, load } });
+    const first = await session.open(root);
+    const initialContext = session.captureDraftWriteContext();
+    const second = await session.open(alias + "/");
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(second).toMatchObject({ root: first.root, disposition: "reused" });
+    expect(session.captureDraftWriteContext()).toEqual(initialContext);
+  });
+});
 
 type TestStressApi = ApiAsset & { id: string; locator: ApiLocator };
 

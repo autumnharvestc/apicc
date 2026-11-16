@@ -29,7 +29,7 @@ let quitRequested = false;
 let stopDesktopMocks: (() => Promise<void>) | undefined;
 let mockShutdown: Promise<void> | undefined;
 let bypassNextBeforeQuit = false;
-app.on("before-quit", (event) => {
+function beforeQuit(event: Electron.Event) {
   quitRequested = true;
   if (bypassNextBeforeQuit) {
     bypassNextBeforeQuit = false;
@@ -47,11 +47,26 @@ app.on("before-quit", (event) => {
     void app.quit();
   };
   void shutdown.then(continueQuit, continueQuit);
-});
+}
 
 const titleBarHeight = 46;
 const mainWindows = new WeakSet<BrowserWindow>();
 const applicationMenuOpen = new WeakSet<BrowserWindow>();
+let mainWindow: BrowserWindow | null = null;
+let pendingWake = false;
+let windowStartupComplete = false;
+
+function wakeMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    pendingWake = true;
+    if (windowStartupComplete && !quitRequested) createWindow();
+    return;
+  }
+  pendingWake = false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (process.env.APICC_SMOKE_HIDE_WINDOW !== "1") mainWindow.show();
+  mainWindow.focus();
+}
 
 function showApplicationMenu(win: BrowserWindow, keyboard = false): Promise<void> {
   const menu = Menu.getApplicationMenu();
@@ -95,6 +110,8 @@ function createWindow(): BrowserWindow {
     },
   });
   mainWindows.add(win);
+  mainWindow = win;
+  win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
   if (windowsOverlay) {
     // Electron retains accelerators on hidden title bars but skips the native
     // menu bar. Open its application menu on a standalone Alt release.
@@ -142,10 +159,12 @@ function createWindow(): BrowserWindow {
     },
     quit: () => void app.quit(),
   });
+  if (pendingWake) wakeMainWindow();
   return win;
 }
 
-app.whenReady().then(() => {
+async function startDesktop() {
+  await app.whenReady();
   const session = createSession();
   // Explicitly injected only by the isolated packaged-host smoke. Normal startup
   // keeps Electron's user home/appData and the default credential root unchanged.
@@ -254,12 +273,22 @@ app.whenReady().then(() => {
       return showApplicationMenu(win);
     }
   });
+  windowStartupComplete = true;
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
-});
+}
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+// Electron applies --user-data-dir before loading this entry. Its lock uses the
+// same effective profile as the renderer and existing userData services.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", wakeMainWindow);
+  app.on("before-quit", beforeQuit);
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+  void startDesktop();
+}

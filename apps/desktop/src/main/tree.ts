@@ -1,7 +1,7 @@
 import type { ApiAsset, ContractCollection, ContractFolder, ContractProject, ContractWorkspace } from "@apicc/core";
 import { isDefaultCollectionId } from "@apicc/core/schema";
 import type { ApiLocator, CollectionLocator, FolderLocator, GroupLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
-import { localTreeNodeKey, type LocalTreeNodeDTO, type TreeNodeDTO } from "../shared/tree-dto.js";
+import { localTreeNodeKey, type LocalRootTreeNodeDTO, type LocalTreeNodeDTO, type TreeNodeDTO } from "../shared/tree-dto.js";
 
 export type { TreeNodeDTO };
 
@@ -95,7 +95,7 @@ function projectNode(locator: ProjectLocator, project: ContractProject): LocalTr
   };
 }
 
-export function toTreeNode(workspace: ContractWorkspace): LocalTreeNodeDTO {
+export function toTreeNode(workspace: ContractWorkspace): LocalRootTreeNodeDTO {
   const workspaceLocator: WorkspaceLocator = { workspaceId: workspace.id };
   const rootIdentity = { source: "local" as const, kind: "root" as const, locator: workspaceLocator };
   return {

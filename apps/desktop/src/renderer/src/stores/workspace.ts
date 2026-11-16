@@ -52,6 +52,7 @@ function applyOpenResult(state: WorkspaceState, result: OpenResult): void {
   state.opened = true;
   state.name = result.workspace.name;
   state.workspace = result.workspace;
+  state.tree = result.tree;
   state.root = result.root;
   state.problems = result.problems;
   state.readOnly = result.readOnly;
@@ -87,17 +88,22 @@ export function useWorkspaceStore(api: ApiccApi) {
       revision: "",
     }),
     actions: {
-      open(rootPath: string, isCurrent: () => boolean = () => true): Promise<void> {
+      resolveRoot(rootPath: string): Promise<string> {
+        return api.wsResolveRoot(rootPath);
+      },
+
+      open(rootPath: string, isCurrent: () => boolean = () => true, project?: ProjectLocator): Promise<string | void> {
         const epoch = ++contextEpoch;
         pendingOpenCount.value += 1;
         return enqueueContextOperation(async () => {
           try {
             if (epoch !== contextEpoch || !isCurrent()) return;
-            const result = await api.wsOpen(rootPath);
-            // Once wsOpen crossed the bridge, finish applying and refreshing this context before
-            // the next queued root operation. A newer operation will then establish its own root.
+            const result = await api.wsOpen(rootPath, project);
+            if (result.disposition === "reused" && this.opened && this.root === result.root && this.tree) return result.root;
+            // The main process has already switched. Apply the completed receipt
+            // before the next renderer open, even if its navigation intent changed.
             this.apply(result);
-            this.tree = await readTree();
+            return result.root;
           } finally {
             pendingOpenCount.value -= 1;
           }
@@ -112,7 +118,6 @@ export function useWorkspaceStore(api: ApiccApi) {
             if (epoch !== contextEpoch) return;
             const result = await api.wsCreate(rootPath, name);
             this.apply(result);
-            this.tree = await readTree();
           } finally {
             pendingOpenCount.value -= 1;
           }
@@ -180,7 +185,7 @@ export function useWorkspaceStore(api: ApiccApi) {
       apply(result: OpenResult): void {
         // Pinia's recursive `this` typing expands deeply with ContractWorkspace; the runtime state
         // has this exact, explicitly declared shape and the cast is limited to that boundary.
-        applyOpenResult(this as unknown as WorkspaceState, result);
+        this.$patch((state) => applyOpenResult(state as unknown as WorkspaceState, result));
       },
 
       findProject(locator: ProjectLocator): LocalProjectTreeNodeDTO | null {

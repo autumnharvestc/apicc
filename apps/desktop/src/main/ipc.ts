@@ -116,9 +116,8 @@ export interface IpcDepsOptions {
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
-  function stressProject(scope: ProjectLocator, write = false): string {
+  function stressProject(scope: ProjectLocator): string {
     if (!session.root || !session.locateProject(scope)) throw new Error("未找到当前压测项目");
-    if (write && session.readOnly) throw new Error("工作区处于只读模式，不能写入");
     return realpathSync(session.root);
   }
   type SessionContext = ReturnType<Session["captureDraftWriteContext"]>;
@@ -247,6 +246,18 @@ export function createIpcDeps(options: IpcDepsOptions) {
     if (sender?.send && !sender.isDestroyed?.()) sender.send(IpcEvent.StressProgress, progress);
   } }, credentials);
   const mockManager = createMockManager({ session });
+  function switchWorkspace<T>(owner: object | undefined, commit: () => T, verifyTarget: () => Promise<void>): Promise<T> {
+    return mockManager.transitionWorkspace(async () => {
+      await verifyTarget();
+      // Keep the earlier local context valid while checking the target.
+      // Online workspaces remain independently resident.
+      workflowRuns.abortActive();
+      testing.abortActive();
+      stress.abortActive();
+      if (owner) debug.clearOwner(owner);
+      return commit();
+    });
+  }
   async function refreshSavedMock(locator: ProjectLocator, context?: { root: string; generation: number }): Promise<void> {
     try {
       if (context) {
@@ -433,28 +444,15 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return value;
       }
       case IpcChannel.SuiteCancel: return testing.cancelSuite(a[0] as Parameters<typeof testing.cancelSuite>[0], requireOwner(owner));
+      case IpcChannel.WsResolveRoot:
+        return session.resolveRoot(a[0] as string) satisfies Promise<IpcResultMap[typeof IpcChannel.WsResolveRoot]>;
       case IpcChannel.WsOpen: {
-        workflowRuns.abortActive();
-        testing.abortActive();
-        // 工作区切换清理点（M2-D3 任务 1）：活动压测先 abort，部分报告由其收尾异步落回原工作区。
-        // 计划 C 任务 2：裁定 E 互斥退役——本地打开不再关闭在线会话（本地 1 + 在线 N 并存驻留）。
-        stress.abortActive();
-        const r = await mockManager.transitionWorkspace(async () => {
-          if (owner) debug.clearOwner(owner);
-          return session.open(a[0] as string);
-        });
-        return r satisfies OpenResult;
+        const opened = await session.open(a[0] as string, (commit, verifyTarget) => switchWorkspace(owner, commit, verifyTarget), a[1] as ProjectLocator | undefined);
+        return { ...opened, tree: toTreeNode(opened.workspace) } satisfies IpcResultMap[typeof IpcChannel.WsOpen];
       }
       case IpcChannel.WsCreate: {
-        workflowRuns.abortActive();
-        testing.abortActive();
-        // 同上：压测清理链保留；在线会话原样驻留（并存，互斥退役）。
-        stress.abortActive();
-        const r = await mockManager.transitionWorkspace(async () => {
-          if (owner) debug.clearOwner(owner);
-          return session.create(a[0] as string, a[1] as string);
-        });
-        return r satisfies OpenResult;
+        const created = await session.create(a[0] as string, a[1] as string, (commit, verifyTarget) => switchWorkspace(owner, commit, verifyTarget));
+        return { ...created, tree: toTreeNode(created.workspace) } satisfies OpenResult;
       }
       case IpcChannel.WsPickDirectory:
         return pickDirectory();
@@ -829,8 +827,20 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.StressRunsList: { const [scope] = a as IpcArgsMap[typeof IpcChannel.StressRunsList]; return listScopedStressRuns(stressProject(scope), scope); }
       case IpcChannel.StressRunsGet: { const [scope, file] = a as IpcArgsMap[typeof IpcChannel.StressRunsGet]; return { kind: 'stress' as const, report: readScopedStressRun(stressProject(scope), scope, file) }; }
       case IpcChannel.StressPlansGet: { const [scope, id] = a as IpcArgsMap[typeof IpcChannel.StressPlansGet]; return createStressPlanRepository(stressProject(scope)).get(scope, id); }
-      case IpcChannel.StressPlansSave: { const [scope, input] = a as IpcArgsMap[typeof IpcChannel.StressPlansSave]; return createStressPlanRepository(stressProject(scope, true)).save(scope, input); }
-      case IpcChannel.StressPlansRemove: { const [scope, id] = a as IpcArgsMap[typeof IpcChannel.StressPlansRemove]; return createStressPlanRepository(stressProject(scope, true)).remove(scope, id); }
+      case IpcChannel.StressPlansSave: {
+        const [scope, input] = a as IpcArgsMap[typeof IpcChannel.StressPlansSave];
+        return session.writeWorkspaceSidecar((root) => {
+          if (!session.locateProject(scope)) throw new Error("未找到当前压测项目");
+          return createStressPlanRepository(root).save(scope, input);
+        });
+      }
+      case IpcChannel.StressPlansRemove: {
+        const [scope, id] = a as IpcArgsMap[typeof IpcChannel.StressPlansRemove];
+        return session.writeWorkspaceSidecar((root) => {
+          if (!session.locateProject(scope)) throw new Error("未找到当前压测项目");
+          return createStressPlanRepository(root).remove(scope, id);
+        });
+      }
       case IpcChannel.StressCompare: {
         const [scope, input] = a as IpcArgsMap[typeof IpcChannel.StressCompare], root = stressProject(scope);
         return compareStressReports(readScopedStressRun(root, scope, input.baseFile), readScopedStressRun(root, scope, input.candidateFile));
@@ -1290,7 +1300,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
   ): Promise<IpcResultMap[Channel]> {
     const owner = ownerFromEvent(event);
     watchOwner(owner);
-    return await dispatch(channel, args, owner) as IpcResultMap[Channel];
+    if (channel === IpcChannel.WsOpen || channel === IpcChannel.WsCreate || channel === IpcChannel.WsResolveRoot) {
+      return await dispatch(channel, args, owner) as IpcResultMap[Channel];
+    }
+    return await session.withWorkspaceCommand(() => dispatch(channel, args, owner)) as IpcResultMap[Channel];
   }
 
   return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll(), stopSynchronization: () => synchronization?.close() ?? Promise.resolve(), stopOnlineExecutions: () => onlineExecution?.close() ?? Promise.resolve() };

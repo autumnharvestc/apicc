@@ -206,8 +206,13 @@ describe("Desktop saved Mock lifecycle", () => {
     const secondContext = session.captureDraftWriteContext();
     const secondRevision = manager.get(projectLocator).sourceProjectRevision;
     const sameRootReopen = session.open(secondRoot.path);
+    await expect(sameRootReopen).resolves.toMatchObject({ disposition: "reused" });
+    expect(session.captureDraftWriteContext()).toEqual(secondContext);
+
+    await session.open(root.path);
+    const returnToSecond = session.open(secondRoot.path);
     const staleGenerationSave = session.saveMockConfig(projectLocator, { ...savedConfig, seed: "stale-generation" }, secondRevision, secondContext);
-    await sameRootReopen;
+    await returnToSecond;
     await expect(staleGenerationSave).rejects.toThrow("工作区上下文已更改");
     expect(session.locateProject(projectLocator)!.project.mock?.seed).toBe(savedConfig.seed);
 

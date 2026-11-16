@@ -1,9 +1,9 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, symlinkSync, mkdirSync, renameSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ContractProjectSchema, WorkflowV1Schema, WorkflowSchema, createDefaultRegistry, type WorkflowV1 } from "@apicc/core";
+import { ContractProjectSchema, StressPlanSchema, WorkflowV1Schema, WorkflowSchema, createDefaultRegistry, fileStorage, type WorkflowV1 } from "@apicc/core";
 import { createWorkflowController } from "../../src/main/workflow.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "../../src/main/executionOutput.js";
 import { createCredentialHost } from "../../src/main/credentialHost.js";
@@ -12,6 +12,7 @@ import type { ContractProject, Importer, RunResult, Workflow, WorkflowRunResult,
 import { createMockConfiguredProject } from "../../../../packages/core/tests/helpers/mockFixtures.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
+import { createStressPlanRepository } from "../../src/main/stressPlans.js";
 import { createStressPreloadApi } from "../../src/preload/stressBridge.js";
 import { IpcChannel } from "../../src/shared/channels.js";
 import type { WorkflowLocator } from "../../src/shared/locations.js";
@@ -25,6 +26,145 @@ function setup() {
   const deps = createIpcDeps({ session, pickDirectory: async () => dir, saveFile: async () => "" });
   return { deps, dir, session };
 }
+
+it("workspace IPC keeps the active Mock and context for same or invalid directories, then switches a physical copy", async () => {
+  const temporary = await makeTempRoot("apicc-physical-open-ipc-");
+  const original = join(temporary.path, "Original");
+  const duplicate = join(temporary.path, "Copy");
+  const alias = join(temporary.path, "Alias");
+  const invalid = join(temporary.path, "Invalid");
+  const workspace = makeWorkspace();
+  workspace.groups[0]!.projects[0] = ContractProjectSchema.parse({ ...createMockConfiguredProject(), id: IDS.projectOne });
+  await persistWorkspace(original, workspace);
+  await persistWorkspace(duplicate, workspace);
+  symlinkSync(original, alias, "junction");
+  mkdirSync(invalid);
+  writeFileSync(join(invalid, "apicc.workspace.yaml"), "{ broken yaml");
+  const session = createSession();
+  const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+  const owner = rendererEvent();
+  const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+  try {
+    const first = await deps.handle(IpcChannel.WsOpen, owner, original);
+    const initialContext = session.captureDraftWriteContext();
+    const mock = await deps.handle(IpcChannel.MockGet, owner, locator);
+    const running = await deps.handle(IpcChannel.MockStart, owner, { locator, sourceProjectRevision: mock.sourceProjectRevision, port: 0 });
+    const address = `http://127.0.0.1:${running.address!.port}/items/item-7`;
+    expect((await fetch(address)).ok).toBe(true);
+    expect(await deps.handle(IpcChannel.WsResolveRoot, owner, alias)).toBe(first.root);
+
+    const reused = await deps.handle(IpcChannel.WsOpen, owner, alias);
+    expect((await fetch(address)).ok).toBe(true);
+    expect(reused).toMatchObject({ root: first.root, disposition: "reused" });
+    expect(await deps.handle(IpcChannel.WsPickDirectory, owner)).toBe("");
+    await expect(deps.handle(IpcChannel.WsOpen, owner, join(temporary.path, "missing"))).rejects.toThrow();
+    await expect(deps.handle(IpcChannel.WsOpen, owner, invalid)).rejects.toThrow();
+    await expect(deps.handle(IpcChannel.WsOpen, owner, duplicate, { ...locator, projectId: uuid(998) })).rejects.toThrow("目标项目已不存在");
+    expect(session.captureDraftWriteContext()).toEqual(initialContext);
+    expect((await fetch(address)).ok).toBe(true);
+
+    const switched = await deps.handle(IpcChannel.WsOpen, owner, duplicate);
+    expect(switched).toMatchObject({ workspace: { id: first.workspace.id }, disposition: "opened" });
+    expect(switched.root).not.toBe(first.root);
+    expect(session.captureDraftWriteContext().generation).toBe(initialContext.generation + 1);
+    await expect(fetch(address)).rejects.toThrow();
+  } finally {
+    await deps.stopMocks();
+    await temporary.dispose();
+  }
+});
+
+it("workspace IPC serializes a prepared copy with a queued alias of its physical directory", async () => {
+  const temporary = await makeTempRoot("apicc-physical-open-queue-");
+  const original = join(temporary.path, "original");
+  const copy = join(temporary.path, "copy");
+  const alias = join(temporary.path, "alias");
+  await persistWorkspace(original, makeWorkspace());
+  await persistWorkspace(copy, makeWorkspace());
+  symlinkSync(copy, alias, "junction");
+  let loaded!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { loaded = resolve; });
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  const load = vi.fn(async (dir: string) => {
+    if (dir === copy) { loaded(); await hold; }
+    return fileStorage.load(dir);
+  });
+  const session = createSession({ storage: { ...fileStorage, load } });
+  const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+  try {
+    const first = await deps.handle(IpcChannel.WsOpen, {}, original);
+    const context = session.captureDraftWriteContext();
+    const opening = deps.handle(IpcChannel.WsOpen, {}, copy);
+    await entered;
+    const reusing = deps.handle(IpcChannel.WsOpen, {}, alias);
+    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const writing = deps.handle(IpcChannel.GlobalsSave, {}, locator, {
+      variables: { stale: "from previous physical root" }, query: [], headers: [], body: [], cookies: [],
+    });
+    expect(session.captureDraftWriteContext()).toEqual(context);
+    release();
+    await expect(opening).resolves.toMatchObject({ root: copy, disposition: "opened" });
+    await expect(reusing).resolves.toMatchObject({ root: copy, disposition: "reused", workspace: { id: first.workspace.id } });
+    await expect(writing).rejects.toThrow("工作区已切换");
+    expect((await fileStorage.load(copy)).workspace.groups[0]!.projects[0]!.variables).not.toHaveProperty("stale");
+    expect(load.mock.calls).toEqual([[first.root], [copy]]);
+    expect(session.captureDraftWriteContext()).toMatchObject({ root: copy, generation: context.generation + 1 });
+  } finally {
+    release();
+    await deps.stopMocks();
+    await temporary.dispose();
+  }
+});
+
+it("workspace IPC rejects a known root replaced with an identical physical copy", async () => {
+  const temporary = await makeTempRoot("apicc-physical-root-replacement-");
+  const root = join(temporary.path, "workspace");
+  const displaced = join(temporary.path, "displaced");
+  const other = join(temporary.path, "other");
+  const workspace = makeWorkspace();
+  await persistWorkspace(root, workspace);
+  await persistWorkspace(other, workspace);
+  const session = createSession();
+  const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "" });
+  const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+  try {
+    await deps.handle(IpcChannel.WsOpen, {}, root);
+    const oldContext = session.captureDraftWriteContext();
+    renameSync(root, displaced);
+    await expect(deps.handle(IpcChannel.WsResolveRoot, {}, displaced)).rejects.toThrow("工作区目录已被替换或移动");
+    await expect(deps.handle(IpcChannel.WsOpen, {}, displaced)).rejects.toThrow("工作区目录已被替换或移动");
+    await persistWorkspace(root, workspace);
+    await expect(deps.handle(IpcChannel.WsResolveRoot, {}, root)).rejects.toThrow("工作区目录已被替换");
+    await expect(deps.handle(IpcChannel.WsOpen, {}, root)).rejects.toThrow("工作区目录已被替换");
+    await expect(deps.handle(IpcChannel.GlobalsSave, {}, locator, {
+      variables: { mustNotWrite: "draft from former directory" }, query: [], headers: [], body: [], cookies: [],
+    })).rejects.toThrow("工作区目录已被替换");
+    const repository = createStressPlanRepository(root);
+    const plan = StressPlanSchema.parse({
+      formatVersion: 1,
+      target: { kind: "workflow", workflowId: IDS.workflow },
+      load: { kind: "constant-vus", vus: 1 },
+      termination: { maxIterations: 1 },
+    });
+    const retained = repository.save(locator, { name: "existing replacement plan", plan });
+    await expect(deps.handle(IpcChannel.StressPlansSave, {}, locator, {
+      id: retained.id, name: "stale plan", plan,
+    })).rejects.toThrow("工作区目录已被替换");
+    await expect(deps.handle(IpcChannel.StressPlansRemove, {}, locator, retained.id)).rejects.toThrow("工作区目录已被替换");
+    expect(repository.list(locator)).toEqual([retained]);
+    expect(session.captureDraftWriteContext()).toEqual(oldContext);
+    expect((await fileStorage.load(root)).workspace.groups[0]!.projects[0]!.variables).not.toHaveProperty("mustNotWrite");
+
+    await deps.handle(IpcChannel.WsOpen, {}, other);
+    const otherContext = session.captureDraftWriteContext();
+    await expect(deps.handle(IpcChannel.WsOpen, {}, root, locator)).rejects.toThrow("工作区目录已被替换");
+    expect(session.captureDraftWriteContext()).toEqual(otherContext);
+  } finally {
+    await deps.stopMocks();
+    await temporary.dispose();
+  }
+});
 
 it("reapplies the workflow budget after the last host rewrite for IPC and persistence", () => {
   const dir = mkdtempSync(join(tmpdir(), "apicc-output-budget-"));

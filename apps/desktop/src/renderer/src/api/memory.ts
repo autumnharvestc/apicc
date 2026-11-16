@@ -144,6 +144,7 @@ import type {
   NodeCreateInput,
   NodeCreatedDTO,
   OpenResult,
+  WorkspaceOpenResult,
   RunCollectionInput,
   RunSummaryDTO,
   StressReportDTO,
@@ -187,6 +188,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   // 默认每实例独立临时目录（?? 短路：注入 options.root 时不会创建临时目录），
   // 避免固定共享路径的多实例互相污染与并行测试并发写。
   let root = options?.root ?? mkdtempSync(join(tmpdir(), "apicc-memory-"));
+  let openedRoot: string | null = null;
   const session = createSession({ storage: options?.storage });
   let seeded = false;
   let pendingSeed: Promise<void> | null = null;
@@ -341,8 +343,10 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   }
 
   function openResult(rootPath: string): OpenResult {
+    const workspace = currentWorkspace();
     return {
-      workspace: currentWorkspace(),
+      workspace,
+      tree: toTreeNode(workspace),
       problems: structuredClone(problems),
       root: rootPath,
       readOnly: session.readOnly,
@@ -485,22 +489,40 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return aiSaveConfigCalls;
     },
 
-    async wsOpen(rootPath: string): Promise<OpenResult> {
-      workflowEpoch += 1;
-      workflowRuns.abortActive();
+    async wsResolveRoot(rootPath: string): Promise<string> {
       if (pendingSeed) await pendingSeed;
+      if (existsSync(join(rootPath, WORKSPACE_FILE))) return session.resolveRoot(rootPath);
+      if (session.workspace) return rootPath;
+      throw new Error(`工作区目录不可用: ${rootPath}`);
+    },
+
+    async wsOpen(rootPath: string, project?: ProjectLocator): Promise<WorkspaceOpenResult> {
+      if (pendingSeed) await pendingSeed;
+      const endOldWorkspace = () => {
+        workflowEpoch += 1;
+        workflowRuns.abortActive();
+      };
       if (existsSync(join(rootPath, WORKSPACE_FILE))) {
-        const view = await session.open(rootPath);
+        const view = await session.open(rootPath, async (commit, verifyTarget) => {
+          await verifyTarget();
+          endOldWorkspace();
+          return commit();
+        }, project);
         root = view.root;
+        openedRoot = root;
         problems = view.problems;
-        return { workspace: view.workspace, problems: view.problems, root: view.root, readOnly: view.readOnly, revision: view.revision };
+        return { ...view, tree: toTreeNode(view.workspace) };
       }
       // 目标目录不是工作区：内存有工作区时回退为打开内存态（替身以内存为事实源）；
       // 内存也为空时保留与 session 一致的「缺少工作区文件」错误。
       const workspace = session.workspace;
       if (!workspace) throw new Error(`工作区根目录缺少 ${WORKSPACE_FILE}: ${rootPath}`);
+      if (project && !session.locateProject(project)) throw new Error(`目标项目已不存在: ${rootPath}`);
+      if (openedRoot === rootPath) return { ...openResult(rootPath), disposition: "reused" };
+      endOldWorkspace();
       root = rootPath;
-      return openResult(rootPath);
+      openedRoot = root;
+      return { ...openResult(rootPath), disposition: "opened" };
     },
 
     async wsCreate(rootPath: string, name: string): Promise<OpenResult> {
@@ -508,8 +530,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       workflowRuns.abortActive();
       const view = await session.create(rootPath, name);
       root = view.root;
+      openedRoot = root;
       problems = view.problems;
-      return { workspace: view.workspace, problems: view.problems, root: view.root, readOnly: view.readOnly, revision: view.revision };
+      return { ...view, tree: toTreeNode(view.workspace) };
     },
 
     async wsPickDirectory(): Promise<string> {

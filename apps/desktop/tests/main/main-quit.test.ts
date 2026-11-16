@@ -261,6 +261,9 @@ const electronState = vi.hoisted(() => ({
   messageBoxCalls: 0,
   messageBoxResponse: 0,
   beforeQuitListeners: [] as Array<(event: { preventDefault(): void }) => void>,
+  secondInstance: undefined as undefined | (() => void),
+  ready: Promise.resolve(),
+  claimLock: vi.fn(() => true),
   ipcHandlers: new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>(),
   quitCalls: 0,
   popup: vi.fn((options: Electron.PopupOptions) => options.callback?.()),
@@ -290,6 +293,11 @@ vi.mock("electron", () => {
       },
     };
     setTitleBarOverlay = vi.fn();
+    isDestroyed = vi.fn(() => false);
+    isMinimized = vi.fn(() => false);
+    restore = vi.fn();
+    focus = vi.fn();
+    show = vi.fn();
     windowMessages = new Map<number, () => void>();
     hookWindowMessage(message: number, handler: () => void) { this.windowMessages.set(message, handler); }
     getContentBounds() { return { x: 50, y: 60 }; }
@@ -299,6 +307,7 @@ vi.mock("electron", () => {
     static fromWebContents(sender: unknown) {
       return electronState.windows.find((win) => win.webContents === sender);
     }
+    static getAllWindows() { return electronState.windows; }
     /** 按真实事件形态派发渲染层应答（webContents.ipc 面）。 */
     replyFromRenderer(dirty: unknown): void {
       for (const listener of this.ipcListeners.get("app:dirty-check:reply") ?? []) listener({}, dirty);
@@ -315,10 +324,13 @@ vi.mock("electron", () => {
   }
   return {
     app: {
-      whenReady: () => Promise.resolve(),
+      whenReady: () => electronState.ready,
+      isReady: () => true,
+      requestSingleInstanceLock: electronState.claimLock,
       getPath: () => "/tmp/apicc-main-quit-test-userdata",
       on: (event: string, listener: (event: { preventDefault(): void }) => void) => {
         if (event === "before-quit") electronState.beforeQuitListeners.push(listener);
+        if (event === "second-instance") electronState.secondInstance = () => listener({ preventDefault() {} });
       },
       quit: () => {
         electronState.quitCalls += 1;
@@ -342,6 +354,47 @@ vi.mock("electron", () => {
       decryptString: (buffer: Buffer) => buffer,
     },
   };
+});
+
+describe("main.ts 单实例启动", () => {
+  it("锁已被占用时退出，业务 IPC 和窗口没有初始化", async () => {
+    electronState.claimLock.mockReturnValueOnce(false);
+    vi.resetModules();
+    const quitBefore = electronState.quitCalls;
+    await import("../../src/main/main.js");
+    await settle();
+    expect(electronState.quitCalls).toBe(quitBefore + 1);
+    expect(electronState.windows).toHaveLength(0);
+    expect(electronState.ipcHandlers.size).toBe(0);
+  });
+
+  it("主窗口创建前和最小化时收到二次启动，均恢复同一个窗口", async () => {
+    let ready!: () => void;
+    electronState.ready = new Promise<void>((resolve) => { ready = resolve; });
+    vi.resetModules();
+    try {
+      await import("../../src/main/main.js");
+      expect(electronState.claimLock).toHaveBeenCalled();
+      expect(electronState.windows).toHaveLength(0);
+      expect(electronState.secondInstance).toBeTypeOf("function");
+      electronState.secondInstance?.();
+      electronState.secondInstance?.();
+      ready();
+      await settle();
+      expect(electronState.windows).toHaveLength(1);
+      const window = electronState.windows[0] as (typeof electronState.windows)[number] & {
+        isMinimized: ReturnType<typeof vi.fn>; restore: ReturnType<typeof vi.fn>; focus: ReturnType<typeof vi.fn>;
+      };
+      expect(window.focus).toHaveBeenCalledTimes(1);
+      window.isMinimized.mockReturnValueOnce(true);
+      electronState.secondInstance?.();
+      expect(window.restore).toHaveBeenCalledTimes(1);
+      expect(window.focus).toHaveBeenCalledTimes(2);
+      expect(electronState.windows).toHaveLength(1);
+    } finally {
+      ready();
+    }
+  });
 });
 
 describe("main.ts 退出拦截接线（electron mock 冒烟）", () => {

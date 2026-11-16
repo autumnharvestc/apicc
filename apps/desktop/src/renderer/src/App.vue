@@ -160,7 +160,9 @@ const antdThemeConfig = computed(() => ({
 const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
 const tree = useTreeStore(apicc, workspace);
-const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly });
+const projectTransitionCount = ref(0);
+const projectTransitionPending = computed(() => projectTransitionCount.value > 0 || workspace.hasPendingOpen());
+const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly || projectTransitionPending.value });
 const editor = useEditorStore(apicc, localContext);
 const design = useDesignStore(apicc, editor);
 const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
@@ -270,7 +272,7 @@ const plugins = createPluginsStore({ api: apicc });
 // confirmWorkflowDraft = 切签工作流草稿确认（任务 6 规格勘误口径，弹窗与钩子实现见下文）。
 const testing = createTestingStore(apicc, {
   confirmDiscard: () => window.confirm(t('testing.discardConfirm')),
-  getActive: () => !isHome.value && !onlineMode.value && selectedProjectContext.value ? { root: selectedProjectContext.value.root, project: selectedProjectContext.value.locator, readOnly: workspace.readOnly } : null,
+  getActive: () => !isHome.value && !onlineMode.value && selectedProjectContext.value ? { root: selectedProjectContext.value.root, project: selectedProjectContext.value.locator, readOnly: localContext().readOnly } : null,
 });
 const evictSessions = createEvictProjectSessions({ editor, online, workflowDesign, requestTabs, mockProjectClose: async (root, locator) => {
   mockDrafts.delete(projectSessionKey(root, locator));
@@ -292,7 +294,13 @@ const tabs = createTabsStore({
   },
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
-  confirmTestingDraft: () => testing.leave(),
+  discardWorkflowDraft: () => workflowDesign.unload(),
+  confirmTestingDraft: () => testing.confirmLeave(false),
+  leaveTestingAfterConfirmation: () => testing.leave(true),
+  beginProjectTransition: () => {
+    projectTransitionCount.value += 1;
+    return () => { projectTransitionCount.value -= 1; };
+  },
   testingHasDrafts: (root, project) => testing.dirty && testing.view?.context.root === root && sameProjectLocator(testing.view.context.project, project),
   onlineDirectoryHasDraft: (tab) => onlineDirectory.tabHasDraft({
     ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
@@ -1005,25 +1013,28 @@ function onWfSwitchCancel() {
 // 无需回退——与侧树切流确认的选中回退不同）。
 const wfTabSwitchConfirmOpen = ref(false);
 let wfTabSwitchResolve: ((ok: boolean) => void) | null = null;
+let wfTabSwitchResult: Promise<boolean> | null = null;
 
 function confirmWorkflowDraft(): Promise<boolean> {
+  if (wfTabSwitchResult) return wfTabSwitchResult;
   wfTabSwitchConfirmOpen.value = true;
-  return new Promise<boolean>((resolve) => {
+  return wfTabSwitchResult = new Promise<boolean>((resolve) => {
     wfTabSwitchResolve = resolve;
   });
 }
 
 function onWfTabSwitchConfirm() {
-  workflowDesign.unload();
   wfTabSwitchConfirmOpen.value = false;
   wfTabSwitchResolve?.(true);
   wfTabSwitchResolve = null;
+  wfTabSwitchResult = null;
 }
 
 function onWfTabSwitchCancel() {
   wfTabSwitchConfirmOpen.value = false;
   wfTabSwitchResolve?.(false);
   wfTabSwitchResolve = null;
+  wfTabSwitchResult = null;
 }
 
 function onRequestTabCloseConfirm() { finishRequestTabClose(true); }
@@ -1325,9 +1336,9 @@ watch([() => online.activeBaseUrl, () => online.user, () => online.loggedIn, () 
   if (collaboration.visible) void collaboration.close().catch(reportError);
 }, { flush: 'sync' });
 const activeProjectLocator = computed(() => selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null);
-watch(() => JSON.stringify([isHome.value, onlineMode.value, selectedProjectContext.value]), () => {
+watch(() => JSON.stringify([projectTransitionPending.value, isHome.value, onlineMode.value, selectedProjectContext.value]), () => {
   const context = selectedProjectContext.value;
-  if (isHome.value) return;
+  if (isHome.value || projectTransitionPending.value) return;
   void testing.activate(context?.root ?? '', !onlineMode.value ? context?.locator ?? null : null, workspace.readOnly).catch(reportError);
 });
 async function onTestPane(pane: TestingPane) {
@@ -2040,7 +2051,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @new-free-request="openFreeRequestTab(); closeLocalTool()" />
         </div>
       </a-modal>
-      <div :ref="setWorkbenchBody" class="body" :class="{ 'form-workbench': (view === 'envs' || view === 'test') && !isHome && !onlineMode }">
+      <div :ref="setWorkbenchBody" class="body" :inert="projectTransitionPending" :class="{ 'form-workbench': (view === 'envs' || view === 'test') && !isHome && !onlineMode }">
         <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
              在线模式全禁用 -->
         <ModuleRail
@@ -2161,6 +2172,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :plugins="plugins"
             :report-error="reportError"
             :open-project="openProjectFromHome"
+            :open-local-workspace="tabs.openLocalWorkspace"
             :open-local-project-keys="homeOpenLocalProjectKeys"
             :open-online-workspace="openOnlineWorkspaceFromHome"
             :open-online-project="openOnlineProjectFromHome"

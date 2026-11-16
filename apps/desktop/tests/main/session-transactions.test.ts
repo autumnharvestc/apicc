@@ -700,6 +700,7 @@ describe("desktop session file transactions", () => {
     try {
       const rootA = join(temporary.path, "root-a");
       const rootB = join(temporary.path, "root-b");
+      await Promise.all([mkdir(rootA), mkdir(rootB)]);
       const workspaceA = makeWorkspace();
       const workspaceB = makeWorkspace();
       workspaceB.id = uuid(1002);

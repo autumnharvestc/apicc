@@ -13,7 +13,7 @@ vi.mock("electron", () => {
     static getAllWindows() { return []; }
     static fromWebContents() { return {}; }
   }
-  return { app: { whenReady: () => Promise.resolve(), on() {}, getPath: () => electron.userData, quit() {} }, BrowserWindow, nativeTheme: {},
+  return { app: { whenReady: () => Promise.resolve(), requestSingleInstanceLock: () => true, on() {}, getPath: () => electron.userData, quit() {} }, BrowserWindow, nativeTheme: {},
     ipcMain: { handle(channel: string, handler: (event: unknown, ...args: unknown[]) => Promise<unknown>) { electron.handlers.set(channel, handler); } },
     dialog: { showOpenDialog: async () => ({ canceled: true }), showSaveDialog: async () => ({ canceled: true }), showMessageBox: async (_parent: unknown, options: Record<string, unknown>) => electron.confirm?.(options) ?? { response: 0 } },
     safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => "gnome_libsecret", encryptString: (v: string) => Buffer.from(Buffer.from(v).toString("base64")), decryptString: (v: Buffer) => { electron.decrypts++; return Buffer.from(v.toString(), "base64").toString(); } }, shell: { openExternal: async () => {} },

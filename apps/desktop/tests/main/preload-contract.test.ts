@@ -117,13 +117,21 @@ describe("typed preload contract", () => {
   it("preserves the full workspace-open and local tree result DTOs", async () => {
     const api = await exposedApi();
     const workspace = makeWorkspace();
-    const openResult = { workspace, problems: [], root: "C:/fixture", readOnly: false, revision: "revision-1" };
+    const tree = toTreeNode(workspace);
+    const openResult = { workspace, tree, problems: [], root: "C:/fixture", readOnly: false, revision: "revision-1", disposition: "reused" as const };
     electron.invoke.mockResolvedValueOnce(openResult);
 
     await expect(api.wsOpen("C:/fixture")).resolves.toBe(openResult);
     expect(electron.invoke).toHaveBeenLastCalledWith(IpcChannel.WsOpen, "C:/fixture");
 
-    const tree = toTreeNode(workspace);
+    const project = { workspaceId: workspace.id, groupId: workspace.groups[0]!.id, projectId: workspace.groups[0]!.projects[0]!.id };
+    electron.invoke.mockResolvedValueOnce(openResult);
+    await expect(api.wsOpen("C:/fixture-alias", project)).resolves.toBe(openResult);
+    expect(electron.invoke).toHaveBeenLastCalledWith(IpcChannel.WsOpen, "C:/fixture-alias", project);
+    electron.invoke.mockResolvedValueOnce("C:/fixture");
+    await expect(api.wsResolveRoot("C:/fixture-alias")).resolves.toBe("C:/fixture");
+    expect(electron.invoke).toHaveBeenLastCalledWith(IpcChannel.WsResolveRoot, "C:/fixture-alias");
+
     electron.invoke.mockResolvedValueOnce(tree);
     await expect(api.treeGet()).resolves.toBe(tree);
     expect(electron.invoke).toHaveBeenLastCalledWith(IpcChannel.TreeGet);

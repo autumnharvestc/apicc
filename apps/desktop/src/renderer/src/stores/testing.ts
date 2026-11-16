@@ -35,13 +35,15 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       return !!current && activeKey === key(current.root, current.project);
     },
     get readOnly(): boolean { return store.transitioning || !store.current || readonlyOverride || !!store.view?.readOnly || !!options.getActive?.()?.readOnly; },
-    confirmLeave(): boolean {
+    confirmLeave(discard = true): boolean {
       if (!store.dirty) return true;
       if (!options.confirmDiscard()) return false;
-      store.discard(); return true;
+      if (discard) store.discard();
+      return true;
     },
-    async leave() {
-      if (!store.confirmLeave()) return false;
+    async leave(confirmed = false) {
+      if (!confirmed && !store.confirmLeave()) return false;
+      if (confirmed && store.dirty) store.discard();
       return navigate(() => true);
     },
     discard() {

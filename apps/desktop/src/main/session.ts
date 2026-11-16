@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { lstat, mkdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import {
   ApiAssetSchema,
   ApiTestCaseSchema,
@@ -58,6 +60,7 @@ import {
   type WorkflowStatus,
 } from "@apicc/core";
 import { ApiRequestSchema, MockProjectConfigSchema } from "@apicc/core/schema";
+import { resolveWorkspaceDirectory, sameWorkspaceDirectory, type WorkspaceDirectory } from "./workspaceDirectory.js";
 import { DatasetSaveInputSchema, SuiteSaveInputSchema, TestingContextSchema, TestingDeleteInputSchema, type DatasetSaveInput, type SuiteSaveInput, type TestingContext, type TestingDeleteInput } from "../shared/testing.js";
 import {
   ApiLocatorSchema,
@@ -147,11 +150,13 @@ export interface SessionView {
   readOnly: boolean;
   revision: string;
 }
+type WorkspaceOpenView = SessionView & { disposition: "opened" | "reused" };
+type WorkspaceTransition = <T>(commit: () => T, verifyTarget: () => Promise<void>) => Promise<T>;
 
 /** Main-process-only snapshot used to bind async draft credential checks to their queued write. */
 export interface DraftWriteContext { readonly root: string; readonly revision: string; readonly generation: number }
 
-interface ActiveSession extends SessionView {}
+interface ActiveSession extends SessionView { directory: WorkspaceDirectory }
 interface MutationResult<T> { value: T; deletions?: string[]; noCommit?: true }
 export interface ImportMutationReceipt<T> {
   value: T;
@@ -626,7 +631,10 @@ export function createSession(options: SessionOptions = {}) {
   const storage = options.storage ?? fileStorage;
   const newId = options.newId ?? (() => randomUUID());
   let active: ActiveSession | null = null;
+  const knownDirectories = new Map<string, WorkspaceDirectory>();
+  const commandGeneration = new AsyncLocalStorage<number>();
   let activeContextGeneration = 0;
+  let acknowledgedGeneration = 0;
   let queue: Promise<unknown> = Promise.resolve();
 
   function enqueue<T>(action: () => Promise<T> | T): Promise<T> {
@@ -635,9 +643,42 @@ export function createSession(options: SessionOptions = {}) {
     return result;
   }
 
+  function withWorkspaceCommand<T>(command: () => T): T {
+    // Operations sent before the open receipt still belong to the old context,
+    // including commands waiting in the mutation queue.
+    return commandGeneration.run(acknowledgedGeneration, command);
+  }
+
   function requireActive(): ActiveSession {
+    const generation = commandGeneration.getStore();
+    if (generation !== undefined && generation !== activeContextGeneration) {
+      throw new Error("工作区已切换，请重新打开原工作区后重试。");
+    }
     if (!active) throw new Error("尚未打开工作区");
     return active;
+  }
+
+  function assertKnownDirectory(directory: WorkspaceDirectory): void {
+    const previous = knownDirectories.get(directory.root);
+    if (previous && !sameWorkspaceDirectory(previous, directory)) {
+      throw new Error(`工作区目录已被替换: ${directory.root}`);
+    }
+  }
+
+  async function verifyWorkspaceDirectory(directory: WorkspaceDirectory): Promise<void> {
+    const resolved = await resolveWorkspaceDirectory(directory.root).catch(() => null);
+    if (!resolved || resolved.root !== directory.root || !sameWorkspaceDirectory(directory, resolved)) {
+      throw new Error(`工作区目录已被替换或移动: ${directory.root}`);
+    }
+  }
+
+  function writeWorkspaceSidecar<T>(write: (root: string) => T): Promise<T> {
+    return enqueue(async () => {
+      const current = requireActive();
+      if (current.readOnly) throw new Error("工作区处于只读模式，不能写入");
+      await verifyWorkspaceDirectory(current.directory);
+      return write(current.root);
+    });
   }
 
   function captureDraftWriteContext(): DraftWriteContext {
@@ -656,7 +697,9 @@ export function createSession(options: SessionOptions = {}) {
     return enqueue(async () => {
       const current = requireActive();
       if (current.root !== context.root || activeContextGeneration !== context.generation) throw new Error("SYNC_CONTEXT_CHANGED");
+      await verifyWorkspaceDirectory(current.directory);
       const result = await operation(publicView(current));
+      await verifyWorkspaceDirectory(current.directory);
       const loaded = await storage.load(current.root);
       active = { ...current, workspace: ContractWorkspaceSchema.parse(loaded.workspace), revision: loaded.revision, problems: clone(loaded.problems), readOnly: loaded.readOnly };
       return result;
@@ -682,6 +725,7 @@ export function createSession(options: SessionOptions = {}) {
       const result = operation(candidate, current);
       if (result.noCommit) return clone(result.value);
       const parsed = ContractWorkspaceSchema.parse(candidate);
+      await verifyWorkspaceDirectory(current.directory);
       const saved = await storage.save(current.root, parsed, {
         expectedRevision: current.revision,
         deletions: result.deletions ?? [],
@@ -715,6 +759,7 @@ export function createSession(options: SessionOptions = {}) {
       const beforeFiles = new Set(listContractWorkspaceDefinitionFiles(current.workspace));
       const afterFiles = listContractWorkspaceDefinitionFiles(parsed);
       const addedDefinitionFiles = afterFiles.filter((file) => !beforeFiles.has(file));
+      await verifyWorkspaceDirectory(current.directory);
       const saved = await storage.save(current.root, parsed, {
         expectedRevision: current.revision,
         deletions: result.deletions ?? [],
@@ -736,6 +781,7 @@ export function createSession(options: SessionOptions = {}) {
         throw new Error("撤销已失效：工作区在导入后已更改或已切换。");
       }
       const workspace = ContractWorkspaceSchema.parse(clone(workspaceValue));
+      await verifyWorkspaceDirectory(current.directory);
       const saved = await storage.save(current.root, workspace, {
         expectedRevision: current.revision,
         deletions: [...new Set(addedDefinitionFiles)],
@@ -749,7 +795,8 @@ export function createSession(options: SessionOptions = {}) {
   }
 
   function publicView(current: ActiveSession): SessionView {
-    return { ...current, workspace: clone(current.workspace), problems: clone(current.problems) };
+    const { directory: _directory, ...view } = current;
+    return { ...view, workspace: clone(current.workspace), problems: clone(current.problems) };
   }
 
   function locateProjectInCandidate(workspace: ContractWorkspace, locatorValue: ProjectLocator): { group: ContractGroup; project: ContractProject } {
@@ -813,40 +860,91 @@ function setContainerOperations(
     return { preOperations, postOperations };
   }
 
-  async function open(dir: string): Promise<SessionView> {
+  async function resolveRoot(dir: string): Promise<string> {
+    const directory = await resolveWorkspaceDirectory(dir);
+    assertKnownDirectory(directory);
+    const current = active;
+    if (current && sameWorkspaceDirectory(current.directory, directory)) {
+      await verifyWorkspaceDirectory(current.directory);
+      return current.root;
+    }
+    const metadata = await lstat(join(directory.root, "apicc.workspace.yaml"));
+    if (!metadata.isFile()) throw new Error(`工作区元数据文件不可用: ${directory.root}`);
+    assertKnownDirectory(directory);
+    knownDirectories.set(directory.root, directory);
+    return directory.root;
+  }
+
+  async function open(dir: string, transition?: WorkspaceTransition, project?: ProjectLocator): Promise<WorkspaceOpenView> {
     return enqueue(async () => {
-      const root = resolve(dir);
+      const directory = await resolveWorkspaceDirectory(dir);
+      const { root } = directory;
+      assertKnownDirectory(directory);
+      if (active && sameWorkspaceDirectory(active.directory, directory)) {
+        if (project && !findProject(active.workspace, project)) throw new Error(`目标项目已不存在: ${root}`);
+        await verifyWorkspaceDirectory(active.directory);
+        return { ...publicView(active), disposition: "reused" };
+      }
+
       const loaded = await storage.load(root);
       const workspace = ContractWorkspaceSchema.parse(loaded.workspace);
+      // Core returns an empty read-only view when it cannot read workspace metadata.
+      // Asset-level diagnostics still allow opening a real read-only workspace.
+      if (loaded.readOnly && workspace.name === "" && workspace.groups.length === 0) {
+        const problem = loaded.problems.find((item) => item.file === "apicc.workspace.yaml");
+        if (problem) throw new Error(`无法读取工作区 ${root}: ${problem.message}`);
+      }
+      if (project && !findProject(workspace, project)) throw new Error(`目标项目已不存在: ${root}`);
       const next: ActiveSession = {
         root,
+        directory,
         workspace,
         problems: clone(loaded.problems),
         readOnly: loaded.readOnly,
         revision: loaded.revision,
       };
-      active = next;
-      activeContextGeneration += 1;
-      return publicView(next);
+      const commit = (): WorkspaceOpenView => {
+        active = next;
+        knownDirectories.set(root, directory);
+        activeContextGeneration += 1;
+        return { ...publicView(next), disposition: "opened" };
+      };
+      const verifyTarget = () => verifyWorkspaceDirectory(directory);
+      const opened = transition ? await transition(commit, verifyTarget) : await verifyTarget().then(commit);
+      acknowledgedGeneration = activeContextGeneration;
+      return opened;
     });
   }
 
-  async function create(dir: string, name: string): Promise<SessionView> {
+  async function create(dir: string, name: string, transition?: WorkspaceTransition): Promise<SessionView> {
     return enqueue(async () => {
-      const root = resolve(dir);
+      if (!dir) throw new Error("未指定工作区目录");
+      const workspaceName = sanitizeNodeName(name);
+      const path = resolve(dir);
+      await mkdir(path, { recursive: true });
+      const directory = await resolveWorkspaceDirectory(path);
+      const { root } = directory;
+      assertKnownDirectory(directory);
       if (existsSync(resolve(root, "apicc.workspace.yaml"))) throw new Error("目录已是工作区");
       const workspace = ContractWorkspaceSchema.parse({
         formatVersion: 1,
         id: newId("workspace"),
-        name: sanitizeNodeName(name),
+        name: workspaceName,
         variables: {},
         groups: [{ id: newId("group"), name: "默认分组", default: true, projects: [] }],
       });
       const saved = await storage.save(root, workspace, { expectedRevision: "empty", deletions: [] });
-      const next: ActiveSession = { root, workspace, problems: [], readOnly: false, revision: saved.revision };
-      active = next;
-      activeContextGeneration += 1;
-      return publicView(next);
+      const commit = (): SessionView => {
+        const next: ActiveSession = { root, directory, workspace, problems: [], readOnly: false, revision: saved.revision };
+        active = next;
+        knownDirectories.set(root, directory);
+        activeContextGeneration += 1;
+        return publicView(next);
+      };
+      const verifyTarget = () => verifyWorkspaceDirectory(directory);
+      const created = transition ? await transition(commit, verifyTarget) : await verifyTarget().then(commit);
+      acknowledgedGeneration = activeContextGeneration;
+      return created;
     });
   }
 
@@ -861,6 +959,7 @@ function setContainerOperations(
       if (candidate.groups.some((item) => item.id === group.id)) throw new Error(`Target identity collision for group:${group.id}`);
       candidate.groups.unshift(group);
       const parsed = ContractWorkspaceSchema.parse(candidate);
+      await verifyWorkspaceDirectory(current.directory);
       const saved = await storage.save(current.root, parsed, { expectedRevision: current.revision, deletions: [] });
       active = { ...current, workspace: parsed, revision: saved.revision };
       return clone(group);
@@ -870,6 +969,7 @@ function setContainerOperations(
   async function validate(): Promise<LoadProblem[]> {
     return enqueue(async () => {
       const current = requireActive();
+      await verifyWorkspaceDirectory(current.directory);
       return clone((await storage.load(current.root)).problems);
     });
   }
@@ -1856,6 +1956,7 @@ function setContainerOperations(
       candidateTarget.projects.push(rotated);
       const parsed = ContractWorkspaceSchema.parse(candidate);
       const deletions = knownFilesWithPrefix(workspace, projectPrefix(source.group.id, source.project.id));
+      await verifyWorkspaceDirectory(current.directory);
       const saved = await storage.save(current.root, parsed, { expectedRevision: current.revision, deletions });
       active = { ...current, workspace: parsed, revision: saved.revision };
     });
@@ -2021,9 +2122,12 @@ function setContainerOperations(
     get workspace(): ContractWorkspace | null { return active ? clone(active.workspace) : null; },
     get readOnly(): boolean { return active?.readOnly ?? false; },
     get revision(): string | null { return active?.revision ?? null; },
+    withWorkspaceCommand,
+    writeWorkspaceSidecar,
     captureDraftWriteContext,
     runSyncContext,
     assertDraftWriteContext,
+    resolveRoot,
     open,
     create,
     ensureDefaultGroup,

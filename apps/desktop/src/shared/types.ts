@@ -48,7 +48,7 @@ import type {
   WorkflowLocator,
   WorkspaceLocator,
 } from "./locations.js";
-import type { LocalTreeNodeDTO } from "./tree-dto.js";
+import type { LocalRootTreeNodeDTO, LocalTreeNodeDTO } from "./tree-dto.js";
 import type { TestingApi } from "./testing.js";
 import type { KeyValuePair } from "@apicc/core";
 import { CurrentStressReportSchema, StressReportSchema, StressPlanSchema, StressReportV2Schema, SavedStressPlanSchema, StressRequestsSchema, StressCompletenessSchema } from "@apicc/core/schema";
@@ -169,7 +169,8 @@ export interface WorkflowImpactEntryDTO {
   nodeId: string;
   nodeLabel?: string;
 }
-export interface OpenResult { workspace: ContractWorkspace; problems: LoadProblem[]; root: string; readOnly: boolean; revision: string }
+export interface OpenResult { workspace: ContractWorkspace; tree: LocalRootTreeNodeDTO; problems: LoadProblem[]; root: string; readOnly: boolean; revision: string }
+export interface WorkspaceOpenResult extends OpenResult { disposition: "opened" | "reused" }
 export interface ApiDetail { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
 export interface CreateApiFromRequestDraftInput {
   project: ProjectLocator;
@@ -384,7 +385,8 @@ export interface ApiccApi extends TestingApi {
   readonly windowsTitleBarOverlay?: boolean;
   setWindowChromeTheme?(theme: import("./window-chrome.js").WindowChromeTheme): Promise<void>;
   showApplicationMenu?(): Promise<void>;
-  wsOpen(rootPath: string): Promise<OpenResult>;
+  wsOpen(rootPath: string, project?: ProjectLocator): Promise<WorkspaceOpenResult>;
+  wsResolveRoot(rootPath: string): Promise<string>;
   wsCreate(rootPath: string, name: string): Promise<OpenResult>;
   wsPickDirectory(): Promise<string>;
   wsValidate(): Promise<LoadProblem[]>;

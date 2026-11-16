@@ -13,6 +13,7 @@ export const IpcChannel = {
   SuiteRun: "testing:suite:run",
   SuiteCancel: "testing:suite:cancel",
   WsOpen: "ws:open",
+  WsResolveRoot: "ws:resolve-root",
   WsCreate: "ws:create",
   WsPickDirectory: "ws:pickDirectory",
   WsValidate: "ws:validate",

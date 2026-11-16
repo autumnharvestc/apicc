@@ -176,8 +176,10 @@ export function createMockManager(options: MockManagerOptions) {
 
   async function start(locator: ProjectLocator, port = 0, expectedSourceProjectRevision?: string): Promise<MockStatus> {
     let context = capture(locator);
+    const arrivedBeforeWorkspaceAcknowledgement = publishedAwaitingMockCleanup;
     const admission = waitForTransitionAdmission();
     if (admission) await admission;
+    if (arrivedBeforeWorkspaceAcknowledgement) throw new Error("工作区已切换，请刷新后重试。");
     context = refreshStartContext(context, locator, expectedSourceProjectRevision);
 
     for (const [otherKey, other] of entries) {
@@ -320,10 +322,19 @@ export function createMockManager(options: MockManagerOptions) {
     await scheduleTransition(stopEntries);
   }
 
+  let publishedAwaitingMockCleanup = false;
   async function transitionWorkspace<T>(operation: () => Promise<T>): Promise<T> {
     return scheduleTransition(async () => {
-      await stopEntries();
-      return operation();
+      // Validate and publish the target within this admission barrier. Invalid
+      // targets never stop the old Mock, and teardown cannot stale the preflight.
+      const result = await operation();
+      publishedAwaitingMockCleanup = true;
+      try {
+        await Promise.allSettled([...entries.values()].map((entry) => stopEntry(entry, true)));
+      } finally {
+        publishedAwaitingMockCleanup = false;
+      }
+      return result;
     });
   }
 

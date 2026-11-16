@@ -38,7 +38,10 @@ const api: ApiccApi = {
   previewSuite: (input) => invoke(IpcChannel.SuitePreview, input),
   runSuite: (input) => invoke(IpcChannel.SuiteRun, input),
   cancelSuite: (input) => invoke(IpcChannel.SuiteCancel, input),
-  wsOpen: (rootPath) => invoke(IpcChannel.WsOpen, rootPath),
+  wsOpen: (rootPath, project) => project
+    ? invoke(IpcChannel.WsOpen, rootPath, project)
+    : invoke(IpcChannel.WsOpen, rootPath),
+  wsResolveRoot: (rootPath) => invoke(IpcChannel.WsResolveRoot, rootPath),
   wsCreate: (rootPath, name) => invoke(IpcChannel.WsCreate, rootPath, name),
   wsPickDirectory: () => invoke(IpcChannel.WsPickDirectory),
   wsValidate: () => invoke(IpcChannel.WsValidate),

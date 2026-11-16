@@ -128,6 +128,111 @@ function fullLocatorDeps() {
 }
 
 describe("local project tabs use full project locators", () => {
+  it("restores aliased old paths to one active tab without opening unrelated directories", async () => {
+    const { deps, storage } = fullLocatorDeps();
+    const alias = "/tmp/ws-alias";
+    const copy = "/tmp/distinct-copy";
+    const missing = "/tmp/missing";
+    deps.workspace.opened = false;
+    deps.workspace.root = "";
+    Object.assign(deps.workspace, {
+      resolveRoot: vi.fn(async (dir: string) => {
+        if (dir === missing) throw new Error("directory missing");
+        return dir === alias ? FULL_LOCAL_REF.dir : dir;
+      }),
+    });
+    const open = vi.mocked(deps.workspace.open);
+    open.mockImplementation(async (dir) => {
+      deps.workspace.opened = true;
+      deps.workspace.root = dir;
+    });
+    const row = (dir: string, locator: ProjectLocator) => ({ workspaceRef: { kind: "local", dir }, projectLocator: locator, projectName: "project" });
+    storage.setItem(STORAGE_KEY, JSON.stringify({
+      tabs: [row(FULL_LOCAL_REF.dir, PROJECT_A), row(alias, PROJECT_A), row(alias, PROJECT_B), row(copy, PROJECT_A), row(missing, PROJECT_A)],
+      activeIndex: 1,
+    }));
+    const tabs = createTabsStore(deps);
+    await tabs.restore();
+
+    expect(tabs.tabs).toHaveLength(4);
+    expect(tabs.activeTab).toMatchObject(row(FULL_LOCAL_REF.dir, PROJECT_A));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(tabs.tabs.filter((tab) => tabs.isTabOffline(tab.tabId))).toEqual([expect.objectContaining(row(missing, PROJECT_A))]);
+    expect(readPersistedTabs(storage).activeIndex).toBe(0);
+  });
+
+  it("an invalid newer picker target does not cancel a tab activation already opening a real workspace", async () => {
+    const { deps } = fullLocatorDeps();
+    const anotherRoot = "/tmp/second-root";
+    const invalid = "/tmp/unavailable";
+    Object.assign(deps.workspace, {
+      resolveRoot: vi.fn(async (dir) => {
+        if (dir === invalid) throw new Error("directory missing");
+        return dir;
+      }),
+    });
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const starting = new Promise<void>((resolve) => { entered = resolve; });
+    vi.mocked(deps.workspace.open).mockImplementation(async (dir) => {
+      entered();
+      await hold;
+      deps.workspace.root = dir;
+      return dir;
+    });
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(FULL_LOCAL_REF, { locator: PROJECT_A, name: "original" });
+    const opening = tabs.openProjectTab({ kind: "local", dir: anotherRoot }, { locator: PROJECT_A, name: "copy" });
+    try {
+      await starting;
+      await expect(tabs.openLocalWorkspace(invalid)).rejects.toThrow("directory missing");
+      release();
+      await opening;
+      expect(tabs.activeTab).toMatchObject({ projectName: "copy", workspaceRef: { dir: anotherRoot } });
+    } finally {
+      release();
+      await opening;
+    }
+  });
+
+  it("drops a Home picker preflight when the user returns to a project before it resolves", async () => {
+    const { deps } = fullLocatorDeps();
+    const copy = "/tmp/delayed-picker-root";
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const starting = new Promise<void>((resolve) => { entered = resolve; });
+    Object.assign(deps.workspace, {
+      resolveRoot: vi.fn(async (dir: string) => {
+        entered();
+        await hold;
+        return dir;
+      }),
+    });
+    const open = vi.mocked(deps.workspace.open);
+    open.mockImplementation(async (dir) => {
+      deps.workspace.root = dir;
+      return dir;
+    });
+    const tabs = createTabsStore(deps);
+    await tabs.openProjectTab(FULL_LOCAL_REF, { locator: PROJECT_A, name: "original" });
+    tabs.activateHome();
+    const picking = tabs.openLocalWorkspace(copy);
+    try {
+      await starting;
+      await tabs.activateTab("tab-1");
+      release();
+      await picking;
+      expect(tabs.activeTabId).toBe("tab-1");
+      expect(deps.workspace.root).toBe(FULL_LOCAL_REF.dir);
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await picking;
+    }
+  });
+
   it("keeps same project id in different groups distinct and persists each complete locator", async () => {
     const { deps, storage, tree, projectA, projectB } = fullLocatorDeps();
     const tabs = createTabsStore(deps);
@@ -429,7 +534,7 @@ describe("激活编排（activateTab）", () => {
     const fresh = makeDeps(); // 未打开场景：兜底重开目录
     const tabs2 = createTabsStore(fresh.deps);
     await openTab(tabs2, LOCAL_REF, P1);
-    expect(fresh.workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir, expect.any(Function));
+    expect(fresh.workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir, expect.any(Function), localLocator("p-1"));
     expect(fresh.openCurrentResults).toEqual([true]);
     expect(tabs2.activeTabId).toBe("tab-1");
   });
@@ -674,7 +779,7 @@ describe("持久化与恢复（localStorage apicc.projectTabs）", () => {
     ]);
     expect(tabs.activeTabId).toBe("tab-2"); // activeIndex=1
     expect(workspace.open).toHaveBeenCalledTimes(1); // 非活跃本地签重建：重开目录（工作区驻留）
-    expect(workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir, expect.any(Function));
+    expect(workspace.open).toHaveBeenCalledWith(LOCAL_REF.dir, expect.any(Function), localLocator("p-1"));
     expect(openCurrentResults).toEqual([true]);
     expect(online.activeWorkspaceId).toBe("ws-1"); // 活跃签在线工作区已激活
     expect(online.selectNode).toHaveBeenCalledWith("project", "p-2");

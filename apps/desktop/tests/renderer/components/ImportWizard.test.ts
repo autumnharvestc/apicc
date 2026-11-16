@@ -222,16 +222,16 @@ describe("ImportWizard", () => {
       api.treeGet = () => deps.handle(IpcChannel.TreeGet, null);
 
       const workspace = useWorkspaceStore(api);
+      const initialTree = await api.treeGet();
+      if (initialTree.source !== "local" || initialTree.kind !== "root") throw new Error("The host must return a local workspace root tree.");
       workspace.apply({
         workspace: session.workspace!,
+        tree: initialTree,
         root: temporary.path,
         problems: [],
         readOnly: false,
         revision: session.revision!,
       });
-      const initialTree = await api.treeGet();
-      if (initialTree.source !== "local" || initialTree.kind !== "root") throw new Error("The host must return a local workspace root tree.");
-      workspace.tree = initialTree;
       const groupNode = initialTree.children.find((node) => node.kind === "group");
       if (!groupNode || groupNode.kind !== "group") throw new Error("The persisted project workspace must contain its target group.");
 

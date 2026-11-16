@@ -106,8 +106,10 @@ export function readPersistedTabs(storage: Storage): PersistedProjectTabs {
     console.warn("项目签表存储形状不符，已忽略（签将在本次会话中重建）");
     return { tabs: [], activeIndex: null };
   }
+  const content = parsed as { tabs: unknown[]; activeIndex?: unknown };
   const tabs: PersistedProjectTabs["tabs"] = [];
-  for (const row of (parsed as { tabs: unknown[] }).tabs) {
+  let activeIndex: number | null = null;
+  for (const [index, row] of content.tabs.entries()) {
     if (typeof row !== "object" || row === null) continue;
     const r = row as Record<string, unknown>;
     const ref = parseWorkspaceRef(r.workspaceRef);
@@ -124,12 +126,11 @@ export function readPersistedTabs(storage: Storage): PersistedProjectTabs {
       if (typeof r.projectId !== "string") continue;
       tab = { workspaceRef: ref, projectId: r.projectId, projectName: r.projectName };
     }
-    if (tabs.some((existing) => sameTabIdentity(existing, tab))) continue;
-    tabs.push(tab);
+    const existing = tabs.findIndex((candidate) => sameTabIdentity(candidate, tab));
+    if (index === content.activeIndex) activeIndex = existing === -1 ? tabs.length : existing;
+    if (existing === -1) tabs.push(tab);
   }
-  const activeIndex = (parsed as { activeIndex: unknown }).activeIndex;
-  const valid = typeof activeIndex === "number" && Number.isInteger(activeIndex) && activeIndex >= 0 && activeIndex < tabs.length;
-  return { tabs, activeIndex: valid ? activeIndex : null };
+  return { tabs, activeIndex };
 }
 
 function writePersistedTabs(storage: Storage, state: PersistedProjectTabs): void {
@@ -142,7 +143,7 @@ function writePersistedTabs(storage: Storage, state: PersistedProjectTabs): void
  */
 export interface TabsStoreDeps {
   /** 本地工作区 store（单例即驻留，不变量 4/8）：本地签上下文未就位时兜底重开目录；tree 供 workflowDesign 草稿归属过滤。 */
-  workspace: Pick<ReturnType<typeof useWorkspaceStore>, "open" | "opened" | "root"> & Partial<Pick<ReturnType<typeof useWorkspaceStore>, "hasPendingOpen">> & { tree: LocalRootTreeNodeDTO | null };
+  workspace: Pick<ReturnType<typeof useWorkspaceStore>, "open" | "opened" | "root"> & Partial<Pick<ReturnType<typeof useWorkspaceStore>, "hasPendingOpen" | "resolveRoot">> & { tree: LocalRootTreeNodeDTO | null };
   /** 本地项目选中传正式树 DTO，保留 workspace/group/project 全身份。 */
   tree: { select: (node: LocalProjectTreeNodeDTO) => void };
   /** 在线 store：会话表存在性（分歧防御）+ 显式激活 + 在线树项目选中 + 缓冲表（关签 dirty 判定）。 */
@@ -179,7 +180,10 @@ export interface TabsStoreDeps {
    * （App 组合根必注入；store 单测可省）。
    */
   confirmWorkflowDraft?: () => Promise<boolean>;
+  discardWorkflowDraft?: () => void;
   confirmTestingDraft?: () => boolean | Promise<boolean>;
+  leaveTestingAfterConfirmation?: () => boolean | Promise<boolean>;
+  beginProjectTransition?: () => () => void;
   testingHasDrafts?: (root: string, project: ProjectLocator) => boolean;
   onlineDirectoryHasDraft?: (tab: OnlineProjectTab) => boolean;
   /** 持久化存储（缺省 localStorage；测试注入内存 Storage 隔离）。 */
@@ -197,6 +201,20 @@ export interface TabsStoreDeps {
 export function createTabsStore(deps: TabsStoreDeps) {
   const storage = deps.storage ?? localStorage;
   const closingTabs = new Set<string>();
+  let localProjectIntent = 0;
+  let workspacePickerIntent = 0;
+  let homeNavigation = 0;
+  let projectCommit: Promise<unknown> | null = null;
+  function commitProjectActivation<T>(action: () => Promise<T>): Promise<T> {
+    const result = Promise.resolve().then(action).finally(() => {
+      if (projectCommit === result) projectCommit = null;
+    });
+    projectCommit = result;
+    return result;
+  }
+  async function waitForProjectCommit(): Promise<void> {
+    while (projectCommit) await projectCommit.catch(() => undefined);
+  }
   function onlineWorkspaceError(ref: OnlineWorkspaceRef): string | null {
     const session = deps.online.sessions[ref.workspaceId];
     const activeBaseUrl = normalizeOnlineBaseUrl(deps.online.activeBaseUrl);
@@ -255,11 +273,33 @@ export function createTabsStore(deps: TabsStoreDeps) {
 
       /** 显示主页并使在途项目激活失效；保留签、工作区、编辑器与请求草稿。 */
       activateHome(): void {
+        homeNavigation += 1;
         this.activationEpoch += 1;
         this.restoring = false;
         this.selectedPage = { kind: "home" };
         this.error = null;
         this.persist();
+      },
+
+      async openLocalWorkspace(dir: string): Promise<void> {
+        const intent = ++workspacePickerIntent;
+        const navigation = homeNavigation;
+        const root = await deps.workspace.resolveRoot?.(dir) ?? dir;
+        if (projectCommit) await waitForProjectCommit();
+        if (intent !== workspacePickerIntent || navigation !== homeNavigation || this.selectedPage.kind !== "home") return;
+        if (deps.workspace.opened && deps.workspace.root === root) {
+          await deps.workspace.open(root);
+          return;
+        }
+        const retained = this.contextTab;
+        const target = retained && hasProjectLocator(retained) && retained.workspaceRef.dir === root
+          ? retained : this.tabs.find((tab) => hasProjectLocator(tab) && tab.workspaceRef.dir === root);
+        if (target) await this.activateTab(target.tabId);
+        else {
+          const epoch = ++this.activationEpoch;
+          this.restoring = false;
+          await commitProjectActivation(async () => { await deps.workspace.open(root, () => epoch === this.activationEpoch); });
+        }
       },
 
       /**
@@ -293,9 +333,11 @@ export function createTabsStore(deps: TabsStoreDeps) {
           }
           return true;
         }
+        if (!hasProjectLocator(tab)) return false;
+        let openedRoot: string | void = ref.dir;
         if (!deps.workspace.opened || deps.workspace.root !== ref.dir || deps.workspace.hasPendingOpen?.()) {
           try {
-            await deps.workspace.open(ref.dir, isCurrent);
+            openedRoot = await deps.workspace.open(ref.dir, isCurrent, tab.projectLocator);
           } catch (e) {
             if (!isCurrent()) return false;
             this.markOffline(tab.tabId, e instanceof Error ? e.message : String(e));
@@ -303,14 +345,17 @@ export function createTabsStore(deps: TabsStoreDeps) {
           }
         }
         if (!isCurrent()) return false;
-        if (deps.workspace.root !== ref.dir) {
+        if (!deps.workspace.opened || !deps.workspace.root || (openedRoot ?? ref.dir) !== deps.workspace.root) {
           this.markOffline(tab.tabId, `工作区根上下文未就绪: ${ref.dir}`);
           return false;
         }
-        if (hasProjectLocator(tab) && !findProjectNode(deps.workspace.tree, tab.projectLocator)) {
+        if (!findProjectNode(deps.workspace.tree, tab.projectLocator)) {
           this.markOffline(tab.tabId, `本地项目 locator 在当前树中不存在: ${tab.projectName}`);
           return false;
         }
+        // Older entries can be resolved during activation even when the picker
+        // or restore path supplied a different spelling.
+        tab.workspaceRef = { kind: "local", dir: deps.workspace.root };
         return true;
       },
 
@@ -327,7 +372,15 @@ export function createTabsStore(deps: TabsStoreDeps) {
           if (!("locator" in project) || !ProjectLocatorSchema.safeParse(project.locator).success) {
             throw new Error("本地项目签必须提供完整 ProjectLocator");
           }
-          identity = { workspaceRef: ref, projectLocator: { ...project.locator }, projectName: project.name };
+          const epoch = this.activationEpoch;
+          const intent = ++localProjectIntent;
+          let dir = ref.dir;
+          if (dir !== deps.workspace.root && deps.workspace.resolveRoot) {
+            try { dir = await deps.workspace.resolveRoot(dir); }
+            catch { /* Keep an unavailable project tab available for retry. */ }
+            if (epoch !== this.activationEpoch || intent !== localProjectIntent) return;
+          }
+          identity = { workspaceRef: { kind: "local", dir }, projectLocator: { ...project.locator }, projectName: project.name };
         } else {
           if (!("id" in project)) throw new Error("在线项目签必须提供在线 project id");
           const baseUrl = normalizeOnlineBaseUrl(ref.baseUrl ?? deps.online.sessions[ref.workspaceId]?.baseUrl);
@@ -369,6 +422,9 @@ export function createTabsStore(deps: TabsStoreDeps) {
        * 且该签的 dirty 已由组件层确认）。
        */
       async activateTab(tabId: string): Promise<void> {
+        const navigation = homeNavigation;
+        if (projectCommit) await waitForProjectCommit();
+        if (navigation !== homeNavigation) return;
         this.restoring = false;
         this.error = null;
         const tab = this.tabs.find((t) => t.tabId === tabId);
@@ -388,36 +444,44 @@ export function createTabsStore(deps: TabsStoreDeps) {
           ? deps.online.activeWorkspaceId === tab.workspaceRef.workspaceId
           : deps.workspace.opened && deps.workspace.root === tab.workspaceRef.dir && !deps.workspace.hasPendingOpen?.());
         const leaving = this.contextTabId === tabId ? null : this.contextTab;
-        if (leaving && deps.confirmTestingDraft && (!(await deps.confirmTestingDraft()) || !isCurrent())) return;
-        if (deps.confirmWorkflowDraft && leaving && this.leavingTabHasWorkflowDraft(leaving)) {
-          if (!(await deps.confirmWorkflowDraft()) || !isCurrent()) return;
+        const endTransition = leaving ? deps.beginProjectTransition?.() : undefined;
+        try {
+          if (leaving && deps.confirmTestingDraft && (!(await deps.confirmTestingDraft()) || !isCurrent())) return;
+          const abandonWorkflow = leaving && this.leavingTabHasWorkflowDraft(leaving);
+          if (deps.confirmWorkflowDraft && abandonWorkflow && (!(await deps.confirmWorkflowDraft()) || !isCurrent())) return;
+
+          const selected = await commitProjectActivation(async () => {
+            if (!isCurrent() || !(await this.ensureWorkspaceContext(tab, isCurrent)) || !isCurrent()) return false;
+            // ② 项目选中（工作区上下文就位后）
+            if (!retainedContextReady && hasOnlineProjectId(tab)) {
+              await deps.online.selectNode("project", tab.projectId);
+              if (!isCurrent() || deps.online.activeWorkspaceId !== tab.workspaceRef.workspaceId || onlineWorkspaceError(tab.workspaceRef)) return false;
+            } else if (!retainedContextReady && hasProjectLocator(tab)) {
+              if (deps.workspace.root !== tab.workspaceRef.dir) return false;
+              const node = findProjectNode(deps.workspace.tree, tab.projectLocator);
+              if (!node) {
+                this.markOffline(tab.tabId, `本地项目 locator 在当前树中不存在: ${tab.projectName}`);
+                return false;
+              }
+              deps.tree.select(node);
+            }
+            if (!isCurrent()) return false;
+            if (leaving && deps.leaveTestingAfterConfirmation && (!(await deps.leaveTestingAfterConfirmation()) || !isCurrent())) return false;
+            if (abandonWorkflow) deps.discardWorkflowDraft?.();
+            if (hasOnlineProjectId(tab) && !tab.workspaceRef.baseUrl) {
+              const baseUrl = normalizeOnlineBaseUrl(deps.online.sessions[tab.workspaceRef.workspaceId]?.baseUrl);
+              if (baseUrl) tab.workspaceRef.baseUrl = baseUrl;
+            }
+            this.contextTabId = tabId;
+            this.selectedPage = { kind: "project", tabId };
+            this.offlineTabIds = this.offlineTabIds.filter((id) => id !== tabId);
+            this.persist();
+            return true;
+          });
+          if (!selected) return;
+        } finally {
+          endTransition?.();
         }
-        if (!(await this.ensureWorkspaceContext(tab, isCurrent)) || !isCurrent()) return;
-        // ② 项目选中（工作区上下文就位后）
-        if (retainedContextReady) {
-          // 主页切回仍驻留的项目上下文：保留原树选中、编辑器与草稿，不重跑恢复钩子。
-        } else if (hasOnlineProjectId(tab)) {
-          await deps.online.selectNode("project", tab.projectId);
-          if (!isCurrent() || deps.online.activeWorkspaceId !== tab.workspaceRef.workspaceId || onlineWorkspaceError(tab.workspaceRef)) return;
-        }
-        else if (hasProjectLocator(tab)) {
-          if (deps.workspace.root !== tab.workspaceRef.dir) return;
-          const node = findProjectNode(deps.workspace.tree, tab.projectLocator);
-          if (!node) {
-            this.markOffline(tab.tabId, `本地项目 locator 在当前树中不存在: ${tab.projectName}`);
-            return;
-          }
-          deps.tree.select(node);
-        } else return;
-        if (!isCurrent()) return;
-        if (hasOnlineProjectId(tab) && !tab.workspaceRef.baseUrl) {
-          const baseUrl = normalizeOnlineBaseUrl(deps.online.sessions[tab.workspaceRef.workspaceId]?.baseUrl);
-          if (baseUrl) tab.workspaceRef.baseUrl = baseUrl;
-        }
-        this.contextTabId = tabId;
-        this.selectedPage = { kind: "project", tabId };
-        this.offlineTabIds = this.offlineTabIds.filter((id) => id !== tabId);
-        this.persist();
         // ③ editor 上下文由活跃项目驱动（任务 4 接线点）
         if (!isCurrent() || retainedContextReady) return;
         await deps.onProjectActivated?.(tab, isCurrent);
@@ -573,29 +637,58 @@ export function createTabsStore(deps: TabsStoreDeps) {
           this.offlineTabIds = [];
           this.seq = 0;
           this.tabs = persisted.tabs.map((row) => ({ tabId: `tab-${++this.seq}`, ...row }));
-          const rebuiltTabIds = this.tabs.map((tab) => tab.tabId);
-          let boundLegacyWorkspace = false;
+          let activeId = persisted.activeIndex === null ? undefined : this.tabs[persisted.activeIndex]?.tabId;
+          const roots = new Map<string, Promise<string>>();
+          const retained: ProjectTab[] = [];
+          let changed = false;
           for (const tab of this.tabs) {
             if (!isCurrent()) return;
-            // 逐签重建工作区上下文（非活跃签不选项目——选中留给激活时）
+            if (hasProjectLocator(tab) && deps.workspace.resolveRoot) {
+              const previousRoot = tab.workspaceRef.dir;
+              let resolved = roots.get(previousRoot);
+              if (!resolved) {
+                resolved = deps.workspace.resolveRoot(previousRoot);
+                roots.set(previousRoot, resolved);
+              }
+              try {
+                const dir = await resolved;
+                if (!isCurrent()) return;
+                if (dir !== previousRoot) {
+                  tab.workspaceRef = { kind: "local", dir };
+                  changed = true;
+                }
+                const duplicate = retained.find((entry) => sameTabIdentity(entry, tab));
+                if (duplicate) {
+                  if (activeId === tab.tabId) activeId = duplicate.tabId;
+                  changed = true;
+                  continue;
+                }
+              } catch (error) {
+                if (!isCurrent()) return;
+                this.markOffline(tab.tabId, error instanceof Error ? error.message : String(error));
+              }
+              retained.push(tab);
+              continue;
+            }
             await this.ensureWorkspaceContext(tab, isCurrent);
             if (!isCurrent()) return;
             if (hasOnlineProjectId(tab) && !tab.workspaceRef.baseUrl && !this.isTabOffline(tab.tabId)) {
               const baseUrl = normalizeOnlineBaseUrl(deps.online.sessions[tab.workspaceRef.workspaceId]?.baseUrl);
               if (baseUrl) {
                 tab.workspaceRef = { ...tab.workspaceRef, baseUrl };
-                boundLegacyWorkspace = true;
+                changed = true;
               }
             }
+            retained.push(tab);
           }
-          const activeId = persisted.activeIndex !== null ? rebuiltTabIds[persisted.activeIndex] : undefined;
+          this.tabs = retained;
           if (activeId !== undefined && !this.offlineTabIds.includes(activeId)) {
             this.restoring = false;
             await this.activateTab(activeId);
             return;
           }
           this.selectedPage = { kind: "home" }; // 活跃签离线/无活跃记录 → 留在主页
-          if (boundLegacyWorkspace) this.persist();
+          if (changed) this.persist();
         } finally {
           if (isCurrent()) this.restoring = false;
         }
