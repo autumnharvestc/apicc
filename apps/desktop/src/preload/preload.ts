@@ -5,21 +5,20 @@ import { CollaborationInputSchema, CollaborationResultSchema } from '../shared/o
 import { OnlineSchedulingInputSchema, parseOnlineSchedulingResult } from '../shared/online/scheduling.js';
 import { IpcChannel, IpcEvent } from "../shared/channels.js";
 import type { IpcChannelName } from "../shared/channels.js";
-import type { IpcInputArgsMap, IpcResultMap } from "../shared/ipc-contract.js";
-import type { ApiccApi } from "../shared/types.js";
+import type { ApiccBridge, IpcInputArgsMap, IpcTransportResultMap } from "../shared/ipc-contract.js";
 import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "../shared/credentials.js";
 import { createStressPreloadApi } from "./stressBridge.js";
 import { EvidenceInvocationSchema } from "../shared/testing.js";
 import { AiProgressDtoSchema } from '../shared/ai/contract.js';
 import { WindowChromeChannel } from "../shared/window-chrome.js";
 
-function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcInputArgsMap[Channel]): Promise<IpcResultMap[Channel]> {
-  return ipcRenderer.invoke(channel, ...args).then((result: unknown) => result as IpcResultMap[Channel]);
+function invoke<Channel extends IpcChannelName>(channel: Channel, ...args: IpcInputArgsMap[Channel]): Promise<IpcTransportResultMap[Channel]> {
+  return ipcRenderer.invoke(channel, ...args).then((result: unknown) => result as IpcTransportResultMap[Channel]);
 }
 
 const stressApi = createStressPreloadApi(ipcRenderer);
 
-const api: ApiccApi = {
+const api: ApiccBridge = {
   windowsTitleBarOverlay: process.platform === "win32",
   onlineExecution: async (input) => OnlineExecutionResultSchema.parse(await invoke(IpcChannel.OnlineExecution, input)),
   onlineCollaboration: async input => CollaborationResultSchema.parse(await invoke(IpcChannel.OnlineCollaboration, CollaborationInputSchema.parse(input))),
@@ -42,6 +41,7 @@ const api: ApiccApi = {
     ? invoke(IpcChannel.WsOpen, rootPath, project)
     : invoke(IpcChannel.WsOpen, rootPath),
   wsResolveRoot: (rootPath) => invoke(IpcChannel.WsResolveRoot, rootPath),
+  wsRefresh: (input) => invoke(IpcChannel.WsRefresh, input),
   wsCreate: (rootPath, name) => invoke(IpcChannel.WsCreate, rootPath, name),
   wsPickDirectory: () => invoke(IpcChannel.WsPickDirectory),
   wsValidate: () => invoke(IpcChannel.WsValidate),

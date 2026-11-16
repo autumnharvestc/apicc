@@ -2,7 +2,8 @@ import { createPinia, defineStore } from "pinia";
 import { ref } from "vue";
 import type { ContractWorkspace, LoadProblem, StressTargetPolicy } from "@apicc/core";
 import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
-import type { ApiccApi, OpenResult } from "../../../shared/types.js";
+import type { ApiccApi, OpenResult, WorkspaceRefreshResult } from "../../../shared/types.js";
+import { localWorkspaceError } from "../../../shared/workspace-refresh.js";
 import type { LocalGroupTreeNodeDTO, LocalProjectTreeNodeDTO, LocalRootTreeNodeDTO, LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
 
 function normalizeOrigin(value: string): string {
@@ -64,6 +65,8 @@ export function useWorkspaceStore(api: ApiccApi) {
   let contextEpoch = 0;
   let operationQueue: Promise<void> = Promise.resolve();
   const pendingOpenCount = ref(0);
+  const diskRefreshPending = ref(false);
+  let diskRefreshTask: Promise<WorkspaceRefreshResult | undefined> | null = null;
 
   const enqueueContextOperation = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = operationQueue.then(operation, operation);
@@ -131,6 +134,39 @@ export function useWorkspaceStore(api: ApiccApi) {
           const tree = await readTree();
           if (epoch === contextEpoch) this.tree = tree;
         });
+      },
+
+      refreshFromDisk(reconcile: (receipt: WorkspaceRefreshResult, isCurrent: () => boolean) => Promise<void>): Promise<WorkspaceRefreshResult | undefined> {
+        if (diskRefreshTask) return diskRefreshTask;
+        const root = this.root;
+        const workspaceId = this.workspace?.id;
+        if (!root || !workspaceId || pendingOpenCount.value) {
+          return Promise.reject(localWorkspaceError("context-changed", "The active workspace changed.", root));
+        }
+        const epoch = contextEpoch;
+        const isCurrent = () => root === this.root && workspaceId === this.workspace?.id;
+        diskRefreshPending.value = true;
+        const task = enqueueContextOperation(async () => {
+          if (contextEpoch !== epoch || !isCurrent()) return;
+          const result = await api.wsRefresh({ root, workspaceId });
+          if (!isCurrent() || result.root !== root || result.workspace.id !== workspaceId) return;
+          // A queued open waits for reconciliation of the receipt already sent
+          // to main, including when the newer open later fails.
+          this.apply(result);
+          await reconcile(result, isCurrent);
+          return result;
+        }).finally(() => {
+          if (diskRefreshTask === task) {
+            diskRefreshTask = null;
+            diskRefreshPending.value = false;
+          }
+        });
+        diskRefreshTask = task;
+        return task;
+      },
+
+      hasPendingDiskRefresh(): boolean {
+        return diskRefreshPending.value;
       },
 
       reset(): Promise<void> {

@@ -243,6 +243,34 @@
     "home": "Home",
     "test": "Test"
   },
+  "diskRefresh": {
+    "action": "Refresh from disk",
+    "restore": "Load disk version",
+    "discardRemoved": "Discard deleted draft",
+    "reading": "Reading {name} from disk…",
+    "success": "Refreshed {name} from disk.",
+    "blocked": "Resolve the changes to this draft before saving.",
+    "confirmRestore": "Discard the unsaved changes to {name} and load its disk version?",
+    "confirmDiscardRemoved": "Discard the unsaved changes to {name}? It has been removed from disk.",
+    "draft": {
+      "changed": "{name} or a dependency changed on disk. Your draft is available, and saving is paused.",
+      "deleted": "{name} was removed from disk. You can still review its unsaved changes.",
+      "unverified": "The disk version of {name} could not be compared. Your draft is available, and saving is paused."
+    },
+    "error": {
+      "revision-conflict": "The saved version has changed. Refresh from disk before saving again.",
+      "busy": "The workspace has an operation in progress. Try again when it finishes.",
+      "read-only": "The workspace has unresolved file or recovery issues.",
+      "unstable": "The workspace changed while it was being read. Try refreshing again.",
+      "directory-changed": "The workspace directory was moved or replaced.",
+      "directory-unavailable": "The selected workspace directory is unavailable.",
+      "workspace-unreadable": "The selected directory has no readable workspace metadata.",
+      "project-missing": "The selected project is missing from the workspace.",
+      "context-changed": "The active workspace changed. Open the intended workspace and try again.",
+      "workspace-replaced": "The directory now contains a different workspace. Open that workspace to continue.",
+      "failed": "The workspace could not be refreshed from disk."
+    }
+  },
   "workspace": {
     "problems": "Problem files",
     "readonlyBadge": "Read-only",

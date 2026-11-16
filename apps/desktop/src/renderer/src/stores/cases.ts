@@ -4,6 +4,7 @@ import type { ApiccApi } from "../../../shared/types.js";
 import type { CaseDraftDeletion } from "../../../shared/types.js";
 import type { useEditorStore } from "./editor.js";
 import { readSessionRestoreField } from "./debug.js";
+import { caseUnit, type EditorUnit } from "./editorDiskRefresh.js";
 
 type Editor = ReturnType<typeof useEditorStore>;
 export interface CaseIdentity { caseId: string; scope: string }
@@ -39,12 +40,20 @@ export function useCasesStore(_api: ApiccApi, editor: Editor) {
       selectedCase: null as CaseIdentity | null,
       pendingDeletes: {} as Record<string, PendingCaseDelete[]>,
       pendingRestoreFields: {} as Record<string, PendingCaseFields[]>,
+      overrideDrafts: new Map<string, { text: string; error: string }>(),
     }),
     getters: {
       selectedCaseId(): string | null { return this.selectedCase?.caseId ?? null; },
       selectedCaseScope(): string | null { return this.selectedCase?.scope ?? null; },
     },
     actions: {
+      diskDraftUnits(sessionKey: string, generation: number): EditorUnit[] {
+        const context = JSON.stringify([sessionKey, generation]);
+        return [...this.overrideDrafts.keys()].flatMap((key) => {
+          const [owner, caseId, scope] = JSON.parse(key) as [string, string, string];
+          return owner === context ? [caseUnit({ caseId, scope })] : [];
+        });
+      },
       hasUnresolvedRestoreInput(sessionKey: string, generation: number): boolean {
         if (sessionKey !== editor.activeKey || editor.sessions[sessionKey]?.generation !== generation || !editor.api) return false;
         return (this.pendingRestoreFields[sessionKey] ?? []).some((item) => {
@@ -178,6 +187,17 @@ export function useCasesStore(_api: ApiccApi, editor: Editor) {
         if (target.fields.length === 0) removePendingCaseFields(this.pendingRestoreFields, sessionKey, identity);
       },
 
+      resolveDiskDraft(key: string, unit: EditorUnit): void {
+        const matches = (item: CaseIdentity) => unit === "asset" || caseUnit(item) === unit;
+        this.pendingDeletes[key] = (this.pendingDeletes[key] ?? []).filter((item) => !matches(item));
+        this.pendingRestoreFields[key] = (this.pendingRestoreFields[key] ?? []).filter((item) => !matches(item));
+        if (!this.pendingDeletes[key]!.length) delete this.pendingDeletes[key];
+        if (!this.pendingRestoreFields[key]!.length) delete this.pendingRestoreFields[key];
+        for (const entry of this.overrideDrafts.keys()) {
+          const [owner, caseId, scope] = JSON.parse(entry) as [string, string, string];
+          if ((JSON.parse(owner) as [string])[0] === key && matches({ caseId, scope })) this.overrideDrafts.delete(entry);
+        }
+      },
       async save(): Promise<void> {
         const selectedIdentity = this.selectedCase ?? (editor.api?.cases[0] ? { caseId: editor.api.cases[0]!.id, scope: editor.api.cases[0]!.scope } : null);
         const identity = selectedIdentity ? { ...selectedIdentity } : null;
@@ -187,11 +207,12 @@ export function useCasesStore(_api: ApiccApi, editor: Editor) {
         const pending = sessionKey && session
           ? reconcilePendingDeletes(this.pendingDeletes, sessionKey, session.generation, session.snapshot)
           : [];
-        const submitted = pending.filter((item) => item.kind === "explicit"
+        const submitted = pending.filter((item) => (item.kind === "explicit" && !session?.diskConflicts?.[caseUnit(item)])
           || (item.kind === "scope-migration" && item.caseId === identity.caseId && item.replacementScope === identity.scope));
         const deletedCases = submitted.map(({ caseId, scope }) => ({ caseId, scope }));
         const selected = editor.api?.cases.find((testCase) => testCase.id === identity.caseId && testCase.scope === identity.scope);
         const generation = session?.generation;
+        const diskEpoch = session?.diskEpoch;
         const submittedRestoreFields = sessionKey && session && selected
           ? (this.pendingRestoreFields[sessionKey] ?? []).filter((item) => item.generation === generation
             && item.caseId === identity.caseId && item.scope === identity.scope)
@@ -213,6 +234,7 @@ export function useCasesStore(_api: ApiccApi, editor: Editor) {
             })
           : [];
         await editor.saveCaseDraft(identity, deletedCases, pendingFields);
+        if (sessionKey && (editor.sessions[sessionKey]?.generation !== generation || editor.sessions[sessionKey]?.diskEpoch !== diskEpoch)) return;
         if (sessionKey) {
           // An application during the await replaces its record, even within the same generation.
           const remaining = (this.pendingRestoreFields[sessionKey] ?? []).filter((item) =>

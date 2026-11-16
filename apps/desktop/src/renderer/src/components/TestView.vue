@@ -37,6 +37,8 @@ const props = defineProps<{
   interfaceLoading?: boolean;
   interfaceError?: string;
   canOperate?: () => boolean;
+  refreshDisk?: () => Promise<void>;
+  refreshingDisk?: boolean;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evidence", identity: import("@apicc/core").EvidenceIdentity): void }>();
 const { t } = useI18n();
@@ -67,14 +69,14 @@ function showResult() {
 
 <template>
   <section class="test-view" data-testid="test-view">
-    <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" />
-    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" @locate-evidence="emit('locate-evidence', $event)" />
+    <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" :refreshing-disk="refreshingDisk" />
+    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" :refreshing-disk="refreshingDisk" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
     <template v-else-if="pane === 'api-cases'">
       <p v-if="interfaceReady === false && interfaceError" class="interface-error" role="alert">{{ t("testWorkbench.loadApiFailed", { error: interfaceError }) }}</p>
       <EmptyState v-else-if="interfaceReady === false || !editor.api" :text="t(interfaceLoading ? 'testWorkbench.loadingApi' : 'test.pickApi')" />
       <template v-else>
-        <CasePanel workbench :can-operate="canOperate" :interface-path="interfacePath" :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" @stress="(caseId: string) => emit('stress', caseId)" @show-result="showResult">
+        <CasePanel workbench :can-operate="canOperate" :interface-path="interfacePath" :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" :refresh-disk="refreshDisk" :refreshing-disk="refreshingDisk" @stress="(caseId: string) => emit('stress', caseId)" @show-result="showResult">
           <template #after-cases>
             <div v-if="run" ref="resultRegion" class="result" data-testid="test-result" tabindex="-1" role="region" :aria-label="t('testWorkbench.result')">
               <p class="result-environment"><strong>{{ t("testWorkbench.runEnvironment") }}</strong>

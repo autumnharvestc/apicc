@@ -1,9 +1,11 @@
 import { createPinia, defineStore } from "pinia";
 import { shallowRef } from "vue";
-import type { JsonValue, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
-import type { ApiccApi } from "../../../shared/types.js";
+import { findProjectApi, workflowCalls } from "@apicc/core/workflow/references";
+import type { ContractProject, JsonValue, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
+import type { ApiccApi, WorkspaceRefreshResult } from "../../../shared/types.js";
 import type { WorkflowLocator } from "../../../shared/locations.js";
 import type { LocalWorkspaceContext } from "./localIdentity.js";
+import { currentDiskRead, diskProject, jsonCopy, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
 
 const RUN_HISTORY_LIMIT = 2;
 
@@ -14,6 +16,25 @@ function copyLocator(locator: WorkflowLocator): WorkflowLocator {
 function sameLocator(left: WorkflowLocator | null, right: WorkflowLocator): boolean {
   return !!left && left.workspaceId === right.workspaceId && left.groupId === right.groupId
     && left.projectId === right.projectId && left.workflowId === right.workflowId;
+}
+
+function workflowDependencies(project: ContractProject | undefined, workflow: Workflow): unknown {
+  if (!project) return null;
+  const visited = new Set<string>([workflow.id]);
+  const visit = (flow: Workflow): unknown => flow.nodes.map((node) => {
+    const target = node.kind === "request" && node.apiId ? findProjectApi(project, node.apiId) : undefined;
+    const request = target && {
+      request: target.api.contract.request,
+      cases: target.api.cases.filter((item) => !("caseId" in node) || !node.caseId || item.id === node.caseId),
+    };
+    return { request, calls: workflowCalls(node).flatMap(({ workflowId }) => {
+      if (visited.has(workflowId)) return [];
+      visited.add(workflowId);
+      const called = project.workflows.find((item) => item.id === workflowId);
+      return [{ id: workflowId, called, dependencies: called ? visit(called) : null }];
+    }) };
+  });
+  return visit(workflow);
 }
 
 export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWorkspaceContext = () => ({ root: "", readOnly: false })) {
@@ -32,6 +53,8 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
       activeRun: null as { locator: WorkflowLocator; root: string; invocationId: string; epoch: number } | null,
       runHistory: [] as Array<{ locator: WorkflowLocator; root: string; invocationId: string; result: WorkflowRunResult }>,
       loadEpoch: 0,
+      diskEpoch: 0,
+      diskConflict: null as DiskDraftConflict | null,
     }),
     getters: {
       workflowId(): string | null { return this.locator?.workflowId ?? null; },
@@ -48,12 +71,14 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         if (getContext().root !== root) return;
         const fixed = copyLocator(locator);
         const epoch = ++this.loadEpoch;
-        const detail = await api.wfGet(fixed);
-        if (epoch !== this.loadEpoch || getContext().root !== root) return;
+        const detail = await currentDiskRead(() => api.wfGet(fixed), () => this.diskEpoch,
+          () => epoch === this.loadEpoch && getContext().root === root);
+        if (!detail || epoch !== this.loadEpoch || getContext().root !== root) return;
         this.root = root;
         this.locator = fixed;
         this.workflow = JSON.parse(JSON.stringify(detail.workflow)) as Workflow;
         this.snapshot = JSON.stringify(this.workflow);
+        this.diskConflict = null;
         this.validationErrors = [];
         this.warnings = [];
         this.runResult = null;
@@ -71,6 +96,7 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         this.locator = null;
         this.workflow = null;
         this.snapshot = "";
+        this.diskConflict = null;
         this.saving = false;
         this.validationErrors = [];
         this.warnings = [];
@@ -80,15 +106,17 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         if (!this.workflow || !this.locator) return;
         this.assertWritable();
         this.assertCurrentRoot();
+        if (this.diskConflict) throw new Error("disk-draft-blocked");
         const epoch = this.loadEpoch;
+        const diskEpoch = this.diskEpoch;
         const root = this.root;
         const locator = copyLocator(this.locator);
         const submitted = JSON.parse(JSON.stringify(this.workflow)) as Workflow;
         this.saving = true;
         try {
           const stored = await api.wfSave(locator, submitted);
-          if (epoch !== this.loadEpoch || getContext().root !== root || !sameLocator(this.locator, locator)) return;
-          this.workflow = stored;
+          if (epoch !== this.loadEpoch || diskEpoch !== this.diskEpoch || getContext().root !== root || !sameLocator(this.locator, locator)) return;
+          if (sameDiskValue(this.workflow, submitted)) this.workflow = stored;
           this.snapshot = JSON.stringify(stored);
           this.runResult = null;
         } finally {
@@ -99,11 +127,13 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         if (!this.locator) return;
         this.assertWritable();
         this.assertCurrentRoot();
+        if (this.diskConflict) throw new Error("disk-draft-blocked");
         const epoch = this.loadEpoch;
+        const diskEpoch = this.diskEpoch;
         const root = this.root;
         const locator = copyLocator(this.locator);
         const result = await api.wfSetStatus(locator, next);
-        if (epoch !== this.loadEpoch || getContext().root !== root || !sameLocator(this.locator, locator)) return;
+        if (epoch !== this.loadEpoch || diskEpoch !== this.diskEpoch || getContext().root !== root || !sameLocator(this.locator, locator)) return;
         if (result.workflow.status !== next) {
           this.validationErrors = result.errors;
           this.warnings = result.warnings;
@@ -114,8 +144,36 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         // was rejected and the workflow remains at its previous status.
         this.validationErrors = [];
         this.warnings = result.warnings;
-        this.workflow = { ...result.workflow };
-        this.snapshot = JSON.stringify(this.workflow);
+        this.workflow = this.dirty && this.workflow ? { ...this.workflow, status: result.workflow.status } : { ...result.workflow };
+        this.snapshot = JSON.stringify(result.workflow);
+      },
+      reconcileDiskRefresh(receipt: WorkspaceRefreshResult): void {
+        if (getContext().root !== receipt.root) return;
+        this.diskEpoch += 1;
+        if (this.root !== receipt.root || !this.locator || !this.workflow) return;
+        const root = this.root, locator = copyLocator(this.locator);
+        const before = diskProject(receipt.previousWorkspace, locator), after = diskProject(receipt.workspace, locator);
+        const next = after?.workflows.find((item) => item.id === locator.workflowId);
+        const local = this.workflow;
+        const epoch = this.diskEpoch;
+        const restore = () => {
+          if (this.root !== root || getContext().root !== root || !sameLocator(this.locator, locator) || this.diskEpoch !== epoch) return;
+          this.workflow = next ? jsonCopy(next) : null;
+          this.snapshot = next ? JSON.stringify(next) : "";
+          this.diskConflict = null;
+          this.validationErrors = [];
+          this.warnings = [];
+        };
+        if (this.dirty && (this.diskConflict || !next || !sameDiskValue(JSON.parse(this.snapshot), next)
+          || !sameDiskValue(workflowDependencies(before, local), workflowDependencies(after, local)))) {
+          this.diskConflict = { reason: next ? "changed" : "deleted", name: local.name, restore };
+        } else {
+          if (!next) {
+            restore();
+            return;
+          }
+          if (!this.dirty) restore();
+        }
       },
       dismissValidation() {
         this.validationErrors = [];

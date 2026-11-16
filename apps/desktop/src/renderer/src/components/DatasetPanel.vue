@@ -3,23 +3,35 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { JsonValue } from "@apicc/core";
 import type { TestingStore } from "../stores/testing.js";
-const props = defineProps<{ testing: TestingStore }>();
+import { diskErrorMessage } from "../diskRefreshPresentation.js";
+import { LocalWorkspaceError } from "../../../shared/workspace-refresh.js";
+const props = defineProps<{ testing: TestingStore; refreshingDisk?: boolean }>();
 const { t } = useI18n();
-const page = ref(0); const format = ref<"json" | "csv">("json"); const content = ref(""); const columns = ref(""); const error = ref(""); const exported = ref<{ format: "json" | "csv"; text: string } | null>(null);
+const page = ref(0); const format = ref<"json" | "csv">("json"); const content = ref(""); const error = ref(""); const exported = ref<{ format: "json" | "csv"; text: string } | null>(null);
+const errorIsTyped = ref(false);
 const dataset = computed(() => props.testing.dataset);
+const columns = computed({
+  get: () => props.testing.pendingDatasetColumns ?? dataset.value?.columns.join("\n") ?? "",
+  set: (value: string) => { props.testing.pendingDatasetColumns = value === dataset.value?.columns.join("\n") ? null : value; },
+});
 const resourceKey = computed(() => JSON.stringify([props.testing.view?.context.root, props.testing.view?.context.project, dataset.value?.id]));
 const pages = computed(() => Math.max(1, Math.ceil((dataset.value?.rows.length ?? 0) / 100)));
 const rows = computed(() => dataset.value?.rows.slice(page.value * 100, page.value * 100 + 100) ?? []);
-watch(resourceKey, () => { page.value = 0; columns.value = dataset.value?.columns.join("\n") ?? ""; content.value = ""; error.value = ""; exported.value = null; }, { immediate: true });
-watch(() => dataset.value?.rows.length, () => { page.value = Math.min(page.value, pages.value - 1); columns.value = dataset.value?.columns.join("\n") ?? ""; });
-async function attempt(operation: () => unknown | Promise<unknown>) { const key = resourceKey.value; try { await operation(); if (key === resourceKey.value) error.value = ""; } catch (failure) { if (key === resourceKey.value) error.value = failure instanceof Error ? failure.message : String(failure); } }
+watch(resourceKey, () => { page.value = 0; content.value = ""; error.value = ""; errorIsTyped.value = false; exported.value = null; }, { immediate: true });
+watch(() => dataset.value?.rows.length, () => { page.value = Math.min(page.value, pages.value - 1); });
+watch(() => props.testing.saveFailure, (failure) => { if (!failure && errorIsTyped.value) { error.value = ""; errorIsTyped.value = false; } });
+async function attempt(operation: () => unknown | Promise<unknown>) {
+  const key = resourceKey.value;
+  try { await operation(); if (key === resourceKey.value) { error.value = ""; errorIsTyped.value = false; } }
+  catch (failure) { if (key === resourceKey.value) { error.value = diskErrorMessage(failure, t); errorIsTyped.value = failure instanceof LocalWorkspaceError; } }
+}
 function field(key: "name" | "description", value: string) { if (!props.testing.readOnly && dataset.value) dataset.value[key] = value; }
 function applyColumns() {
   if (props.testing.readOnly || !dataset.value) return;
   const names = columns.value.split(/\r?\n/).map(name => name.trim()).filter(Boolean);
   if (names.length > 256 || new Set(names).size !== names.length) { error.value = t("testing.columnInvalid"); return; }
   if (dataset.value.rows.some(row => Object.keys(row).some(name => !names.includes(name)))) { error.value = t("testing.columnInUse"); return; }
-  dataset.value.columns = names; error.value = "";
+  dataset.value.columns = names; props.testing.pendingDatasetColumns = null; error.value = ""; errorIsTyped.value = false;
 }
 function cell(index: number, column: string, value: string) {
   if (props.testing.readOnly || !dataset.value) return;
@@ -54,10 +66,11 @@ function download() {
   <section class="dataset-panel" data-testid="dataset-panel">
     <header class="toolbar">
       <strong>{{ t('testing.datasets') }}</strong><span v-if="testing.dirty" class="dirty-badge">{{ t('testing.unsaved') }}</span>
-      <button class="primary" data-testid="dataset-save" :disabled="testing.readOnly || !dataset || testing.busy || !!error" @click="attempt(() => testing.save())">{{ t('testing.save') }}</button>
-      <button :disabled="testing.readOnly || !dataset || testing.creating || testing.busy" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button>
+      <button class="primary" data-testid="dataset-save" :disabled="testing.readOnly || refreshingDisk || !dataset || testing.busy || !!testing.diskConflict || (!!error && !errorIsTyped)"
+        @click="attempt(() => testing.save())">{{ t('testing.save') }}</button>
+      <button :disabled="testing.readOnly || refreshingDisk || !dataset || testing.creating || testing.busy || !!testing.diskConflict" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button>
     </header>
-    <p v-if="error || testing.error" class="error" role="alert">{{ error || testing.error }}</p>
+    <p v-if="error || testing.error" class="error" role="alert">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || testing.error }}</p>
     <p v-if="!dataset" class="empty-state">{{ t('testing.pickDataset') }}</p>
     <div v-else class="editor-scroll">
       <div class="form-card"><h3>{{ t('testingUi.basic') }}</h3><label>{{ t('testing.name') }}<input :value="dataset.name" :disabled="testing.readOnly" data-testid="dataset-name" @input="field('name', ($event.target as HTMLInputElement).value)" /></label>

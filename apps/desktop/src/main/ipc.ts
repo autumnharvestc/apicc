@@ -7,12 +7,15 @@ import { createTestingController } from "./testing.js";
 import { createWorkflowController } from "./workflow.js";
 import { stat } from "node:fs/promises";
 import { StressSafetyError, buildImportMergePlan, deduplicateImportDiagnostics, normalizeImportDiagnostics, projectAssetImportDiagnostics, findProjectApi, createProjectSnapshot, buildDocumentProjection, exportOpenapi, renderDocumentHtml, renderDocumentMarkdown, createDebugHistoryOwnerKey, createDebugReplayInvocation, restoreDebugHistoryExchange, renderContractMarkdown, resolveExecutionEnvironment, selectEffectiveCases, getSourceApiRevision, type Importer, type RunResult, type ApiAsset, type Environment, type Workflow, type WorkflowStatus, type DebugHistoryRecord, type DebugInvocation, type DebugHistoryOwnerIdentity, type ContractProject } from "@apicc/core";
+import { WorkspaceStorageError } from "@apicc/core";
 import { ContractProjectSchema } from "@apicc/core/schema";
 import { realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import { IpcChannel, IpcEvent, type IpcChannelName } from "../shared/channels.js";
 import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type CreateApiFromRequestDraftInput, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportApplyResult, type ImportExchangeDiagnostic, type ImportPlanInput, type ImportPlanResult, type ImportPreviewInput, type ImportPreviewResult, type ImportUndoInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
-import { parseIpcArgs, type IpcArgsMap, type IpcResultMap } from "../shared/ipc-contract.js";
+import { parseIpcArgs, type IpcArgsMap, type IpcResultMap, type IpcTransportResultMap } from "../shared/ipc-contract.js";
+import { ProjectLocatorSchema } from "../shared/locations.js";
+import { LocalWorkspaceError, localWorkspaceFailureChannels, type LocalWorkspaceFailure, type WorkspaceRefreshInput } from "../shared/workspace-refresh.js";
 import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
 import { localTreeNodeKey } from "../shared/tree-dto.js";
 import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
@@ -59,6 +62,12 @@ type Session = ReturnType<typeof createSession>;
 type HistorySessionContext = Pick<ReturnType<Session["captureDraftWriteContext"]>, "root" | "generation">;
 type IsUnion<Value, Whole = Value> = Value extends Whole ? ([Whole] extends [Value] ? false : true) : never;
 type HandleArgs<Channel extends IpcChannelName> = IsUnion<Channel> extends true ? unknown[] : IpcArgsMap[Channel];
+const workspaceFailureChannels = new Set<IpcChannelName>(localWorkspaceFailureChannels);
+const refreshBlockingChannels = new Set<IpcChannelName>([
+  IpcChannel.DebugSend, IpcChannel.DebugHistoryReplay, IpcChannel.RunCollection,
+  IpcChannel.WfRun, IpcChannel.StressRun, IpcChannel.SuiteRun, IpcChannel.EvidenceRerun,
+  IpcChannel.ImportApply, IpcChannel.ImportUndo,
+]);
 
 // IPC argument schemas and channel/result maps are centralized in shared/ipc-contract.ts.
 
@@ -116,6 +125,17 @@ export interface IpcDepsOptions {
 
 export function createIpcDeps(options: IpcDepsOptions) {
   const { session, pickDirectory, saveFile } = options;
+  const localActivities = new Map<string, number>();
+  function trackLocalActivity() {
+    const root = session.root;
+    if (root) localActivities.set(root, (localActivities.get(root) ?? 0) + 1);
+    return () => {
+      if (!root) return;
+      const remaining = (localActivities.get(root) ?? 1) - 1;
+      if (remaining) localActivities.set(root, remaining);
+      else localActivities.delete(root);
+    };
+  }
   function stressProject(scope: ProjectLocator): string {
     if (!session.root || !session.locateProject(scope)) throw new Error("未找到当前压测项目");
     return realpathSync(session.root);
@@ -280,6 +300,17 @@ export function createIpcDeps(options: IpcDepsOptions) {
     ? { append: (result: import("@apicc/core").DebugResult, appendOptions: { ownerKey: string; parentHistoryId?: string }) => requireDebugHistory().append(result, appendOptions) }
     : undefined;
   const debug = createDebugController(session, () => pluginsRuntime.registry(), credentials, debugHistoryAppender);
+  function startDebug(owner: object, input: unknown) {
+    const finish = trackLocalActivity();
+    try {
+      const started = debug.start(owner, input);
+      void debug.wait(owner, started.runId).then(finish, finish);
+      return started;
+    } catch (error) {
+      finish();
+      throw error;
+    }
+  }
   const testing = createTestingController(session, () => pluginsRuntime.registry(), credentials);
   const workflowRuns = createWorkflowController(session, () => pluginsRuntime.registry(), credentials, undefined,
     async (owner, context, project, native, dto) => { await aiSources?.rememberReport(owner, context, project, native, dto); await rememberCollaborationReport(owner, context, project, native, dto); });
@@ -446,6 +477,11 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.SuiteCancel: return testing.cancelSuite(a[0] as Parameters<typeof testing.cancelSuite>[0], requireOwner(owner));
       case IpcChannel.WsResolveRoot:
         return session.resolveRoot(a[0] as string) satisfies Promise<IpcResultMap[typeof IpcChannel.WsResolveRoot]>;
+      case IpcChannel.WsRefresh: {
+        const input = a[0] as WorkspaceRefreshInput;
+        const refreshed = await session.refreshFromDisk(input, () => localActivities.has(input.root));
+        return { ...refreshed, tree: toTreeNode(refreshed.workspace) } satisfies IpcResultMap[typeof IpcChannel.WsRefresh];
+      }
       case IpcChannel.WsOpen: {
         const opened = await session.open(a[0] as string, (commit, verifyTarget) => switchWorkspace(owner, commit, verifyTarget), a[1] as ProjectLocator | undefined);
         return { ...opened, tree: toTreeNode(opened.workspace) } satisfies IpcResultMap[typeof IpcChannel.WsOpen];
@@ -714,7 +750,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         return result satisfies DebugOutput;
       }
       case IpcChannel.DebugStart:
-        return debug.start(requireOwner(owner), a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugStart];
+        return startDebug(requireOwner(owner), a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugStart];
       case IpcChannel.DebugWait:
         return await debug.wait(requireOwner(owner), (a[0] as { runId: string }).runId) satisfies IpcResultMap[typeof IpcChannel.DebugWait];
       case IpcChannel.DebugCancel:
@@ -798,7 +834,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
         }
         await requireHistoryOwner(historyId, ownerKeyForInvocation(invocation, historyContext.root));
         assertHistorySessionContext(historyContext);
-        const started = await debug.start(requireOwner(owner), invocation);
+        const started = startDebug(requireOwner(owner), invocation);
         const result: DebugHistoryReplayResult = invocation.mode === "free"
           ? { ...started, sourceKind: "free", project: invocation.project, draftId: invocation.draftId }
           : { ...started, sourceKind: "asset", locator: invocation.locator };
@@ -1303,8 +1339,40 @@ export function createIpcDeps(options: IpcDepsOptions) {
     if (channel === IpcChannel.WsOpen || channel === IpcChannel.WsCreate || channel === IpcChannel.WsResolveRoot) {
       return await dispatch(channel, args, owner) as IpcResultMap[Channel];
     }
-    return await session.withWorkspaceCommand(() => dispatch(channel, args, owner)) as IpcResultMap[Channel];
+    const sync = channel === IpcChannel.Synchronization ? args[0] as SynchronizationInput | undefined : undefined;
+    const finish = refreshBlockingChannels.has(channel) || (sync?.scope?.kind === "local" && (sync.operation === "apply" || sync.operation === "rollback"))
+      ? trackLocalActivity() : undefined;
+    try { return await session.withWorkspaceCommand(() => dispatch(channel, args, owner)) as IpcResultMap[Channel]; }
+    finally { finish?.(); }
   }
 
-  return { handle, pluginsRuntime, stopMocks: () => mockManager.stopAll(), stopSynchronization: () => synchronization?.close() ?? Promise.resolve(), stopOnlineExecutions: () => onlineExecution?.close() ?? Promise.resolve() };
+  async function handleTransport<Channel extends IpcChannelName>(channel: Channel, event: unknown, ...args: unknown[]): Promise<IpcTransportResultMap[Channel]> {
+    const argument = args[0];
+    const root = channel === IpcChannel.WsOpen || channel === IpcChannel.WsResolveRoot || channel === IpcChannel.WsCreate
+      ? (typeof argument === "string" ? argument : undefined)
+      : session.root ?? undefined;
+    try { return await handle(channel, event, ...args as HandleArgs<Channel>) as IpcTransportResultMap[Channel]; }
+    catch (error) {
+      if (!workspaceFailureChannels.has(channel)) throw error;
+      const reason = error instanceof LocalWorkspaceError ? error.failure.reason : error instanceof WorkspaceStorageError
+        ? error.reason : channel === IpcChannel.WsRefresh ? "failed" : undefined;
+      if (!reason) throw error;
+      const candidate = channel === IpcChannel.WsOpen ? args[1] : argument;
+      const raw = candidate && typeof candidate === "object"
+        ? candidate as Partial<ProjectLocator> & { locator?: ProjectLocator; project?: ProjectLocator; context?: { project?: ProjectLocator } }
+        : undefined;
+      const target = raw?.locator ?? raw?.project ?? raw?.context?.project ?? raw;
+      const project = ProjectLocatorSchema.safeParse({
+        workspaceId: target?.workspaceId, groupId: target?.groupId, projectId: target?.projectId,
+      });
+      const targetRoot = error instanceof LocalWorkspaceError ? error.failure.root ?? root : root;
+      return {
+        localWorkspaceFailure: true, reason,
+        ...(targetRoot === undefined ? {} : { root: targetRoot }),
+        ...(project.success ? { project: project.data } : {}),
+      } satisfies LocalWorkspaceFailure as IpcTransportResultMap[Channel];
+    }
+  }
+
+  return { handle, handleTransport, pluginsRuntime, stopMocks: () => mockManager.stopAll(), stopSynchronization: () => synchronization?.close() ?? Promise.resolve(), stopOnlineExecutions: () => onlineExecution?.close() ?? Promise.resolve() };
 }

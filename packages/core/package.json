@@ -55,6 +55,10 @@
       "types": "./dist/workflow/adapter.d.ts",
       "default": "./dist/workflow/adapter.js"
     },
+    "./workflow/references": {
+      "types": "./dist/workflow/references.d.ts",
+      "default": "./dist/workflow/references.js"
+    },
     "./collaboration": {
       "browser": {
         "types": "./dist/collaboration/shared.d.ts",

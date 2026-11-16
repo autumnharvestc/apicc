@@ -1,4 +1,5 @@
 import type { SynchronizationInput, SynchronizationResult } from './synchronization.js';
+import type { WorkspaceRefreshInput } from "./workspace-refresh.js";
 import type {
   ApiAsset,
   ApiRequest,
@@ -171,6 +172,7 @@ export interface WorkflowImpactEntryDTO {
 }
 export interface OpenResult { workspace: ContractWorkspace; tree: LocalRootTreeNodeDTO; problems: LoadProblem[]; root: string; readOnly: boolean; revision: string }
 export interface WorkspaceOpenResult extends OpenResult { disposition: "opened" | "reused" }
+export interface WorkspaceRefreshResult extends OpenResult { previousWorkspace: ContractWorkspace }
 export interface ApiDetail { api: ApiAsset; locator: ApiLocator; sourceApiRevision: string; sourceProjectRevision: string; envs: Array<{ id: string; name: string; locator: EnvironmentLocator }> }
 export interface CreateApiFromRequestDraftInput {
   project: ProjectLocator;
@@ -387,6 +389,7 @@ export interface ApiccApi extends TestingApi {
   showApplicationMenu?(): Promise<void>;
   wsOpen(rootPath: string, project?: ProjectLocator): Promise<WorkspaceOpenResult>;
   wsResolveRoot(rootPath: string): Promise<string>;
+  wsRefresh(input: WorkspaceRefreshInput): Promise<WorkspaceRefreshResult>;
   wsCreate(rootPath: string, name: string): Promise<OpenResult>;
   wsPickDirectory(): Promise<string>;
   wsValidate(): Promise<LoadProblem[]>;

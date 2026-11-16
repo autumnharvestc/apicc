@@ -140,7 +140,8 @@ export async function duplicateContractProjectAcrossGroups(
   workspace.groups.push({ id: groupId, name: groupName, projects: [duplicate] });
   const validated = ContractWorkspaceSchema.parse(workspace);
   await fileStorage.save(fixture.root, validated, { expectedRevision: loaded.revision, deletions: [] });
-  const reopened = await fixture.api.wsOpen(fixture.root);
+  const root = await fixture.api.wsResolveRoot(fixture.root);
+  const reopened = await fixture.api.wsRefresh({ root, workspaceId: validated.id });
   return { workspaceId: reopened.workspace.id, groupId, projectId: duplicate.id };
 }
 

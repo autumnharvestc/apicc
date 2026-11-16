@@ -17,6 +17,10 @@ import ActionMenu from "./ActionMenu.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import type { AssertionOperatorDTO } from "../../../shared/testing.js";
 import type { AiStore } from '../stores/ai.js';
+import { LocalWorkspaceError, type LocalWorkspaceFailure } from "../../../shared/workspace-refresh.js";
+import { diskErrorMessage } from "../diskRefreshPresentation.js";
+import { caseUnit } from "../stores/editorDiskRefresh.js";
+import { isRefreshableFailure } from "../stores/diskDrafts.js";
 
 const ATextarea = AInput.TextArea;
 
@@ -33,6 +37,8 @@ const props = defineProps<{
   workbench?: boolean;
   interfacePath?: string;
   canOperate?: () => boolean;
+  refreshDisk?: () => Promise<void>;
+  refreshingDisk?: boolean;
 }>();
 const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "show-result"): void }>();
 const { t } = useI18n();
@@ -40,7 +46,7 @@ const overrideJson = ref("");
 const overrideError = ref("");
 const assertionError = ref("");
 const assertionBasis = ref<'contract' | 'observation'>('contract');
-const overrideBuffers = new Map<string, { text: string; error: string }>();
+const overrideBuffers = props.refreshDisk ? props.cases.overrideDrafts : new Map<string, { text: string; error: string }>();
 const observedBasis = computed(() => {
   const observation = props.ai?.assertionObservation, locator = props.editor.locator, testCase = selected.value;
   if (!observation || !locator || !testCase || !observation.isCurrent()) return undefined;
@@ -61,6 +67,7 @@ const session = computed(() => props.editor.activeKey ? props.editor.sessions[pr
 const validationError = computed(() => overrideError.value || assertionError.value || extractionError.value);
 const saving = ref(new Set<string>());
 const saveError = ref("");
+const diskFailure = ref<LocalWorkspaceFailure | null>(null);
 const contextKey = computed(() => JSON.stringify([props.editor.activeKey, session.value?.generation]));
 const savingCurrent = computed(() => saving.value.has(contextKey.value));
 function overrideKey(identity: CaseIdentity) {
@@ -79,6 +86,7 @@ const selected = computed(() => {
   const identity = requestTabState.value ? requestTabState.value.selectedCase : props.cases.selectedCase;
   return list.find((c) => c.id === identity?.caseId && c.scope === identity.scope) ?? list[0] ?? null;
 });
+const diskCaseBlocked = computed(() => !!selected.value && !!session.value?.diskConflicts?.[caseUnit(identityOf(selected.value))]);
 const selectedDatasetId = computed(() => {
   const driver = selected.value?.dataDriver;
   return driver && 'kind' in driver ? driver.datasetId : null;
@@ -116,7 +124,7 @@ function selectCase(caseId: string, scope: string) {
   if (requestTabState.value) requestTabState.value.selectedCase = { caseId, scope };
 }
 
-watch(() => [contextKey.value, selected.value?.id, selected.value?.scope], () => {
+watch(() => [contextKey.value, selected.value?.id, selected.value?.scope, session.value?.diskEpoch], () => {
   const buffer = selected.value ? overrideBuffers.get(overrideKey(identityOf(selected.value))) : undefined;
   overrideJson.value = buffer?.text ?? (selected.value?.requestOverride ? JSON.stringify(selected.value.requestOverride, null, 2) : "");
   overrideError.value = buffer?.error ?? "";
@@ -152,7 +160,7 @@ async function runCase(identity: CaseIdentity) {
 
 // 保存链路收口（任务 8 补课）：拒绝经可选 reportError 转报，不再作为未处理 rejection 静默吞没。
 async function saveCases() {
-  if (props.readOnly || !selected.value || savingCurrent.value || props.canOperate?.() === false) return;
+  if (props.readOnly || props.refreshingDisk || diskCaseBlocked.value || !selected.value || savingCurrent.value || props.canOperate?.() === false) return;
   if (validationError.value) {
     props.reportError?.(new Error(validationError.value));
     return;
@@ -162,12 +170,14 @@ async function saveCases() {
   props.cases.select(identity.caseId, identity.scope);
   saving.value.add(key);
   saveError.value = "";
+  diskFailure.value = null;
   try {
     await props.cases.save();
   } catch (e) {
     if (key === contextKey.value && selected.value?.id === identity.caseId && selected.value.scope === identity.scope) {
-      saveError.value = e instanceof Error ? e.message : String(e);
-      props.reportError?.(e);
+      saveError.value = diskErrorMessage(e, t);
+      if (e instanceof LocalWorkspaceError) diskFailure.value = e.failure;
+      else props.reportError?.(e);
     }
   } finally {
     saving.value.delete(key);
@@ -371,7 +381,7 @@ function removeOp(kind: "pre" | "post", index: number) {
               :disabled="!!runReason" @click="runCase(identityOf(selected))">{{ t("case.run") }}</a-button>
             <a-button size="small" :data-testid="`case-stress-${selected.id}`" :data-case-id="selected.id"
               @click="emit('stress', selected.id)">{{ t("case.stress") }}</a-button>
-            <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly || savingCurrent"
+            <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly || refreshingDisk || diskCaseBlocked || savingCurrent"
               @click="saveCases">{{ t("case.save") }}</a-button>
           </div>
         </div>
@@ -387,7 +397,9 @@ function removeOp(kind: "pre" | "post", index: number) {
             </select>
           </label>
         </div>
-        <p v-if="saveError" class="override-error" role="alert" data-testid="case-save-error">{{ saveError }}</p>
+        <p v-if="saveError" class="override-error" role="alert" data-testid="case-save-error">{{ diskFailure ? t(`diskRefresh.error.${diskFailure.reason}`) : saveError }}</p>
+        <a-button v-if="saveError && diskFailure && refreshDisk && isRefreshableFailure(diskFailure)" size="small"
+          data-testid="case-refresh-disk" :disabled="refreshingDisk" @click="refreshDisk">{{ t("diskRefresh.action") }}</a-button>
       </header>
       <div v-else class="toolbar">
         <a-button size="small" data-testid="case-add" :disabled="readOnly" @click="addCase">{{ t("case.add") }}</a-button>

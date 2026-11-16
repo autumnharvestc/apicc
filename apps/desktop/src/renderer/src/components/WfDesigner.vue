@@ -610,7 +610,8 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           <template v-if="wf.executionVersion === 2"><select v-model="nodeKind" data-testid="wf-kind-select" :disabled="workspace.readOnly" :aria-label="t('wf.control.nodeKind')"><option v-for="kind in kinds" :key="kind" :value="kind">{{ t(`wf.control.kinds.${kind}`) }}</option></select><a-button size="small" data-testid="wf-add-node" :disabled="workspace.readOnly" @click="addNode(nodeKind)">{{ t('wf.control.addNode') }}</a-button></template>
           <template v-else><a-button size="small" data-testid="wf-add-request" :disabled="workspace.readOnly" @click="addNode('request')">{{ t("wf.addRequest") }}</a-button>
           <a-button size="small" data-testid="wf-add-noop" :disabled="workspace.readOnly" @click="addNode('noop')">{{ t("wf.addNoop") }}</a-button></template>
-          <a-button size="small" type="primary" data-testid="wf-save" :loading="design.saving" :disabled="workspace.readOnly" @click="save">
+          <a-button size="small" type="primary" data-testid="wf-save" :loading="design.saving"
+            :disabled="workspace.readOnly || workspace.hasPendingDiskRefresh?.() || !!design.diskConflict" @click="save">
             {{ t("wf.save") }}
           </a-button>
           <!-- 生命周期组：可用性随 status；dirty/在途时全组禁用（title 仅 dirty 时提示先保存） -->

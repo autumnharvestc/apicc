@@ -183,6 +183,31 @@ describe("contract workspace write journal", () => {
     expect(await readFile(lockPath, "utf8")).toBe(unknownOwner);
   });
 
+  it("keeps a held writer out of an explicit disk snapshot and ignores empty subtrees", async () => {
+    const { readStableContractWorkspace } = await import("../../src/storage/contractFiles.js");
+    const root = await temporaryRoot();
+    const originalPlan = plan();
+    const initial = await commit(root, originalPlan, { expectedRevision: "empty", deletions: [] });
+    await mkdir(join(root, "unused", "empty"), { recursive: true });
+    expect(await readStableContractWorkspace(root)).toEqual(await decodeContractWorkspace(root));
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const updatedPlan = plan();
+    updatedPlan.files.set("apicc.workspace.yaml", updatedPlan.files.get("apicc.workspace.yaml")! + "\n# disk change\n");
+    const writing = commit(root, updatedPlan, { expectedRevision: initial.revision, deletions: [], faultInjector: async (stage) => {
+      if (stage === "after-staging") { enter(); await hold; }
+    } });
+    try {
+      await entered;
+      await expect(readStableContractWorkspace(root)).rejects.toMatchObject({ reason: "busy" });
+    } finally {
+      release();
+      await writing;
+    }
+    expect((await readStableContractWorkspace(root)).revision).toBe((await writing).revision);
+  });
+
   it("rolls back all prior files after a staging failure", async () => {
     const root = await temporaryRoot();
     const originalPlan = plan();

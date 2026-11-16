@@ -1,8 +1,25 @@
 import { reactive } from "vue";
-import type { DatasetAsset, EvidenceIdentity, SuiteAsset, SuitePreview, SuiteRunOverrides } from "@apicc/core";
-import type { ApiccApi } from "../../../shared/types.js";
+import type { ContractProject, DatasetAsset, EvidenceIdentity, SuiteAsset, SuitePreview, SuiteRunOverrides } from "@apicc/core";
+import type { ApiccApi, WorkspaceRefreshResult } from "../../../shared/types.js";
 import type { ProjectLocator } from "../../../shared/locations.js";
 import type { AssertionOperatorDTO, EvidenceInvocation, SuiteInvocation, SuiteOutput, TestingAssets } from "../../../shared/testing.js";
+import { LocalWorkspaceError, type LocalWorkspaceFailure } from "../../../shared/workspace-refresh.js";
+import { currentDiskRead, diskApi, diskProject, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
+
+function suiteDependencies(project: ContractProject | undefined, locator: ProjectLocator, suite: SuiteAsset): unknown {
+  if (!project) return null;
+  return {
+    dataset: project.datasets?.find((item) => item.id === suite.datasetId),
+    environment: project.environments.find((item) => item.id === suite.environmentId),
+    selection: suite.selection.kind === "query"
+      ? suite.selection.collectionIds?.map((id) => project.collections.some((item) => item.id === id))
+      : suite.selection.entries.map((entry) => {
+        if (entry.kind === "workflow") return project.workflows.find((item) => item.id === entry.workflowId);
+        const api = diskApi(project, { ...locator, ...entry });
+        return api && { request: api.contract.request, cases: api.cases.filter((item) => item.id === entry.caseId) };
+      }),
+  };
+}
 
 export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () => boolean; getActive?: () => { root: string; project: ProjectLocator; readOnly: boolean } | null }) {
   let generation = 0;
@@ -11,6 +28,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
   let activeRun: { input: SuiteInvocation | EvidenceInvocation; completion: Promise<void>; cancel: () => Promise<boolean> } | null = null;
   let navigation = 0;
   let changing = 0;
+  let diskEpoch = 0;
   const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
   const key = (root: string, project: ProjectLocator) => JSON.stringify([root, project.workspaceId, project.groupId, project.projectId]);
   const store = reactive({
@@ -24,11 +42,17 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
     running: false,
     transitioning: false,
     error: "",
+    diskConflict: null as DiskDraftConflict | null,
+    saveFailure: null as LocalWorkspaceFailure | null,
     preview: null as SuitePreview | null,
     result: null as SuiteOutput | null,
     evidenceMode: "failures" as "none" | "failures" | "all",
     importPreview: null as Pick<DatasetAsset, "columns" | "rows"> | null,
-    get dirty(): boolean { const value = store.dataset ?? store.suite; return !!value && (store.creating || JSON.stringify(value) !== store.snapshot); },
+    pendingDatasetColumns: null as string | null,
+    get dirty(): boolean {
+      const value = store.dataset ?? store.suite;
+      return !!value && (store.creating || JSON.stringify(value) !== store.snapshot || store.pendingDatasetColumns !== null);
+    },
     get current(): boolean {
       if (!options.getActive) return !!store.view;
       const current = options.getActive();
@@ -53,11 +77,15 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         if (store.suite) store.suite = JSON.parse(store.snapshot) as SuiteAsset;
       }
       store.creating = false; store.importPreview = null; generation++;
+      store.pendingDatasetColumns = null;
+      store.diskConflict = null; store.saveFailure = null;
     },
     async evict(root: string, project: ProjectLocator) {
       if (activeKey !== key(root, project)) return;
       return navigate(() => {
         generation++; activeKey = ""; store.view = null; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false; store.importPreview = null; store.preview = null; store.result = null; store.running = false; store.busy = false;
+        store.diskConflict = null; store.saveFailure = null;
+        store.pendingDatasetColumns = null;
       });
     },
     async activate(root: string, project: ProjectLocator | null, readOnly = false) {
@@ -69,10 +97,13 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         activeKey = target; readonlyOverride = readOnly;
         store.view = null; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false;
         store.preview = null; store.result = null; store.importPreview = null; store.error = ""; store.busy = true; store.running = false;
+        store.diskConflict = null; store.saveFailure = null;
+        store.pendingDatasetColumns = null;
         if (!project || !root) { store.busy = false; return true; }
         try {
-          const view = await api.listTestingAssets({ root, project: clone(project) });
-          if (generation !== token || activeKey !== target) return false;
+          const view = await currentDiskRead(() => api.listTestingAssets({ root, project: clone(project) }), () => diskEpoch,
+            () => generation === token && activeKey === target);
+          if (!view || generation !== token || activeKey !== target) return false;
           const operators = await api.assertionOperators();
           if (generation !== token || activeKey !== target) return false;
           store.view = view; store.operators = operators;
@@ -91,6 +122,8 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         if (!store.current) return false;
         generation++; store.dataset = kind === "dataset" ? clone(asset as DatasetAsset) : null; store.suite = kind === "suite" ? clone(asset as SuiteAsset) : null;
         store.snapshot = JSON.stringify(asset); store.creating = false; store.preview = null; store.result = null; store.importPreview = null; store.error = ""; store.busy = false; store.running = false;
+        store.diskConflict = null; store.saveFailure = null;
+        store.pendingDatasetColumns = null;
         return true;
       });
     },
@@ -110,17 +143,29 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
     },
     async save() {
       writable(); const token = generation; const asset = clone(store.dataset ?? store.suite); if (!asset) return;
+      if (store.diskConflict) throw new Error("disk-draft-blocked");
+      const currentDisk = diskEpoch;
       const context = clone(store.view!.context); const savedSnapshot = JSON.stringify(asset); store.busy = true;
+      store.saveFailure = null;
       try {
         const view = store.dataset
           ? await api.saveDataset({ context, locator: { ...context.project, datasetId: asset.id }, asset: asset as DatasetAsset, create: store.creating })
           : await api.saveSuite({ context, locator: { ...context.project, suiteId: asset.id }, asset: asset as SuiteAsset, create: store.creating });
-        if (token !== generation || !store.current) return;
+        if (token !== generation || currentDisk !== diskEpoch || !store.current) return;
         store.view = view; store.snapshot = savedSnapshot; store.creating = false; store.error = ""; store.preview = null;
-      } catch (error) { if (token === generation) store.error = message(error); throw error; }
+      } catch (error) {
+        if (token === generation && currentDisk === diskEpoch) {
+          if (error instanceof LocalWorkspaceError) {
+            store.saveFailure = error.failure;
+            store.error = error.failure.reason;
+          } else store.error = message(error);
+        }
+        throw error;
+      }
       finally { if (token === generation) store.busy = false; }
     },
     async remove() {
+      if (store.diskConflict) throw new Error("disk-draft-blocked");
       writable(); if (!store.confirmLeave()) return;
       return navigate(async () => {
         writable();
@@ -130,6 +175,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         const view = await api.deleteTestingAsset({ context, target });
         if (token !== generation || !store.current) return;
         store.view = view; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false; store.preview = null; store.result = null; generation++;
+        store.pendingDatasetColumns = null;
       });
     },
     async previewImport(format: "csv" | "json", content: string) {
@@ -137,7 +183,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       const preview = await api.importDataset({ context: clone(store.view!.context), format, content });
       if (token === generation && store.current && JSON.stringify(store.dataset) === before) store.importPreview = preview;
     },
-    applyImport() { writable(); if (store.dataset && store.importPreview) { Object.assign(store.dataset, clone(store.importPreview)); store.importPreview = null; } },
+    applyImport() { writable(); if (store.dataset && store.importPreview) { Object.assign(store.dataset, clone(store.importPreview)); store.importPreview = null; store.pendingDatasetColumns = null; } },
     async exportDataset(format: "csv" | "json") {
       if (!store.current || !store.view || !store.dataset || store.dirty) throw new Error("Save dataset before export");
       const token = generation; const result = await api.exportDataset({ context: clone(store.view.context), locator: { ...store.view.context.project, datasetId: store.dataset.id }, format });
@@ -155,6 +201,49 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       if (datasetId) store.dataset = clone(view.datasets.find(item => item.id === datasetId) ?? null);
       if (suiteId) store.suite = clone(view.suites.find(item => item.id === suiteId) ?? null);
       store.snapshot = JSON.stringify(store.dataset ?? store.suite); store.preview = null;
+    },
+    async reconcileDiskRefresh(receipt: WorkspaceRefreshResult, isCurrent: () => boolean) {
+      diskEpoch++;
+      const readEpoch = diskEpoch;
+      const context = store.view?.context;
+      if (!context || context.root !== receipt.root) return;
+      const scope = key(context.root, context.project);
+      const before = diskProject(receipt.previousWorkspace, context.project);
+      const after = diskProject(receipt.workspace, context.project);
+      const view = after ? await api.listTestingAssets({ root: context.root, project: context.project }).catch(() => null) : null;
+      if (!isCurrent() || activeKey !== scope || readEpoch !== diskEpoch || (view && view.context.revision !== receipt.revision)) return;
+      if (store.error === store.saveFailure?.reason) store.error = "";
+      store.saveFailure = null;
+      if (view) store.view = view;
+      const current = store.dataset ?? store.suite;
+      if (!current) return;
+      const isDataset = store.dataset !== null;
+      const incoming = isDataset ? after?.datasets?.find((item) => item.id === current.id) : after?.suites?.find((item) => item.id === current.id);
+      const draftChanged = store.creating ? !!incoming : !sameDiskValue(JSON.parse(store.snapshot), incoming);
+      const dependenciesChanged = store.suite
+        ? !sameDiskValue(suiteDependencies(before, context.project, store.suite), suiteDependencies(after, context.project, store.suite))
+        : false;
+      const epoch = diskEpoch, token = generation;
+      const restore = () => {
+        if (epoch !== diskEpoch || token !== generation || activeKey !== scope || !isCurrent()) return;
+        if (isDataset) store.dataset = incoming ? clone(incoming as DatasetAsset) : null;
+        else store.suite = incoming ? clone(incoming as SuiteAsset) : null;
+        store.snapshot = incoming ? JSON.stringify(incoming) : "";
+        store.creating = false;
+        store.diskConflict = null;
+        store.saveFailure = null;
+        store.error = "";
+        store.importPreview = null;
+        store.pendingDatasetColumns = null;
+        store.preview = null;
+      };
+      if (store.dirty && (store.diskConflict || !view || draftChanged || dependenciesChanged)) {
+        store.diskConflict = {
+          reason: !after || (!incoming && !store.creating) ? "deleted" : !view ? "unverified" : "changed",
+          name: current.name,
+          ...(view || !after ? { restore } : {}),
+        };
+      } else if (!store.dirty && (view || !after)) restore();
     },
     async previewSuite(overrides: SuiteRunOverrides = {}) {
       const input = suiteInput(overrides); const token = generation;

@@ -67,6 +67,7 @@ import {
   OAuthProfilesGetInputSchema,
 } from "./oauth.js";
 import { IpcChannel, type IpcChannelName } from "./channels.js";
+import { WorkspaceRefreshInputSchema, localWorkspaceFailureMethodsByChannel, type LocalWorkspaceFailure, type LocalWorkspaceFailureChannel } from "./workspace-refresh.js";
 import { AiSettingsWriteSchema, AiCatalogImportSchema, AiPrepareSchema, AiStartSchema, AiCancelSchema, AiProbeSchema, AiDiscoverSchema, AiChoicesInputSchema, AiChoicesPageInputSchema } from "./ai/contract.js";
 import { DesignExportInputSchema, DesignPreviewInputSchema } from "./design.js";
 import {
@@ -236,6 +237,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.SuiteCancel]: z.tuple([SuiteInvocationSchema]),
   [IpcChannel.WsOpen]: z.tuple([z.string(), ProjectLocatorSchema.optional()]),
   [IpcChannel.WsResolveRoot]: z.tuple([z.string()]),
+  [IpcChannel.WsRefresh]: z.tuple([WorkspaceRefreshInputSchema]),
   [IpcChannel.WsCreate]: z.tuple([z.string(), z.string()]),
   [IpcChannel.WsPickDirectory]: z.tuple([]),
   [IpcChannel.WsValidate]: z.tuple([]),
@@ -410,22 +412,18 @@ type IpcArgsMatch = {
 };
 
 const resultMethodByChannel = {
+  ...localWorkspaceFailureMethodsByChannel,
   [IpcChannel.EvidenceInspect]: "inspectEvidence",
   [IpcChannel.EvidenceRerun]: "rerunEvidence",
   [IpcChannel.EvidenceCancel]: "cancelEvidence",
-  [IpcChannel.WsOpen]: "wsOpen",
-  [IpcChannel.WsResolveRoot]: "wsResolveRoot",
   [IpcChannel.TestingList]: "listTestingAssets",
   [IpcChannel.AssertionOperators]: "assertionOperators",
-  [IpcChannel.DatasetSave]: "saveDataset",
-  [IpcChannel.SuiteSave]: "saveSuite",
   [IpcChannel.TestingDelete]: "deleteTestingAsset",
   [IpcChannel.DatasetImport]: "importDataset",
   [IpcChannel.DatasetExport]: "exportDataset",
   [IpcChannel.SuitePreview]: "previewSuite",
   [IpcChannel.SuiteRun]: "runSuite",
   [IpcChannel.SuiteCancel]: "cancelSuite",
-  [IpcChannel.WsCreate]: "wsCreate",
   [IpcChannel.WsPickDirectory]: "wsPickDirectory",
   [IpcChannel.WsValidate]: "wsValidate",
   [IpcChannel.TreeGet]: "treeGet",
@@ -433,20 +431,12 @@ const resultMethodByChannel = {
   [IpcChannel.NodeRename]: "nodeRename",
   [IpcChannel.NodeDelete]: "nodeDelete",
   [IpcChannel.EnvCreate]: "envCreate",
-  [IpcChannel.EnvVarsSave]: "envVarsSave",
-  [IpcChannel.EnvBaseUrlsSave]: "envBaseUrlsSave",
   [IpcChannel.ContainerSave]: "containerSave",
   [IpcChannel.ContainerGet]: "containerGet",
-  [IpcChannel.GlobalsSave]: "globalsSave",
   [IpcChannel.GlobalsGet]: "globalsGet",
   [IpcChannel.StressPolicySave]: "stressPolicySave",
   [IpcChannel.ApiGet]: "apiGet",
-  [IpcChannel.ApiCreateFromRequestDraft]: "apiCreateFromRequestDraft",
   [IpcChannel.DebugProjectContext]: "debugProjectContext",
-  [IpcChannel.ApiSave]: "apiSave",
-  [IpcChannel.ApiRequestDraftSave]: "apiRequestDraftSave",
-  [IpcChannel.CaseSave]: "caseSave",
-  [IpcChannel.CaseDraftSave]: "caseDraftSave",
   [IpcChannel.CaseDelete]: "caseDelete",
   [IpcChannel.ModelList]: "modelList",
   [IpcChannel.ModelGet]: "modelGet",
@@ -495,8 +485,6 @@ const resultMethodByChannel = {
   [IpcChannel.WfCreate]: "wfCreate",
   [IpcChannel.WfDelete]: "wfDelete",
   [IpcChannel.WfRename]: "wfRename",
-  [IpcChannel.WfSave]: "wfSave",
-  [IpcChannel.WfSetStatus]: "wfSetStatus",
   [IpcChannel.WfImpact]: "wfImpact",
   [IpcChannel.WfRun]: "wfRun",
   [IpcChannel.WfCancel]: "wfCancel",
@@ -574,6 +562,16 @@ type IpcArgsAreSynchronizedWithPreload = AssertNoMismatchedIpcArgs<MismatchedIpc
 
 export type IpcResultMap = {
   [Channel in IpcChannelName]: Awaited<ReturnType<ApiccApi[(typeof resultMethodByChannel)[Channel]]>>;
+};
+
+export type IpcTransportResultMap = {
+  [Channel in IpcChannelName]: IpcResultMap[Channel] | (Channel extends LocalWorkspaceFailureChannel ? LocalWorkspaceFailure : never);
+};
+type LocalWorkspaceFailureMethod = (typeof resultMethodByChannel)[LocalWorkspaceFailureChannel];
+export type ApiccBridge = {
+  [Method in keyof ApiccApi]: Method extends LocalWorkspaceFailureMethod
+    ? (...args: Parameters<Extract<ApiccApi[Method], (...args: never[]) => unknown>>) => Promise<Awaited<ReturnType<Extract<ApiccApi[Method], (...args: never[]) => unknown>>> | LocalWorkspaceFailure>
+    : ApiccApi[Method];
 };
 
 export function parseIpcArgs<Channel extends IpcChannelName>(channel: Channel, rawArgs: unknown): IpcArgsMap[Channel] {

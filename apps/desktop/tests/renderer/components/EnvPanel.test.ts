@@ -11,6 +11,8 @@ import { useEnvsStore } from "../../../src/renderer/src/stores/envs.js";
 import type { EnvCreateInput } from "../../../src/shared/types.js";
 import type { LocalProjectTreeNodeDTO } from "../../../src/shared/tree-dto.js";
 import EnvPanel from "../../../src/renderer/src/components/EnvPanel.vue";
+import { reconcileEnvironmentDrafts } from "../../../src/renderer/src/stores/environmentDrafts.js";
+import { localWorkspaceError } from "../../../src/shared/workspace-refresh.js";
 
 beforeAll(() => {
   // jsdom 未实现 matchMedia；antd 组件（响应式断点）挂载时需要。
@@ -445,6 +447,74 @@ describe("EnvPanel", () => {
     } finally {
       finish();
     }
+  });
+
+  it("从磁盘刷新后只重试上次未确认的基础 URL", async () => {
+    const { wrapper, api, envs, workspace, projectLocator } = await mountEnvPanel();
+    const dev = await envs.create({ locator: projectLocator, name: "refresh-dev" });
+    await chooseEnv(wrapper, dev.id);
+    await wrapper.get('[data-testid="env-var-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-var-key"]').setValue("region");
+    await wrapper.get('[data-testid="env-var-value"]').setValue("north");
+    await wrapper.get('[data-testid="env-baseurl-input"]').setValue("https://example.test/north");
+    const saveVars = vi.spyOn(api, "envVarsSave");
+    const saveUrls = vi.spyOn(api, "envBaseUrlsSave").mockRejectedValueOnce(localWorkspaceError("revision-conflict", "stale", workspace.root));
+    const save = () => wrapper.get('[data-testid="env-vars-save"]').trigger("click");
+    await save();
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="env-save-error"]').text()).toContain("模块基础 URL 保存失败"));
+    await workspace.refreshFromDisk(async (receipt) => {
+      reconcileEnvironmentDrafts(envs, receipt);
+      await envs.load(projectLocator);
+    });
+    expect(wrapper.get<HTMLInputElement>('[data-testid="env-baseurl-input"]').element.value).toBe("https://example.test/north");
+    await save();
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="env-vars-saved"]').text()).toBe("已保存"));
+    expect(saveVars).toHaveBeenCalledTimes(1);
+    expect(saveUrls).toHaveBeenCalledTimes(2);
+  });
+
+  it("重复刷新后载入磁盘基础 URL 时保留独立的变量草稿", async () => {
+    const { wrapper, api, envs, workspace, projectLocator } = await mountEnvPanel({
+      resolveDiskConflict: (conflict: { restore?: () => void }) => conflict.restore?.(),
+    });
+    const dev = await envs.create({ locator: projectLocator, name: "isolated-dev" });
+    await chooseEnv(wrapper, dev.id);
+    await wrapper.get('[data-testid="env-var-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-var-key"]').setValue("region");
+    await wrapper.get('[data-testid="env-var-value"]').setValue("north");
+    const input = '[data-testid="env-baseurl-input"]';
+    await wrapper.get(input).setValue("https://example.test/local");
+    const collection = wrapper.get(input).attributes("data-collection-id")!;
+    await api.envBaseUrlsSave({ ...projectLocator, environmentId: dev.id }, { [collection]: "https://example.test/disk" });
+    const refresh = () => workspace.refreshFromDisk(async (receipt) => {
+      reconcileEnvironmentDrafts(envs, receipt);
+      await envs.load(projectLocator);
+    });
+    await refresh();
+    await refresh();
+    const conflict = wrapper.get('[data-testid="env-disk-conflict"]');
+    expect(conflict.text()).toContain("isolated-dev");
+    await conflict.get("button").trigger("click");
+    expect(wrapper.get<HTMLInputElement>(input).element.value).toBe("https://example.test/disk");
+    expect(wrapper.get<HTMLInputElement>('[data-testid="env-var-value"]').element.value).toBe("north");
+    expect(wrapper.get('[data-testid="env-save-status"]').text()).toBe("未保存");
+  });
+
+  it("刷新外部全局查询参数后，保存变量只确认变量草稿", async () => {
+    const { wrapper, api, envs, workspace, projectLocator } = await mountEnvPanel();
+    await wrapper.get('[data-testid="env-tab-globals-vars"]').trigger("click");
+    await wrapper.get('[data-testid="env-global-var-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-global-var-key"]').setValue("region");
+    await wrapper.get('[data-testid="env-global-var-value"]').setValue("north");
+    const query = [{ key: "user", value: "from disk", enabled: true }];
+    await api.globalsSave(projectLocator, { variables: {}, query, headers: [], body: [], cookies: [] });
+    await workspace.refreshFromDisk(async (receipt) => {
+      reconcileEnvironmentDrafts(envs, receipt);
+      await envs.load(projectLocator);
+    });
+    const recorded = vi.spyOn(api, "globalsSave");
+    await wrapper.get('[data-testid="env-global-vars-save"]').trigger("click");
+    await vi.waitFor(() => expect(recorded).toHaveBeenCalledWith(projectLocator, expect.objectContaining({ variables: { region: "north" }, query })));
   });
 
   it("旧配置中的空白按写入规则比较，切模块重挂后保留草稿和进行中的写入", async () => {

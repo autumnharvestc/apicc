@@ -33,6 +33,7 @@ const props = defineProps<{
   /** 打开项目回调：组合根成签并激活（不变量 1）+ 切接口模块。 */
   openProject: (locator: ProjectLocator) => void;
   openLocalWorkspace?: (root: string) => Promise<void>;
+  refreshLocalWorkspace?: () => Promise<void>;
   /** 打开在线工作区回调（计划 C 终审 Important 1 ①，open-project 同款组合根模式）：组合根
    * 打开驻留会话并切接口模块——纯在线用户（无本地工作区）从主页打开在线工作区后由此离开
    * 主页（否则侧栏 v-show 与 ModuleRail v-if 双双隐藏，在线树/成签入口不可达）。 */
@@ -427,11 +428,15 @@ const wsDialogOpen = ref(false);
 const pendingRoot = ref("");
 const localWorkspaceActions = computed(() => [
   { key: "open", label: t("home.openWorkspace"), testId: "home-open-dir" },
+  ...(props.workspace.opened && props.refreshLocalWorkspace ? [{
+    key: "refresh", label: t("diskRefresh.action"), testId: "home-refresh-disk", disabled: props.workspace.hasPendingDiskRefresh(),
+  }] : []),
   { key: "create", label: t("home.newDir"), testId: "home-new-dir" },
 ]);
 
 function onLocalWorkspaceAction(action: string) {
   if (action === "open") void openLocalDir();
+  if (action === "refresh") void props.refreshLocalWorkspace?.();
   if (action === "create") void startCreateLocal();
 }
 

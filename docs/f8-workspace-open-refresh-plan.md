@@ -1,6 +1,6 @@
 # F8 桌面启动复用与本地工作区刷新实施计划
 
-**状态**　两批技术详细设计、任务和验收用例同档。第一批验收回执见 F8 工作记录，第二批从该候选接续。评估基线为 `3190af4e`／CI108。
+**状态**　两批分别完成实现、独审和定向验收，回执见 F8 工作记录。评估基线为 `3190af4e`／CI108。
 
 [产品设计](f8-workspace-open-refresh-design.md) · [F8 工作记录](f8-frontend-polish-worklog.md) · [页面展示规范](ui-presentation-guidelines.md)
 

@@ -1,39 +1,11 @@
-<script lang="ts">
-import type { KeyValuePair } from "@apicc/core";
-import type { ProjectGlobalSettings } from "../../../shared/types.js";
-
-type FailureStep = "globals" | "variables" | "baseUrls" | "interrupted";
-interface VarRow { id: string; key: string; value: string }
-interface ParamRow extends VarRow { enabled: boolean }
-interface SaveFeedback {
-  pending: boolean;
-  saved: boolean;
-  error: { step: FailureStep; message: string } | null;
-}
-interface EnvironmentDraft {
-  rows: VarRow[];
-  baseUrls: Record<string, string>;
-  confirmedVariables: Record<string, string>;
-  confirmedBaseUrls: Record<string, string>;
-  feedback: SaveFeedback;
-}
-interface ProjectDraft {
-  globals: ProjectGlobalSettings;
-  variableRows: VarRow[];
-  queryRows: ParamRow[];
-  headerRows: ParamRow[];
-  variableFeedback: SaveFeedback;
-  parameterFeedback: SaveFeedback;
-  environments: Map<string, EnvironmentDraft>;
-}
-
-// The local and online workbenches each keep their existing store when this
-// panel unmounts. Keep drafts and pending feedback with that store instance.
-const projectDrafts = new WeakMap<ReturnType<typeof useEnvsStore>, Map<string, ProjectDraft>>();
-</script>
-
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, toRaw, watch } from "vue";
+import type { KeyValuePair } from "@apicc/core";
+import { LocalWorkspaceError } from "../../../shared/workspace-refresh.js";
+import { baseUrlPayload, environmentDraftsFor, normalizedVariables, parameterPayload, paramsToRows, recordToRows, variablePayload,
+  type EnvironmentDraft, type FailureStep, type ParamRow, type ProjectDraft, type SaveFeedback, type VarRow } from "../stores/environmentDrafts.js";
+import { isRefreshableFailure, jsonCopy, type DiskDraftConflict } from "../stores/diskDrafts.js";
+import { diskErrorMessage } from "../diskRefreshPresentation.js";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Checkbox as ACheckbox, Input as AInput, Modal as AModal, Select as ASelect, Tooltip as ATooltip } from "ant-design-vue";
 import { DeleteOutlined, EllipsisOutlined, PlusOutlined } from "@ant-design/icons-vue";
@@ -50,28 +22,36 @@ const props = defineProps<{
   workspace: ReturnType<typeof useWorkspaceStore>;
   projectLocator: ProjectLocator | null;
   reportError: (e: unknown) => void;
+  refreshDisk?: () => Promise<void>;
+  resolveDiskConflict?: (conflict: DiskDraftConflict, event: Event) => void;
+  reviewMissingProject?: boolean;
 }>();
 const { t } = useI18n();
 
 const pane = ref("gvars");
-const drafts = computed(() => {
-  const existing = projectDrafts.get(props.envs);
-  if (existing) return existing;
-  const draftMap = reactive(new Map<string, ProjectDraft>());
-  projectDrafts.set(props.envs, draftMap);
-  return draftMap;
-});
+const drafts = computed(() => environmentDraftsFor(props.envs));
 const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
 const loadedKey = computed(() => props.envs.root !== null && props.envs.projectLocator
   ? projectSessionKey(props.envs.root, props.envs.projectLocator) : "");
-const contextReady = computed(() => !!projectKey.value && projectKey.value === loadedKey.value);
+const contextReady = computed(() => !!projectKey.value && (projectKey.value === loadedKey.value || props.reviewMissingProject));
+const environmentReadOnly = computed(() => props.workspace.readOnly || !!props.reviewMissingProject);
 const scope = computed(() => contextReady.value ? drafts.value.get(projectKey.value) : undefined);
 const collections = computed(() => {
+  if (props.reviewMissingProject) return scope.value?.previousModules ?? [];
   const project = props.projectLocator ? props.workspace.findProject(props.projectLocator) : null;
   return (project?.children ?? []).filter((node) => node.kind === "collection").map((node) => ({ id: node.id, name: node.label }));
 });
 const projectName = computed(() => props.projectLocator ? props.workspace.findProject(props.projectLocator)?.label : undefined);
-const environmentList = computed(() => contextReady.value ? props.envs.envs : []);
+const environmentList = computed(() => {
+  if (!contextReady.value || !props.projectLocator) return [];
+  const current = props.reviewMissingProject ? [] : props.envs.envs;
+  const retained = [...(scope.value?.environments.entries() ?? [])].flatMap(([id, draft]) =>
+    draft.feedback.conflict?.reason === "deleted" && !current.some((entry) => entry.id === id) ? [{
+      id, name: draft.name, locator: { ...props.projectLocator!, environmentId: id },
+      variables: draft.confirmedVariables, baseUrls: draft.confirmedBaseUrls,
+    }] : []);
+  return [...current, ...retained];
+});
 const currentEnvironment = computed(() => environmentList.value.find((env) => env.id === pane.value));
 const environmentDraft = computed(() => currentEnvironment.value ? scope.value?.environments.get(currentEnvironment.value.id) : undefined);
 const variableRows = computed(() => environmentDraft.value?.rows ?? scope.value?.variableRows ?? []);
@@ -95,34 +75,6 @@ async function loadEnvs() {
   }
 }
 
-function recordToRows(record: Record<string, string>): VarRow[] {
-  return Object.entries(record).map(([key, value]) => ({ id: crypto.randomUUID(), key, value }));
-}
-
-function paramsToRows(list: KeyValuePair[]): ParamRow[] {
-  return list.map((item) => ({ id: crypto.randomUUID(), ...item }));
-}
-
-function normalizeVariableEntries(entries: [string, string][]): Record<string, string> {
-  return Object.fromEntries(entries.map(([key, value]) => [key.trim(), value]).filter(([key]) => key));
-}
-
-function normalizedVariables(variables: Record<string, string>): Record<string, string> {
-  return normalizeVariableEntries(Object.entries(variables));
-}
-
-function variablePayload(rows: VarRow[]): Record<string, string> {
-  return normalizeVariableEntries(rows.map(({ key, value }) => [key, value]));
-}
-
-function parameterPayload(rows: KeyValuePair[]): KeyValuePair[] {
-  return rows.filter((row) => row.key.trim()).map(({ key, value, enabled }) => ({ key: key.trim(), value, enabled }));
-}
-
-function baseUrlPayload(urls: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(urls).map(([id, value]) => [id, value.trim()]).filter(([, value]) => value));
-}
-
 function sameRecord(left: Record<string, string>, right: Record<string, string>) {
   const keys = Object.keys(left);
   return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && right[key] === left[key]);
@@ -138,13 +90,16 @@ function newFeedback(): SaveFeedback {
 }
 
 function syncDrafts() {
-  if (!contextReady.value) return;
+  if (!contextReady.value || props.reviewMissingProject) return;
   const key = projectKey.value;
   const globals = props.envs.globals;
   let projectDraft = drafts.value.get(key);
   if (!projectDraft) {
     drafts.value.set(key, {
+      root: props.workspace.root,
+      locator: { ...props.projectLocator! },
       globals,
+      latestGlobals: globals,
       variableRows: recordToRows(globals.variables),
       queryRows: paramsToRows(globals.query),
       headerRows: paramsToRows(globals.headers),
@@ -155,23 +110,29 @@ function syncDrafts() {
     projectDraft = drafts.value.get(key)!;
   } else if (!projectDraft.variableFeedback.pending && !projectDraft.parameterFeedback.pending) {
     const previous = projectDraft.globals;
-    if (sameRecord(variablePayload(projectDraft.variableRows), normalizedVariables(previous.variables)) && !sameRecord(globals.variables, previous.variables)) {
+    if (!projectDraft.variableFeedback.conflict && sameRecord(variablePayload(projectDraft.variableRows), normalizedVariables(previous.variables)) && !sameRecord(globals.variables, previous.variables)) {
       projectDraft.variableRows = recordToRows(globals.variables);
     }
-    if (sameParams(parameterPayload(projectDraft.queryRows), parameterPayload(previous.query)) && !sameParams(globals.query, previous.query)) {
+    if (!projectDraft.parameterFeedback.conflict && sameParams(parameterPayload(projectDraft.queryRows), parameterPayload(previous.query)) && !sameParams(globals.query, previous.query)) {
       projectDraft.queryRows = paramsToRows(globals.query);
     }
-    if (sameParams(parameterPayload(projectDraft.headerRows), parameterPayload(previous.headers)) && !sameParams(globals.headers, previous.headers)) {
+    if (!projectDraft.parameterFeedback.conflict && sameParams(parameterPayload(projectDraft.headerRows), parameterPayload(previous.headers)) && !sameParams(globals.headers, previous.headers)) {
       projectDraft.headerRows = paramsToRows(globals.headers);
     }
-    projectDraft.globals = globals;
+    projectDraft.latestGlobals = globals;
+    projectDraft.globals = {
+      ...globals,
+      ...(projectDraft.variableFeedback.conflict ? { variables: previous.variables } : {}),
+      ...(projectDraft.parameterFeedback.conflict ? { query: previous.query, headers: previous.headers } : {}),
+    };
   }
   // Refresh clean fields from the loaded snapshot and preserve modified fields.
   // Pending writes establish their own baselines when their responses arrive.
   for (const env of props.envs.envs) {
     const existing = projectDraft.environments.get(env.id);
     if (existing) {
-      if (existing.feedback.pending) continue;
+      if (existing.feedback.pending || existing.feedback.conflict) continue;
+      existing.name = env.name;
       if (sameRecord(variablePayload(existing.rows), normalizedVariables(existing.confirmedVariables)) && !sameRecord(env.variables, existing.confirmedVariables)) {
         existing.rows = recordToRows(env.variables);
       }
@@ -183,6 +144,7 @@ function syncDrafts() {
       continue;
     }
     projectDraft.environments.set(env.id, {
+      name: env.name,
       rows: recordToRows(env.variables),
       baseUrls: { ...env.baseUrls },
       confirmedVariables: { ...env.variables },
@@ -191,29 +153,45 @@ function syncDrafts() {
     });
   }
   for (const id of projectDraft.environments.keys()) {
-    if (!props.envs.envs.some((env) => env.id === id)) projectDraft.environments.delete(id);
+    if (!props.envs.envs.some((env) => env.id === id) && !projectDraft.environments.get(id)?.feedback.conflict) projectDraft.environments.delete(id);
   }
 }
 
-watch(projectKey, () => {
+watch([projectKey, () => props.reviewMissingProject], () => {
   pane.value = "gvars";
+  if (props.reviewMissingProject) {
+    const draft = scope.value;
+    if (draft?.variableFeedback.conflict) return;
+    if (draft?.parameterFeedback.conflict) pane.value = "gparams";
+    else pane.value = environmentList.value[0]?.id ?? "gvars";
+    return;
+  }
   void loadEnvs();
 }, { immediate: true });
 watch([contextReady, () => props.envs.loadedRevision], syncDrafts, { immediate: true });
 watch([contextReady, () => props.envs.selectedEnvId], ([ready, id]) => {
-  if (!ready) return;
+  if (!ready || props.reviewMissingProject) return;
   if (id) pane.value = id;
-  else if (pane.value !== "gparams") pane.value = "gvars";
+  else if (pane.value !== "gparams" && scope.value?.environments.get(pane.value)?.feedback.conflict?.reason !== "deleted") pane.value = "gvars";
 }, { immediate: true });
 
 function selectEnvironment(env: EnvItem) {
   pane.value = env.id;
-  props.envs.select(env.locator);
+  if (!props.reviewMissingProject) props.envs.select(env.locator);
 }
 
 function selectGlobalPane(next: "gvars" | "gparams") {
   pane.value = next;
-  props.envs.select(null);
+  if (!props.reviewMissingProject) props.envs.select(null);
+}
+
+function resolveEnvironmentConflict(conflict: DiskDraftConflict, event: Event) {
+  const oldPane = pane.value;
+  const key = projectKey.value;
+  props.resolveDiskConflict?.({ ...conflict, restore: () => {
+    conflict.restore?.();
+    if (conflict.reason === "deleted" && key === projectKey.value && oldPane === pane.value) selectGlobalPane("gvars");
+  } }, event);
 }
 
 const activeDraft = computed(() => {
@@ -239,12 +217,13 @@ const activeDraft = computed(() => {
   };
 });
 const globalsSaving = computed(() => !!(scope.value?.variableFeedback.pending || scope.value?.parameterFeedback.pending));
-const saveDisabled = computed(() => props.workspace.readOnly || !!activeDraft.value?.feedback.pending
+const diskPending = computed(() => props.workspace.hasPendingDiskRefresh?.() ?? false);
+const saveDisabled = computed(() => environmentReadOnly.value || diskPending.value || !!activeDraft.value?.feedback.pending || !!activeDraft.value?.feedback.conflict
   || ((pane.value === "gvars" || pane.value === "gparams") && globalsSaving.value));
 const statusText = computed(() => {
   const draft = activeDraft.value;
   if (!draft) return "";
-  if (props.workspace.readOnly) return t("workspace.readonlyBadge");
+  if (environmentReadOnly.value) return t("workspace.readonlyBadge");
   if (draft.feedback.pending) return t("env.saving");
   if ((pane.value === "gvars" || pane.value === "gparams") && globalsSaving.value) return t("env.savingGlobals");
   if (draft.dirty) return t("env.unsaved");
@@ -260,11 +239,12 @@ const failureText = computed(() => {
     baseUrls: "env.saveBaseUrlsFailed",
     interrupted: "env.baseUrlsPending",
   } as const;
-  return t(keys[failure.step], { error: failure.message });
+  const typed = activeDraft.value?.feedback.failure;
+  return t(keys[failure.step], { error: typed ? t(`diskRefresh.error.${typed.reason}`) : failure.message });
 });
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  return diskErrorMessage(error, t);
 }
 
 const detail = ref<HTMLElement>();
@@ -282,21 +262,25 @@ function beginSave(feedback: SaveFeedback) {
   feedback.pending = true;
   feedback.saved = false;
   feedback.error = null;
+  feedback.failure = undefined;
 }
 
 async function saveGlobalDraft(root: string, locator: ProjectLocator, draft: ProjectDraft, variables: boolean) {
   if (globalsSaving.value || !contextIsCurrent(root, locator)) return;
   const feedback = variables ? draft.variableFeedback : draft.parameterFeedback;
-  const baseline = toRaw(draft.globals);
+  const baseline = jsonCopy(draft.latestGlobals);
   const payload = variables
     ? { ...baseline, variables: variablePayload(draft.variableRows) }
     : { ...baseline, query: parameterPayload(draft.queryRows), headers: parameterPayload(draft.headerRows) };
   beginSave(feedback);
   try {
-    draft.globals = await props.envs.saveGlobals(locator, payload);
+    const confirmed = await props.envs.saveGlobals(locator, payload);
+    draft.latestGlobals = confirmed;
+    draft.globals = variables ? { ...draft.globals, variables: confirmed.variables } : { ...draft.globals, query: confirmed.query, headers: confirmed.headers };
     feedback.saved = true;
   } catch (error) {
     feedback.error = { step: "globals", message: errorMessage(error) };
+    if (error instanceof LocalWorkspaceError) feedback.failure = error.failure;
   } finally {
     feedback.pending = false;
   }
@@ -307,21 +291,25 @@ async function saveEnvironmentDraft(root: string, locator: EnvironmentLocator, d
   if (feedback.pending || !contextIsCurrent(root, locator)) return;
   const variables = variablePayload(draft.rows);
   const baseUrls = baseUrlPayload(draft.baseUrls);
-  const retryBaseUrls = (feedback.error?.step === "baseUrls" || feedback.error?.step === "interrupted")
-    && sameRecord(variables, normalizedVariables(draft.confirmedVariables));
+  const retryBaseUrls = draft.pendingBaseUrls && sameRecord(variables, normalizedVariables(draft.confirmedVariables));
   beginSave(feedback);
   let step: FailureStep = "variables";
   try {
-    if (!retryBaseUrls) draft.confirmedVariables = await props.envs.saveVars(locator, variables);
-    if (!contextIsCurrent(root, locator)) {
+    if (!retryBaseUrls) {
+      draft.confirmedVariables = await props.envs.saveVars(locator, variables);
+      draft.pendingBaseUrls = true;
+    }
+    if (!contextIsCurrent(root, locator) || diskPending.value) {
       feedback.error = { step: "interrupted", message: "" };
       return;
     }
     step = "baseUrls";
     draft.confirmedBaseUrls = await props.envs.saveBaseUrls(locator, baseUrls);
+    draft.pendingBaseUrls = false;
     feedback.saved = true;
   } catch (error) {
     feedback.error = { step, message: errorMessage(error) };
+    if (error instanceof LocalWorkspaceError) feedback.failure = error.failure;
   } finally {
     feedback.pending = false;
   }
@@ -356,7 +344,7 @@ function closeCreateModal() {
 }
 
 function openModal(mode: string) {
-  if (!props.projectLocator || !contextIsCurrent(props.workspace.root, props.projectLocator) || props.workspace.readOnly) return;
+  if (!props.projectLocator || !contextIsCurrent(props.workspace.root, props.projectLocator) || environmentReadOnly.value) return;
   if (mode !== "new" && mode !== "derive") return;
   if (mode === "derive" && !environmentList.value.length) return;
   modal.value = {
@@ -370,7 +358,7 @@ function openModal(mode: string) {
 
 async function confirmModal() {
   const target = modal.value;
-  if (!target || props.workspace.readOnly || !contextIsCurrent(target.root, target.locator)) return;
+  if (!target || environmentReadOnly.value || !contextIsCurrent(target.root, target.locator)) return;
   const name = target.name.trim();
   if (!name) return;
   const parent = target.mode === "derive" ? environmentList.value.find((env) => env.id === target.parentId) : undefined;
@@ -390,7 +378,7 @@ let deleteTrigger: HTMLElement | undefined;
 
 function openDelete(env: EnvItem) {
   if (!contextIsCurrent(props.workspace.root, env.locator)
-    || props.workspace.readOnly || scope.value?.environments.get(env.id)?.feedback.pending) return;
+    || environmentReadOnly.value || scope.value?.environments.get(env.id)?.feedback.pending) return;
   deleteTrigger = nav.value?.querySelector<HTMLElement>(`[data-environment-menu="${env.id}"]`) ?? undefined;
   deleteTarget.value = { root: props.workspace.root, locator: { ...env.locator }, name: env.name };
 }
@@ -412,7 +400,7 @@ function cancelDelete() {
 async function onDeleteConfirm() {
   const target = deleteTarget.value;
   deleteTarget.value = null;
-  if (!target || props.workspace.readOnly || !contextIsCurrent(target.root, target.locator)
+  if (!target || environmentReadOnly.value || !contextIsCurrent(target.root, target.locator)
     || !environmentList.value.some((env) => env.id === target.locator.environmentId)
     || scope.value?.environments.get(target.locator.environmentId)?.feedback.pending) {
     restoreDeleteFocus();
@@ -428,7 +416,7 @@ async function onDeleteConfirm() {
   }
 }
 
-const okButtonProps = computed(() => ({ "data-testid": "env-modal-confirm", disabled: props.workspace.readOnly }));
+const okButtonProps = computed(() => ({ "data-testid": "env-modal-confirm", disabled: environmentReadOnly.value }));
 const cancelButtonProps: Record<string, unknown> = { "data-testid": "env-modal-cancel" };
 function rowActions(env: EnvItem) {
   const pending = scope.value?.environments.get(env.id)?.feedback.pending;
@@ -453,7 +441,7 @@ function rowActions(env: EnvItem) {
         <div class="environment-heading">
           <h2 class="side-heading">{{ t("env.envSection") }}</h2>
           <ActionMenu test-id="env-create-menu" :label="t('env.createActions')" :items="createItems"
-            :disabled="workspace.readOnly || !contextReady" @select="openModal">
+            :disabled="environmentReadOnly || !contextReady" @select="openModal">
             <PlusOutlined />
           </ActionMenu>
         </div>
@@ -464,7 +452,7 @@ function rowActions(env: EnvItem) {
               :data-testid="`env-item-${env.id}`" @click="selectEnvironment(env)">{{ env.name }}</button>
           </a-tooltip>
           <ActionMenu class="environment-menu" :test-id="`env-more-${env.id}`" :data-environment-menu="env.id"
-            :label="t('env.rowActions', { name: env.name })" :items="rowActions(env)" :disabled="workspace.readOnly"
+            :label="t('env.rowActions', { name: env.name })" :items="rowActions(env)" :disabled="environmentReadOnly"
             @select="openDelete(env)">
             <EllipsisOutlined />
           </ActionMenu>
@@ -491,6 +479,13 @@ function rowActions(env: EnvItem) {
               </div>
             </div>
             <p v-if="failureText" class="failure" role="alert" data-testid="env-save-error">{{ failureText }}</p>
+            <a-button v-if="activeDraft?.feedback.failure && refreshDisk && isRefreshableFailure(activeDraft.feedback.failure)"
+              size="small" :disabled="diskPending" data-testid="env-refresh-disk" @click="refreshDisk">{{ t("diskRefresh.action") }}</a-button>
+            <div v-if="activeDraft?.feedback.conflict" class="failure" role="alert" data-testid="env-disk-conflict">
+              <span>{{ t(`diskRefresh.draft.${activeDraft.feedback.conflict.reason}`, { name: activeDraft.feedback.conflict.name }) }}</span>
+              <a-button v-if="activeDraft.feedback.conflict.restore && resolveDiskConflict" size="small"
+                @click="resolveEnvironmentConflict(activeDraft.feedback.conflict, $event)">{{ t(activeDraft.feedback.conflict.reason === "deleted" ? "diskRefresh.discardRemoved" : "diskRefresh.restore") }}</a-button>
+            </div>
           </header>
 
           <div v-if="pane === 'gparams'" data-testid="env-pane-globals-params" class="pane-body">
@@ -498,7 +493,7 @@ function rowActions(env: EnvItem) {
               { id: 'header', label: t('env.headerParams'), rows: scope.headerRows }]" :key="section.id" class="table-section">
               <div class="section-head">
                 <h2 :id="`env-${section.id}-title`">{{ section.label }}</h2>
-                <a-button type="text" size="small" :disabled="workspace.readOnly" :data-testid="`env-global-${section.id}-add`" @click="addParameter(section.rows)">
+                <a-button type="text" size="small" :disabled="environmentReadOnly" :data-testid="`env-global-${section.id}-add`" @click="addParameter(section.rows)">
                   <PlusOutlined /> {{ t("env.addParam") }}
                 </a-button>
               </div>
@@ -512,18 +507,18 @@ function rowActions(env: EnvItem) {
                     <tr v-if="!section.rows.length"><td colspan="4" class="table-empty">{{ t("env.noParams") }}</td></tr>
                     <tr v-for="(row, index) in section.rows" :key="row.id">
                       <td class="enabled-cell">
-                        <a-checkbox v-model:checked="row.enabled" :aria-label="t('env.enabled')" :disabled="workspace.readOnly" :data-testid="`env-global-${section.id}-enabled`" />
+                        <a-checkbox v-model:checked="row.enabled" :aria-label="t('env.enabled')" :disabled="environmentReadOnly" :data-testid="`env-global-${section.id}-enabled`" />
                       </td>
                       <td>
-                        <a-input v-model:value="row.key" :disabled="workspace.readOnly" :aria-label="t('env.paramName')"
+                        <a-input v-model:value="row.key" :disabled="environmentReadOnly" :aria-label="t('env.paramName')"
                           :data-testid="`env-global-${section.id}-key`" :placeholder="t('env.paramName')" />
                       </td>
                       <td>
-                        <a-input v-model:value="row.value" :disabled="workspace.readOnly" :aria-label="t('env.varValue')"
+                        <a-input v-model:value="row.value" :disabled="environmentReadOnly" :aria-label="t('env.varValue')"
                           :data-testid="`env-global-${section.id}-value`" :placeholder="t('env.varValue')" />
                       </td>
                       <td class="action-cell">
-                        <a-button type="text" size="small" danger :disabled="workspace.readOnly" :data-testid="`env-global-${section.id}-delete`"
+                        <a-button type="text" size="small" danger :disabled="environmentReadOnly" :data-testid="`env-global-${section.id}-delete`"
                           :aria-label="t('tree.delete')" :title="t('tree.delete')" @click="section.rows.splice(index, 1)"><DeleteOutlined /></a-button>
                       </td>
                     </tr>
@@ -549,7 +544,7 @@ function rowActions(env: EnvItem) {
                       <td>
                         <a-input v-model:value="environmentDraft.baseUrls[item.id]" data-testid="env-baseurl-input"
                           :data-collection-id="item.id" :aria-label="t('env.moduleBaseUrl', { name: item.name })"
-                          :placeholder="t('env.baseUrlPlaceholder')" :disabled="workspace.readOnly" />
+                          :placeholder="t('env.baseUrlPlaceholder')" :disabled="environmentReadOnly" />
                       </td>
                     </tr>
                   </tbody>
@@ -561,7 +556,7 @@ function rowActions(env: EnvItem) {
               <div class="section-head" v-if="environmentDraft || variableRows.length">
                 <h2 id="env-variable-title">{{ t(environmentDraft ? "env.envVars" : "env.globalVars") }}</h2>
                 <a-button
-                  size="small" type="text" :disabled="workspace.readOnly" :data-testid="`${variableTestPrefix}-add`"
+                  size="small" type="text" :disabled="environmentReadOnly" :data-testid="`${variableTestPrefix}-add`"
                   @click="addVariable(variableRows)"
                 ><PlusOutlined /> {{ t("env.addVar") }}</a-button>
               </div>
@@ -572,15 +567,15 @@ function rowActions(env: EnvItem) {
                   <tbody>
                     <tr v-for="(row, index) in variableRows" :key="row.id" :data-row-id="row.id">
                       <td>
-                        <a-input v-model:value="row.key" :aria-label="t('env.varName')" :disabled="workspace.readOnly"
+                        <a-input v-model:value="row.key" :aria-label="t('env.varName')" :disabled="environmentReadOnly"
                           :data-testid="`${variableTestPrefix}-key`" :placeholder="t('env.varName')" />
                       </td>
                       <td>
-                        <a-input v-model:value="row.value" :aria-label="t('env.varValue')" :disabled="workspace.readOnly"
+                        <a-input v-model:value="row.value" :aria-label="t('env.varValue')" :disabled="environmentReadOnly"
                           :data-testid="`${variableTestPrefix}-value`" :placeholder="t('env.varValue')" />
                       </td>
                       <td class="action-cell">
-                        <a-button type="text" size="small" danger :disabled="workspace.readOnly" :data-testid="`${variableTestPrefix}-delete`"
+                        <a-button type="text" size="small" danger :disabled="environmentReadOnly" :data-testid="`${variableTestPrefix}-delete`"
                           :aria-label="t('tree.delete')" :title="t('tree.delete')" @click="variableRows.splice(index, 1)"><DeleteOutlined /></a-button>
                       </td>
                     </tr>
@@ -589,7 +584,7 @@ function rowActions(env: EnvItem) {
               </div>
               <div v-else class="variables-empty">
                 <p>{{ t(environmentDraft ? "env.noVariables" : "env.noGlobalVariables") }}</p>
-                <a-button v-if="!environmentDraft" size="small" :disabled="workspace.readOnly" data-testid="env-global-var-add" @click="addVariable(variableRows)">
+                <a-button v-if="!environmentDraft" size="small" :disabled="environmentReadOnly" data-testid="env-global-var-add" @click="addVariable(variableRows)">
                   <PlusOutlined /> {{ t("env.addVar") }}
                 </a-button>
               </div>
@@ -604,10 +599,10 @@ function rowActions(env: EnvItem) {
       :cancel-button-props="cancelButtonProps" :width="420" data-testid="env-modal"
       @ok="confirmModal" @cancel="closeCreateModal"
     >
-      <a-input v-model:value="modal.name" data-testid="env-name-input" :placeholder="t('env.namePlaceholder')" :disabled="workspace.readOnly" />
+      <a-input v-model:value="modal.name" data-testid="env-name-input" :placeholder="t('env.namePlaceholder')" :disabled="environmentReadOnly" />
       <a-select v-if="modal.mode === 'derive'" v-model:value="modal.parentId" class="parent-select"
         :options="environmentList.map((env) => ({ label: env.name, value: env.id }))"
-        :placeholder="t('env.parent')" data-testid="env-parent-select" :disabled="workspace.readOnly" />
+        :placeholder="t('env.parent')" data-testid="env-parent-select" :disabled="environmentReadOnly" />
     </a-modal>
     <ConfirmDialog :open="deleteTarget !== null" :title="t('env.deleteConfirm', { name: deleteTarget?.name ?? '' })"
       @confirm="onDeleteConfirm" @cancel="cancelDelete" />

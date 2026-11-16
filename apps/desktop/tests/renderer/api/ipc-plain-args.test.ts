@@ -7,6 +7,8 @@ import { reactive } from "vue";
 import { toPlain, withPlainArgs } from "../../../src/renderer/src/api/index.js";
 import type { EnvironmentLocator, GroupLocator, NodeLocator, ProjectLocator } from "../../../src/shared/locations.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
+import type { ApiccBridge } from "../../../src/shared/ipc-contract.js";
+import { LocalWorkspaceError } from "../../../src/shared/workspace-refresh.js";
 
 /** importApply only transfers opaque confirmation tokens across the IPC boundary. */
 const groupTarget: GroupLocator = {
@@ -24,6 +26,13 @@ const environmentLocator: EnvironmentLocator = {
 const nodeLocator: NodeLocator = { kind: "collection", locator: { ...projectLocator, collectionId: "00000000-0000-4000-8000-000000000005" } };
 
 describe("IPC 入参深平化（withPlainArgs，回归：An object could not be cloned）", () => {
+  it("preserves a structured local failure across the bridge with the exact project", async () => {
+    const failure = { localWorkspaceFailure: true, reason: "revision-conflict", root: "C:/workspace", project: projectLocator } as const;
+    const fake = { globalsSave: async () => structuredClone(failure) } as unknown as ApiccBridge;
+    const saving = withPlainArgs(fake).globalsSave(projectLocator, { variables: {}, query: [], headers: [], body: [], cookies: [] });
+    await expect(saving).rejects.toBeInstanceOf(LocalWorkspaceError);
+    await expect(saving).rejects.toMatchObject({ failure });
+  });
   it("keeps v2 creation and the captured run/stop identity cloneable with typed inputs", async () => {
     const received: unknown[] = [];
     const fake = { wfCreate: async (input: unknown) => { received.push(structuredClone(input)); }, wfRun: async (input: unknown) => { received.push(structuredClone(input)); }, wfCancel: async (input: unknown) => { received.push(structuredClone(input)); return true; } } as unknown as ApiccApi;

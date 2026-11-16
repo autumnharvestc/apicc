@@ -3,19 +3,27 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { SuiteEntry } from "@apicc/core";
 import type { TestingStore } from "../stores/testing.js";
+import { diskErrorMessage } from "../diskRefreshPresentation.js";
+import { LocalWorkspaceError } from "../../../shared/workspace-refresh.js";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import type { EvidenceIdentity } from "@apicc/core";
 import { reportEntryEvidence } from "@apicc/core/report/units";
 import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
 const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
-const props = defineProps<{ testing: TestingStore; externalRun?: (allowDraft: boolean) => Promise<void>; ai?: import('../stores/ai.js').AiStore }>();
+const props = defineProps<{ testing: TestingStore; externalRun?: (allowDraft: boolean) => Promise<void>; ai?: import('../stores/ai.js').AiStore; refreshingDisk?: boolean }>();
 const { t, te } = useI18n(); const allowDraft = ref(false); const error = ref("");
+const errorIsTyped = ref(false);
 function stateLabel(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
 function workflowStatus(code: string) { return ['draft','published','enabled'].includes(code) ? t(`testingUi.workflowStates.${code}`) : code; }
 const suite = computed(() => props.testing.suite);
 const resourceKey = computed(() => JSON.stringify([props.testing.view?.context.root, props.testing.view?.context.project, suite.value?.id]));
-watch(resourceKey, () => { allowDraft.value = false; error.value = ""; });
-async function attempt(operation: () => unknown | Promise<unknown>) { const key = resourceKey.value; try { await operation(); if (key === resourceKey.value) error.value = ""; } catch (failure) { if (key === resourceKey.value) error.value = failure instanceof Error ? failure.message : String(failure); } }
+watch(resourceKey, () => { allowDraft.value = false; error.value = ""; errorIsTyped.value = false; });
+watch(() => props.testing.saveFailure, (failure) => { if (!failure && errorIsTyped.value) { error.value = ""; errorIsTyped.value = false; } });
+async function attempt(operation: () => unknown | Promise<unknown>) {
+  const key = resourceKey.value;
+  try { await operation(); if (key === resourceKey.value) { error.value = ""; errorIsTyped.value = false; } }
+  catch (failure) { if (key === resourceKey.value) { error.value = diskErrorMessage(failure, t); errorIsTyped.value = failure instanceof LocalWorkspaceError; } }
+}
 function field(key: string, value: unknown) { if (!props.testing.readOnly && suite.value) Object.assign(suite.value, { [key]: value }); }
 function mode(value: string) { if (!props.testing.readOnly && suite.value) suite.value.selection = value === "query" ? { kind: "query" } : { kind: "explicit", entries: [] }; }
 function checked(entry: Omit<Extract<SuiteEntry, { kind: "case" }>, "id"> | Omit<Extract<SuiteEntry, { kind: "workflow" }>, "id">) {
@@ -50,8 +58,8 @@ function analyzeReport() {
 </script>
 <template>
   <section class="suite-panel" data-testid="suite-panel">
-    <header class="toolbar"><strong>{{ t('testing.suites') }}</strong><span v-if="testing.dirty" class="dirty-badge">{{ t('testing.unsaved') }}</span><button class="primary" data-testid="suite-save" :disabled="testing.readOnly || !suite || testing.busy" @click="attempt(() => testing.save())">{{ t('testing.save') }}</button><button :disabled="testing.readOnly || !suite || testing.creating || testing.running" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button></header>
-    <p v-if="error || testing.error" role="alert" class="error">{{ error || testing.error }}</p>
+    <header class="toolbar"><strong>{{ t('testing.suites') }}</strong><span v-if="testing.dirty" class="dirty-badge">{{ t('testing.unsaved') }}</span><button class="primary" data-testid="suite-save" :disabled="testing.readOnly || refreshingDisk || !suite || testing.busy || !!testing.diskConflict" @click="attempt(() => testing.save())">{{ t('testing.save') }}</button><button :disabled="testing.readOnly || refreshingDisk || !suite || testing.creating || testing.running || !!testing.diskConflict" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button></header>
+    <p v-if="error || testing.error" role="alert" class="error">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || testing.error }}</p>
     <label class="evidence-setting">{{ t('caseEvidence.collection') }}<select v-model="testing.evidenceMode" :disabled="testing.running || testing.transitioning"><option value="none">{{ t('caseEvidence.modeNone') }}</option><option value="failures">{{ t('caseEvidence.modeFailures') }}</option><option value="all">{{ t('caseEvidence.modeAll') }}</option></select></label>
     <p v-if="!suite" class="empty-state">{{ t('testing.pickSuite') }}</p>
     <template v-else>

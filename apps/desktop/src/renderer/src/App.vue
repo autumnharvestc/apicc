@@ -29,6 +29,10 @@ import type { ApiRequest, DebugFieldState } from "@apicc/core";
 import type { OnlineTreeNodeDTO, TreeNodeDTO } from "../../shared/tree-dto.js";
 import type { LocalTreeNodeDTO } from "../../shared/tree-dto.js";
 import type { NodeCreatedDTO } from "../../shared/types.js";
+import { LocalWorkspaceError, LocalWorkspaceFailureSchema, localWorkspaceError, type LocalWorkspaceFailure } from "../../shared/workspace-refresh.js";
+import { guardLocalDiskWrites } from "./diskRefreshPresentation.js";
+import { diskApi, diskProject, isRefreshableFailure, type DiskDraftConflict } from "./stores/diskDrafts.js";
+import { caseUnit, type EditorUnit } from "./stores/editorDiskRefresh.js";
 import type { ApiLocator, ApiParentLocator, CollectionLocator, ProjectLocator, WorkflowLocator } from "../../shared/locations.js";
 import type { OnlineWorkspaceSummary } from "../../shared/online/contract.js";
 import TopBar from "./components/TopBar.vue";
@@ -59,6 +63,7 @@ import RequestTabs from "./components/RequestTabs.vue";
 import DebugHistory from "./components/DebugHistory.vue";
 import CasePanel from "./components/CasePanel.vue";
 import EnvPanel from "./components/EnvPanel.vue";
+import { evictEnvironmentDrafts, hasEnvironmentDrafts, reconcileEnvironmentDrafts } from "./stores/environmentDrafts.js";
 import RunView from "./components/RunView.vue";
 import ImportWizard from "./components/ImportWizard.vue";
 import DesignPanel from "./components/DesignPanel.vue";
@@ -159,11 +164,13 @@ const antdThemeConfig = computed(() => ({
 
 const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
-const tree = useTreeStore(apicc, workspace);
+const diskSubmission = guardLocalDiskWrites(apicc, () => workspace.hasPendingDiskRefresh());
+const localApi = diskSubmission.api;
+const tree = useTreeStore(localApi, workspace);
 const projectTransitionCount = ref(0);
 const projectTransitionPending = computed(() => projectTransitionCount.value > 0 || workspace.hasPendingOpen());
 const localContext = () => ({ root: workspace.root, readOnly: workspace.readOnly || projectTransitionPending.value });
-const editor = useEditorStore(apicc, localContext);
+const editor = useEditorStore(localApi, localContext);
 const design = useDesignStore(apicc, editor);
 const assets = useAssetsStore(apicc, () => ({ root: workspace.root, readOnly: workspace.readOnly }));
 const mockDrafts = new Map<string, { text: string; revision: string; port: number }>();
@@ -175,7 +182,10 @@ function requestHasDrafts(tabId: string) {
   const tab = requestTabsRef?.tabs[tabId];
   const session = tab?.source.kind === "asset" ? editor.sessions[apiSessionKey(tab.root, tab.source.locator)] : undefined;
   return !!tab && (editor.isRequestDirty(tab) || debugInstance?.isRequestTabDirty(tabId) === true
-    || (session ? design.hasControlDrafts(session) : false));
+    || (session && tab.source.kind === "asset"
+      ? design.hasControlDrafts(session) || design.hasDocumentDraft(apiSessionKey(tab.root, tab.source.locator))
+        || cases.diskDraftUnits(apiSessionKey(tab.root, tab.source.locator), session.generation).length > 0
+      : false));
 }
 const requestCloseConfirmOpen = ref(false);
 let requestCloseResolve: ((accepted: boolean) => void) | null = null;
@@ -215,18 +225,18 @@ const historyOpen = ref(false);
 let historyTrigger: HTMLElement | undefined;
 // —— 视图面板 store（任务 8 装配）：与既有 store 同一组合根一次性创建 ——
 const cases = useCasesStore(apicc, editor);
-const envs = useEnvsStore(apicc, localContext);
+const envs = useEnvsStore(localApi, localContext);
 const run = useRunStore(apicc);
-const importW = useImportWizardStore(apicc, workspace);
-const moduleImportW = useImportWizardStore(apicc, {
+const importW = useImportWizardStore(localApi, workspace);
+const moduleImportW = useImportWizardStore(localApi, {
   get root() { return workspace.root; },
   get readOnly() { return workspace.readOnly; },
   get tree() { return workspace.tree; },
   refresh: () => refreshLocalProject(),
 });
 // —— 工作流设计器 store（M2-B 任务 4 装配）：同一组合根一次性创建 ——
-const wfList = useWfListStore(apicc, localContext);
-const workflowDesign = useWorkflowDesignStore(apicc, localContext);
+const wfList = useWfListStore(localApi, localContext);
+const workflowDesign = useWorkflowDesignStore(localApi, localContext);
 // —— 压测 store（M2-D3 任务 3 装配，裁定 A）：同一组合根一次性创建，经 props 下传 ——
 const stress = createStressStore({
   api: apicc,
@@ -270,7 +280,7 @@ const plugins = createPluginsStore({ api: apicc });
 // 关签驱逐按 createEvictProjectSessions 组装（不变量 3：关签=项目关闭）；onProjectActivated
 // 钩子 = lastApi 记忆按活跃签项目过滤恢复（restoreLastApiForTab，编排第③步 editor 上下文）；
 // confirmWorkflowDraft = 切签工作流草稿确认（任务 6 规格勘误口径，弹窗与钩子实现见下文）。
-const testing = createTestingStore(apicc, {
+const testing = createTestingStore(localApi, {
   confirmDiscard: () => window.confirm(t('testing.discardConfirm')),
   getActive: () => !isHome.value && !onlineMode.value && selectedProjectContext.value ? { root: selectedProjectContext.value.root, project: selectedProjectContext.value.locator, readOnly: localContext().readOnly } : null,
 });
@@ -290,7 +300,10 @@ const tabs = createTabsStore({
       ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
     });
     await evictSessions(tab);
-    if (tab.workspaceRef.kind === 'local' && 'projectLocator' in tab) await testing.evict(tab.workspaceRef.dir, tab.projectLocator);
+    if (tab.workspaceRef.kind === 'local' && 'projectLocator' in tab) {
+      evictEnvironmentDrafts(envs, tab.workspaceRef.dir, tab.projectLocator);
+      await testing.evict(tab.workspaceRef.dir, tab.projectLocator);
+    }
   },
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
@@ -302,6 +315,7 @@ const tabs = createTabsStore({
     return () => { projectTransitionCount.value -= 1; };
   },
   testingHasDrafts: (root, project) => testing.dirty && testing.view?.context.root === root && sameProjectLocator(testing.view.context.project, project),
+  environmentHasDrafts: (root, project, deletedOnly) => hasEnvironmentDrafts(envs, root, project, deletedOnly),
   onlineDirectoryHasDraft: (tab) => onlineDirectory.tabHasDraft({
     ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
   }),
@@ -814,20 +828,142 @@ watch(() => envs.envs, (environments) => {
 // 保留 data-testid="app-error-close"，点击冒泡到 a-alert 关闭处理器 → @close →
 // 走原 reportError 通道反向清空（errorMessage 置空后 v-if 卸载整条 alert）。
 const errorMessage = ref("");
+const diskError = ref<LocalWorkspaceFailure | null>(null);
+const diskNotice = ref("");
+const diskRefreshEpoch = ref(0);
+const resolvingDiskConflict = ref<DiskDraftConflict | null>(null);
+let diskConflictTrigger: HTMLElement | null = null;
 const presentedError = computed(() => {
+  if (diskError.value) return t(`diskRefresh.error.${diskError.value.reason}`);
+  const known = LocalWorkspaceFailureSchema.shape.reason.safeParse(errorMessage.value);
+  if (known.success) return t(`diskRefresh.error.${known.data}`);
   if (errorMessage.value === "design-invalid-json") return t("design.fixInvalidJson");
+  if (errorMessage.value === "disk-draft-blocked") return t("diskRefresh.blocked");
   if (errorMessage.value === "online-workspace-session-missing") return t("online.sessionErrors.online-workspace-session-missing");
   const onlineError = onlineSessionErrorKey(errorMessage.value);
   return onlineError ? t(onlineError) : errorMessage.value;
 });
 
 function reportError(e: unknown) {
+  if (e instanceof LocalWorkspaceError && e.failure.root && e.failure.root !== workspace.root
+    && !["directory-unavailable", "directory-changed", "workspace-unreadable", "project-missing"].includes(e.failure.reason)) return;
+  diskError.value = e instanceof LocalWorkspaceError ? e.failure : null;
   errorMessage.value = e instanceof Error ? e.message : String(e);
 }
 
 function dismissError() {
   errorMessage.value = "";
+  diskError.value = null;
 }
+
+async function refreshLocalWorkspaceFromDisk(): Promise<void> {
+  const root = workspace.root;
+  if (workspace.hasPendingDiskRefresh()) return;
+  diskNotice.value = "";
+  try {
+    if (diskSubmission.writing) throw localWorkspaceError("busy", "A workspace write is in progress.", root);
+    const result = await workspace.refreshFromDisk(async (receipt, isCurrent) => {
+      reconcileEnvironmentDrafts(envs, receipt);
+      workflowDesign.reconcileDiskRefresh(receipt);
+      const currentEnvironmentProject = envs.requestedProject(root);
+      await Promise.all([
+        editor.reconcileDiskRefresh(receipt, isCurrent, (entry, key) => ({
+          request: design.hasControlDrafts(entry, "contract.request"),
+          asset: design.hasDocumentDraft(key) || design.hasControlDrafts(entry),
+          cases: cases.diskDraftUnits(key, entry.generation),
+        })).then(() => { if (isCurrent()) design.reconcileDiskDrafts(root); }),
+        testing.reconcileDiskRefresh(receipt, isCurrent),
+        currentEnvironmentProject && findProjectNode(receipt.tree, currentEnvironmentProject) ? envs.load(currentEnvironmentProject) : undefined,
+      ]);
+      if (!isCurrent()) return;
+      const removedRequests = Object.values(requestTabs.tabs).filter((tab) =>
+        tab.source.kind === "asset" && tab.root === root
+        && !diskApi(diskProject(receipt.workspace, tab.project), tab.source.locator)
+        && !requestHasDrafts(tab.tabId) && !debug.requestTabs[tab.tabId]?.result
+        && !Object.values(debug.caseRuns).some((run) => run.tabId === tab.tabId && (run.result || run.error)));
+      if (removedRequests.length) {
+        const previousActive = requestTabs.activeId;
+        await requestTabs.closeMany(removedRequests.map((tab) => tab.tabId), true);
+        if (!isHome.value && !onlineMode.value && previousActive !== requestTabs.activeId && requestTabs.activeId) {
+          await activateRequestTab(requestTabs.activeId, true, isCurrent);
+        }
+      }
+      const active = tabs.activeTab;
+      for (const tab of tabs.tabs) {
+        if ("projectLocator" in tab && tab.workspaceRef.dir === root && !findProjectNode(receipt.tree, tab.projectLocator)) {
+          tabs.markOffline(tab.tabId, "project-missing");
+          if (active?.tabId === tab.tabId && !tabs.projectHasDrafts(tab.tabId)) tabs.activateHome();
+        }
+      }
+      if (tree.selected && !findLocalNodeByKey(tree.selected.key)) {
+        const context = selectedProjectContext.value;
+        const fallback = context?.root === root ? findProjectNode(receipt.tree, context.locator) : null;
+        if (fallback) tree.select(fallback); else tree.selected = null;
+      }
+    });
+    if (!result || workspace.root !== root) return;
+    dismissError();
+    diskNotice.value = root;
+    diskRefreshEpoch.value++;
+  } catch (e) {
+    if (workspace.root === root) reportError(e);
+  }
+}
+
+function requestDiskConflictResolution(conflict: DiskDraftConflict, event: Event) {
+  resolvingDiskConflict.value = conflict;
+  diskConflictTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+}
+
+function finishDiskConflictResolution(accepted: boolean) {
+  const conflict = resolvingDiskConflict.value;
+  const origin = diskConflictTrigger;
+  resolvingDiskConflict.value = null;
+  diskConflictTrigger = null;
+  if (accepted) {
+    const reviewed = reviewingMissingEnvironmentProject.value;
+    conflict?.restore?.();
+    if (reviewed && !reviewingMissingEnvironmentProject.value) tabs.activateHome();
+  }
+  void nextTick(() => {
+    const fallback = document.querySelector<HTMLElement>('[data-testid="env-tab-globals-vars"][aria-current="page"]')
+      ?? document.querySelector<HTMLElement>('[data-testid="save-btn"]:not(:disabled), [data-testid="wf-save"]:not(:disabled), [data-testid="dataset-save"]:not(:disabled), [data-testid="suite-save"]:not(:disabled), [data-testid="home-workspace-more"]')
+      ?? document.querySelector<HTMLElement>('[data-testid="topbar-home"]');
+    (origin?.isConnected ? origin : fallback)?.focus();
+  });
+}
+
+const activeDiskConflict = computed<DiskDraftConflict | null>(() => {
+  if (isHome.value || onlineMode.value) return null;
+  if (view.value === "wf" && workflowDesign.root === workspace.root) return workflowDesign.diskConflict;
+  if (view.value === "test" && (moduleMemory.test.pane === "datasets" || moduleMemory.test.pane === "suites")) return testing.diskConflict;
+  if (!editor.activeKey) return null;
+  const key = editor.activeKey;
+  const item = editor.sessions[key];
+  if (!item || item.root !== workspace.root) return null;
+  let unit: EditorUnit;
+  if (view.value === "api") unit = item.diskConflicts?.request && apiSubView.value === "debug" ? "request" : "asset";
+  else if (view.value === "test" && moduleMemory.test.pane === "api-cases") {
+    const exact = cases.selectedCase ? caseUnit(cases.selectedCase) : undefined;
+    unit = exact && item.diskConflicts?.[exact] ? exact
+      : (Object.keys(item.diskConflicts ?? {}).find((key) => key.startsWith("case:")) as EditorUnit | undefined) ?? "asset";
+  } else return null;
+  const conflict = item.diskConflicts?.[unit];
+  if (!conflict) return null;
+  const match = unit.startsWith("case:") ? (JSON.parse(unit.slice(5)) as [string, string]) : null;
+  const caseName = match && (item.api.cases.find((entry) => entry.id === match[0] && entry.scope === match[1])
+    ?? conflict.disk?.api.cases.find((entry) => entry.id === match[0] && entry.scope === match[1]));
+  return {
+    reason: conflict.reason, name: match ? `${caseName?.name ?? match[0]} (${match[1]})` : item.api.contract.metadata.name,
+    ...(conflict.disk ? { restore: () => {
+      if (editor.activeKey !== key || item.root !== workspace.root || item.diskConflicts?.[unit] !== conflict) return;
+      if (!editor.restoreDiskUnit(key, unit)) return;
+      if (unit === "asset") design.abandonDiskDraft(key);
+      if (unit === "request") design.evictControlDrafts(item, "contract.request");
+      if (unit !== "request") cases.resolveDiskDraft(key, unit);
+    } } : {}),
+  };
+});
 
 let suggestionEntry: { isCurrent: () => boolean; trigger: HTMLElement } | undefined;
 const aiSettingsForSuggestion = ref(false);
@@ -1091,9 +1227,16 @@ const selectedProjectContext = computed(() => {
   }
   const tab = activeLocalProjectTab.value;
   if (onlineMode.value || !tab || tab.workspaceRef.dir !== workspace.root) return null;
-  return workspace.findProject(tab.projectLocator) ? { root: workspace.root, locator: { ...tab.projectLocator } } : null;
+  return workspace.findProject(tab.projectLocator) || hasEnvironmentDrafts(envs, workspace.root, tab.projectLocator, true)
+    ? { root: workspace.root, locator: { ...tab.projectLocator } } : null;
 });
 const selectedProjectLocator = computed(() => selectedProjectContext.value?.locator ?? null);
+const reviewingMissingEnvironmentProject = computed(() => {
+  const tab = activeLocalProjectTab.value;
+  return !!tab && tab.workspaceRef.dir === workspace.root && !workspace.findProject(tab.projectLocator)
+    && hasEnvironmentDrafts(envs, workspace.root, tab.projectLocator, true);
+});
+watch(reviewingMissingEnvironmentProject, (reviewing) => { if (reviewing) view.value = "envs"; });
 const localProjectTools = computed(() => {
   const tab = activeLocalProjectTab.value;
   if (isHome.value || onlineMode.value || !tab || !workspace.opened || tab.workspaceRef.dir !== workspace.root) return null;
@@ -1336,9 +1479,10 @@ watch([() => online.activeBaseUrl, () => online.user, () => online.loggedIn, () 
   if (collaboration.visible) void collaboration.close().catch(reportError);
 }, { flush: 'sync' });
 const activeProjectLocator = computed(() => selectedProjectLocator.value ? { ...selectedProjectLocator.value } : null);
-watch(() => JSON.stringify([projectTransitionPending.value, isHome.value, onlineMode.value, selectedProjectContext.value]), () => {
+watch(() => JSON.stringify([projectTransitionPending.value, workspace.hasPendingDiskRefresh(), isHome.value, onlineMode.value, selectedProjectContext.value]), () => {
   const context = selectedProjectContext.value;
-  if (isHome.value || projectTransitionPending.value) return;
+  if (isHome.value || projectTransitionPending.value || workspace.hasPendingDiskRefresh() || reviewingMissingEnvironmentProject.value
+    || (!context && !!testing.diskConflict)) return;
   void testing.activate(context?.root ?? '', !onlineMode.value ? context?.locator ?? null : null, workspace.readOnly).catch(reportError);
 });
 async function onTestPane(pane: TestingPane) {
@@ -1475,7 +1619,7 @@ async function saveFreeRequestAsApi(
   const freeGeneration = free.generation;
   const expected = { root, generation: tab.generation, project: sourceProject, draftId: tab.source.draftId };
   const wasActive = requestTabs.activeId === tab.tabId;
-  const created = await apicc.apiCreateFromRequestDraft({
+  const created = await localApi.apiCreateFromRequestDraft({
     project: sourceProject,
     targetParent: "folderIds" in targetParent
       ? { ...targetParent, folderIds: [...targetParent.folderIds] }
@@ -2025,6 +2169,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
       <TopBar :workspace="workspace" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ presentedError }}</template>
+        <template v-if="diskError && (!diskError.root || diskError.root === workspace.root) && isRefreshableFailure(diskError)" #action>
+          <a-button size="small" :disabled="workspace.hasPendingDiskRefresh()" @click="refreshLocalWorkspaceFromDisk">{{ t("diskRefresh.action") }}</a-button>
+        </template>
         <template #closeText><span data-testid="app-error-close">{{ t("common.close") }}</span></template>
       </a-alert>
       <div v-if="syncOpen && syncScope" class="sync-workbench" @keydown.esc.stop="closeSyncPanel()">
@@ -2159,6 +2306,22 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @activate="(tabId) => { void activateRequestTab(tabId).catch(reportError); }"
           />
         <div class="right-col" data-testid="main-split">
+          <div v-if="(!onlineMode || isHome) && workspace.hasPendingDiskRefresh()" class="disk-refresh-notice" role="status">{{ t("diskRefresh.reading", { name: workspace.name }) }}</div>
+          <div v-else-if="isHome && diskNotice && diskNotice === workspace.root" class="disk-refresh-notice" role="status" data-testid="disk-refresh-success">{{ t("diskRefresh.success", { name: workspace.name }) }}</div>
+          <div v-if="activeDiskConflict" class="disk-refresh-notice" role="alert" data-testid="disk-refresh-conflict">
+            <span>{{ t(`diskRefresh.draft.${activeDiskConflict.reason}`, { name: activeDiskConflict.name }) }}</span>
+            <a-button v-if="activeDiskConflict.restore" size="small" data-testid="disk-refresh-restore" @click="requestDiskConflictResolution(activeDiskConflict, $event)">
+              {{ t(activeDiskConflict.reason === "deleted" ? "diskRefresh.discardRemoved" : "diskRefresh.restore") }}
+            </a-button>
+            <a-button v-else-if="activeDiskConflict.reason === 'unverified'" size="small" :disabled="workspace.hasPendingDiskRefresh()"
+              @click="refreshLocalWorkspaceFromDisk">{{ t("diskRefresh.action") }}</a-button>
+          </div>
+          <div v-if="!isHome && !onlineMode && view === 'test' && (moduleMemory.test.pane === 'datasets' || moduleMemory.test.pane === 'suites')
+            && testing.saveFailure && isRefreshableFailure(testing.saveFailure)" class="disk-refresh-notice" role="alert">
+            <span>{{ t(`diskRefresh.error.${testing.saveFailure.reason}`) }}</span>
+            <a-button size="small" data-testid="testing-refresh-disk" :disabled="workspace.hasPendingDiskRefresh()"
+              @click="refreshLocalWorkspaceFromDisk">{{ t("diskRefresh.action") }}</a-button>
+          </div>
           <!-- 主页（M9-C；轨三左右栏）：落点选择/项目卡片/连接管理，恒可用 -->
           <HomeView
             v-if="isHome"
@@ -2173,6 +2336,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :report-error="reportError"
             :open-project="openProjectFromHome"
             :open-local-workspace="tabs.openLocalWorkspace"
+            :refresh-local-workspace="refreshLocalWorkspaceFromDisk"
             :open-local-project-keys="homeOpenLocalProjectKeys"
             :open-online-workspace="openOnlineWorkspaceFromHome"
             :open-online-project="openOnlineProjectFromHome"
@@ -2227,6 +2391,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
               <div ref="requestSection" class="editor-pane" data-testid="editor-pane" tabindex="-1">
                 <button v-if="shortDebug && responseExpanded" type="button" class="debug-jump" @click="focusDebugSection(responseSection)">{{ t("responseWorkbench.goToResponse") }}</button>
                 <RequestEditor
+                  :refresh-disk="refreshLocalWorkspaceFromDisk"
+                  :refreshing-disk="workspace.hasPendingDiskRefresh()"
+                  :disk-refresh-epoch="diskRefreshEpoch"
                   :editor="editor"
                   :debug="debug"
                   :api="apicc"
@@ -2301,6 +2468,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
               :suggesting-cases="ai.suggestLoading" :report-error="reportError" :read-only="workspace.readOnly" />
           </template>
           <EnvPanel
+            :refresh-disk="refreshLocalWorkspaceFromDisk"
+            :resolve-disk-conflict="requestDiskConflictResolution"
+            :review-missing-project="reviewingMissingEnvironmentProject"
             v-else-if="view === 'envs'"
             class="panel-view"
             :envs="envs"
@@ -2343,6 +2513,8 @@ function focusDebugSection(section: HTMLElement | undefined) {
               />
             </template>
             <TestView
+              :refresh-disk="refreshLocalWorkspaceFromDisk"
+              :refreshing-disk="workspace.hasPendingDiskRefresh()"
               :ai="ai"
               v-else
               class="panel-view"
@@ -2381,6 +2553,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
         </div>
       </div>
     <!-- 侧树切换工作流的 dirty 丢弃确认（审查 I1）：a-modal 传送门渲染于 body -->
+    <ConfirmDialog :open="!!resolvingDiskConflict" :title="t(resolvingDiskConflict?.reason === 'deleted' ? 'diskRefresh.discardRemoved' : 'diskRefresh.restore')" @confirm="finishDiskConflictResolution(true)" @cancel="finishDiskConflictResolution(false)">
+      <p>{{ t(resolvingDiskConflict?.reason === "deleted" ? "diskRefresh.confirmDiscardRemoved" : "diskRefresh.confirmRestore", { name: resolvingDiskConflict?.name }) }}</p>
+    </ConfirmDialog>
     <ConfirmDialog
       :open="wfSwitchConfirmOpen"
       :title="t('wf.discardConfirm')"
@@ -2456,6 +2631,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
 html, body, #app { height: 100%; margin: 0; }
 .app { height: 100%; min-height: 0; overflow: hidden; background: var(--bg); color: var(--text); }
 .body { position: relative; flex: 1; display: flex; min-height: 0; overflow: hidden; background: var(--workbench-background); }
+.disk-refresh-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-shrink: 0; padding: 8px 12px; background: var(--subtle); border-bottom: 1px solid var(--border); color: var(--text); overflow-wrap: anywhere; }
 .form-workbench { --workbench-rail: var(--workbench-form-rail); }
 .sider-col-wrap {
   width: 248px;

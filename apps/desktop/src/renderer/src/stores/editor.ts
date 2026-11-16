@@ -1,11 +1,13 @@
 import { createPinia, defineStore } from "pinia";
 import type { ApiAsset, ApiRequest, ParameterBinding } from "@apicc/core";
-import type { ApiccApi } from "../../../shared/types.js";
+import type { ApiccApi, WorkspaceRefreshResult } from "../../../shared/types.js";
 import type { CaseDraftDeletion } from "../../../shared/types.js";
 import type { DebugFieldState, DebugInvocation } from "@apicc/core";
 import type { ApiLocator, EnvironmentLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { RequestTab } from "./requestTabs.js";
 import { apiSessionKey, projectSessionKey, type LocalWorkspaceContext } from "./localIdentity.js";
+import { currentDiskRead, diskApi, diskProject } from "./diskDrafts.js";
+import { caseUnit, reconcileEditorSession, restoreEditorDiskUnit, type EditorDiskConflict, type EditorUnit, type ExtraEditorDrafts } from "./editorDiskRefresh.js";
 
 export interface EditorSession {
   root: string;
@@ -17,6 +19,8 @@ export interface EditorSession {
   snapshot: string;
   protocolDrafts: Partial<Record<ApiAsset["contract"]["request"]["protocol"], unknown>>;
   generation: number;
+  diskEpoch?: number;
+  diskConflicts?: Partial<Record<EditorUnit, EditorDiskConflict>>;
 }
 
 export interface FreeRequestSession {
@@ -60,6 +64,7 @@ function activeSession(state: { sessions: Record<string, EditorSession>; activeK
 export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceContext) {
   const fullAssetSaveGuards = new Set<FullAssetSaveGuard>();
   const requestDraftSaveGuards = new Set<RequestDraftSaveGuard>();
+  let diskEpoch = 0;
   return defineStore("editor", {
     state: () => ({
       sessions: {} as Record<string, EditorSession>,
@@ -151,7 +156,9 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
           return;
         }
 
-        const detail = await api.apiGet(fixedLocator);
+        const detail = await currentDiskRead(() => api.apiGet(fixedLocator), () => diskEpoch,
+          () => activation === this.activation && this.projectLoadEpochs[projectKey] === loadEpoch && getContext().root === root && isCurrent());
+        if (!detail) return;
         if (activation !== this.activation || this.projectLoadEpochs[projectKey] !== loadEpoch || getContext().root !== root || !isCurrent()) return;
         if (this.sessions[key]) {
           this.activeKey = key;
@@ -183,13 +190,15 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const loadEpoch = (this.freeLoadEpochs[tab.tabId] ?? 0) + 1;
         this.freeLoadEpochs[tab.tabId] = loadEpoch;
         const generation = ++this.generation;
-        const detail = await api.debugProjectContext({ ...tab.source.project });
+        const project = { ...tab.source.project };
+        const detail = await currentDiskRead(() => api.debugProjectContext(project), () => diskEpoch,
+          () => this.freeLoadEpochs[tab.tabId] === loadEpoch && getContext().root === tab.root && isCurrent());
         if (this.freeLoadEpochs[tab.tabId] !== loadEpoch) {
           const current = this.freeSessions[tab.tabId];
           return current?.root === tab.root && current.draftId === tab.source.draftId && sameProject(current.project, tab.source.project)
             ? current : null;
         }
-        if (!isCurrent() || getContext().root !== tab.root || !sameProject(detail.project, tab.source.project)) return null;
+        if (!detail || !isCurrent() || getContext().root !== tab.root || !sameProject(detail.project, project)) return null;
         const loaded = this.freeSessions[tab.tabId];
         if (loaded?.root === tab.root && loaded.draftId === tab.source.draftId && sameProject(loaded.project, tab.source.project)) return loaded;
         const request = newFreeRequest();
@@ -330,17 +339,19 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const context = getContext();
         if (context.root !== current.root) throw new Error("当前工作区已切换，拒绝保存到其他工作区");
         if (context.readOnly) throw new Error("工作区处于只读模式，不能保存接口");
+        if (Object.values(current.diskConflicts ?? {}).some(Boolean)) throw new Error("disk-draft-blocked");
         for (const guard of fullAssetSaveGuards) guard(current);
 
         const key = this.activeKey!;
         const generation = current.generation;
+        const diskEpoch = current.diskEpoch;
         const fixedLocator = locatorCopy(current.locator);
         const expectedSourceApiRevision = current.sourceApiRevision;
         const submitted = copy(current.api);
         const submittedSnapshot = JSON.stringify(submitted);
         const saved = await api.apiSave(fixedLocator, submitted, expectedSourceApiRevision);
         const original = this.sessions[key];
-        if (original?.generation === generation) {
+        if (original?.generation === generation && original.diskEpoch === diskEpoch) {
           original.snapshot = submittedSnapshot;
           original.sourceApiRevision = saved.sourceApiRevision;
           original.sourceProjectRevision = saved.sourceProjectRevision;
@@ -354,16 +365,18 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const context = getContext();
         if (context.root !== current.root) throw new Error("当前工作区已切换，拒绝保存到其他工作区");
         if (context.readOnly) throw new Error("工作区处于只读模式，不能保存接口请求");
+        if (current.diskConflicts?.request) throw new Error("disk-draft-blocked");
         for (const guard of requestDraftSaveGuards) guard(current);
         const key = this.activeKey!;
         const generation = current.generation;
+        const diskEpoch = current.diskEpoch;
         const fixedLocator = locatorCopy(current.locator);
         const submitted = copy(current.api.contract.request);
         const baseline = copy(JSON.parse(current.snapshot) as ApiAsset);
         baseline.contract.request = copy(submitted);
         const saved = await api.apiRequestDraftSave(fixedLocator, submitted, current.sourceApiRevision, fields);
         const original = this.sessions[key];
-        if (original?.generation === generation) {
+        if (original?.generation === generation && original.diskEpoch === diskEpoch) {
           original.sourceApiRevision = saved.sourceApiRevision;
           original.snapshot = JSON.stringify(baseline);
         }
@@ -376,10 +389,12 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const context = getContext();
         if (context.root !== current.root) throw new Error("当前工作区已切换，拒绝保存到其他工作区");
         if (context.readOnly) throw new Error("工作区处于只读模式，不能保存用例");
+        if ([identity, ...deletedCases].some((item) => current.diskConflicts?.[caseUnit(item)])) throw new Error("disk-draft-blocked");
         const testCase = current.api.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
         if (!testCase) throw new Error(`Case not found at complete API locator: ${JSON.stringify({ ...current.locator, ...identity })}`);
         const key = this.activeKey!;
         const generation = current.generation;
+        const diskEpoch = current.diskEpoch;
         const fixedLocator = locatorCopy(current.locator);
         const caseLocator = { ...fixedLocator, caseId: identity.caseId, scope: identity.scope };
         const submitted = copy(testCase);
@@ -391,11 +406,40 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         else baseline.cases[previousIndex] = copy(submitted);
         const saved = await api.caseDraftSave(caseLocator, submitted, current.sourceApiRevision, deletedCases.map((item) => ({ ...item })), fields.map((field) => ({ ...field })));
         const original = this.sessions[key];
-        if (original?.generation === generation) {
+        if (original?.generation === generation && original.diskEpoch === diskEpoch) {
           original.sourceApiRevision = saved.sourceApiRevision;
           original.snapshot = JSON.stringify(baseline);
         }
         return copy(current.api);
+      },
+
+      async reconcileDiskRefresh(
+        receipt: WorkspaceRefreshResult,
+        isCurrent: () => boolean,
+        hasExtraDraft: (session: EditorSession, key: string) => ExtraEditorDrafts = () => ({ asset: false, request: false }),
+      ): Promise<void> {
+        const root = receipt.root;
+        diskEpoch++;
+        await Promise.all([
+          ...Object.entries(this.sessions).filter(([, item]) => item.root === root).map(async ([key, item]) => {
+            const incoming = diskApi(diskProject(receipt.workspace, item.locator), item.locator);
+            const detail = incoming ? await api.apiGet(locatorCopy(item.locator)).catch(() => undefined) : null;
+            if (!isCurrent() || this.sessions[key] !== item) return;
+            reconcileEditorSession(item, receipt, detail, hasExtraDraft(item, key));
+          }),
+          ...Object.values(this.freeSessions).filter((item) => item.root === root).map(async (item) => {
+            if (!diskProject(receipt.workspace, item.project)) return;
+            const detail = await api.debugProjectContext({ ...item.project }).catch(() => null);
+            if (!detail || !isCurrent() || this.freeSessions[item.tabId] !== item) return;
+            item.sourceProjectRevision = detail.sourceProjectRevision;
+            item.envs = copy(detail.envs);
+          }),
+        ]);
+      },
+
+      restoreDiskUnit(key: string, unit: EditorUnit): boolean {
+        const current = this.sessions[key];
+        return !!current && current.root === getContext().root && restoreEditorDiskUnit(current, unit);
       },
 
       async reloadEnvs(): Promise<void> {

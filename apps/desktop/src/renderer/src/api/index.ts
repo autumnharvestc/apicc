@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 import type { ApiccApi } from "../../../shared/types.js";
+import type { ApiccBridge } from "../../../shared/ipc-contract.js";
+import { LocalWorkspaceError, LocalWorkspaceFailureSchema, localWorkspaceFailureMethods } from "../../../shared/workspace-refresh.js";
 
 /**
  * 渲染层 API 单例：Electron 内取 preload 暴露的 window.apicc（IPC 契约）；
@@ -30,21 +32,31 @@ export function toPlain<T>(value: T): T {
   return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
 }
 
+const workspaceErrorMethods = new Set<string>(localWorkspaceFailureMethods);
+
 /** Electron API 包装：每次调用深平化全部入参（函数型入参原样透传——如 onDirtyCheck 的
  * 应答器回调，JSON 往返会把函数抹成 undefined）。目标必须是普通空对象——contextBridge
  * 暴露的属性不可配置（non-configurable），直接 Proxy 其本体时 get 陷阱返回新函数会触发
  * Proxy 不变式报错（'get' on proxy: … did not return its actual value，2026-09-06
  * 打开工作区实测）；以空对象为目标动态转发（与内存回退 lazyMemoryApi 同款模式）。 */
-export function withPlainArgs(api: ApiccApi): ApiccApi {
+export function withPlainArgs(api: ApiccBridge): ApiccApi {
   return new Proxy({} as ApiccApi, {
     get(_target, prop: string) {
       const value = (api as unknown as Record<string, unknown>)[prop];
       if (typeof value !== "function") return value;
-      return (...args: unknown[]) =>
-        (value as (...a: unknown[]) => unknown).apply(
+      return (...args: unknown[]) => {
+        const result = (value as (...a: unknown[]) => unknown).apply(
           api,
           args.map((arg) => (typeof arg === "function" ? arg : toPlain(arg))),
         );
+        if (!workspaceErrorMethods.has(prop)) return result;
+        return Promise.resolve(result).then((payload) => {
+          if (payload && typeof payload === "object" && "localWorkspaceFailure" in payload) {
+            throw new LocalWorkspaceError(LocalWorkspaceFailureSchema.parse(payload));
+          }
+          return payload;
+        });
+      };
     },
   });
 }

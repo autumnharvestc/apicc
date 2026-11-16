@@ -243,6 +243,34 @@
     "home": "主页",
     "test": "测试"
   },
+  "diskRefresh": {
+    "action": "从磁盘刷新",
+    "restore": "载入磁盘版本",
+    "discardRemoved": "放弃已删除对象的草稿",
+    "reading": "正在从磁盘读取 {name}…",
+    "success": "已从磁盘刷新 {name}。",
+    "blocked": "请先处理此草稿的冲突，再保存。",
+    "confirmRestore": "放弃 {name} 的未保存更改，并载入磁盘版本？",
+    "confirmDiscardRemoved": "{name} 已从磁盘删除，是否放弃它的未保存更改？",
+    "draft": {
+      "changed": "{name} 或其依赖已在磁盘上更改。草稿已保留，暂时无法保存。",
+      "deleted": "{name} 已从磁盘删除。你仍可查看未保存更改。",
+      "unverified": "无法比较 {name} 的磁盘版本。草稿已保留，暂时无法保存。"
+    },
+    "error": {
+      "revision-conflict": "保存版本已变化。请从磁盘刷新后再保存。",
+      "busy": "工作区有操作正在进行，请等操作完成后重试。",
+      "read-only": "工作区还有未解决的文件或恢复问题。",
+      "unstable": "读取期间工作区发生变化，请重试刷新。",
+      "directory-changed": "工作区目录已被移动或替换。",
+      "directory-unavailable": "选中的工作区目录无法访问。",
+      "workspace-unreadable": "选中的目录没有可读取的工作区元数据。",
+      "project-missing": "工作区中已找不到选中的项目。",
+      "context-changed": "当前工作区已切换。请打开目标工作区后重试。",
+      "workspace-replaced": "该目录现已包含另一个工作区。请打开该工作区后继续。",
+      "failed": "无法从磁盘刷新工作区。"
+    }
+  },
   "workspace": {
     "problems": "问题文件",
     "readonlyBadge": "只读",

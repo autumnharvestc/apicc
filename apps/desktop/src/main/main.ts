@@ -258,7 +258,7 @@ async function startDesktop() {
   for (const channel of Object.values(IpcChannel)) {
     // Preserve Electron's actual sender object through this boundary: the debugger binds
     // start/wait/cancel and renderer teardown to event.sender, never a renderer-supplied id.
-    ipcMain.handle(channel, (event, ...args) => deps.handle(channel, event, ...args));
+    ipcMain.handle(channel, (event, ...args) => deps.handleTransport(channel, event, ...args));
   }
   ipcMain.handle(WindowChromeChannel.SetTheme, (event, theme: unknown) => {
     const win = BrowserWindow.fromWebContents(event.sender);

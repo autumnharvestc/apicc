@@ -155,12 +155,43 @@ export function useDesignStore(api: ApiccApi, editor: Editor) {
         this.controlDrafts[identity] = next;
       },
 
-      hasControlDrafts(session: NonNullable<Editor["sessions"][string]>): boolean {
-        return Object.keys(this.controlDrafts[sessionIdentity(session)] ?? {}).length > 0;
+      hasControlDrafts(session: NonNullable<Editor["sessions"][string]>, prefix?: string): boolean {
+        return Object.keys(this.controlDrafts[sessionIdentity(session)] ?? {}).some((key) => !prefix || key === prefix || key.startsWith(`${prefix}.`));
       },
 
-      evictControlDrafts(session: NonNullable<Editor["sessions"][string]>): void {
-        delete this.controlDrafts[sessionIdentity(session)];
+      hasDocumentDraft(key: string): boolean {
+        const draft = this.drafts[key];
+        return !!draft && draft.content !== draft.snapshot;
+      },
+
+      reconcileDiskDrafts(root: string): void {
+        for (const [key, draft] of Object.entries(this.drafts)) {
+          const session = editor.sessions[key];
+          if (!session || session.root !== root || this.hasDocumentDraft(key)) continue;
+          draft.content = session.api.documentation;
+          draft.snapshot = session.api.documentation;
+          if (key === this.activeKey) {
+            this.content = draft.content;
+            this.snapshot = draft.snapshot;
+            this.invalidatePreview();
+          }
+        }
+      },
+
+      abandonDiskDraft(key: string): void {
+        const session = editor.sessions[key];
+        if (!session) return;
+        this.evictControlDrafts(session);
+        delete this.drafts[key];
+        if (this.activeKey === key) this.load();
+      },
+
+      evictControlDrafts(session: NonNullable<Editor["sessions"][string]>, prefix?: string): void {
+        const identity = sessionIdentity(session);
+        if (!prefix) delete this.controlDrafts[identity];
+        else this.controlDrafts[identity] = Object.fromEntries(Object.entries(this.controlDrafts[identity] ?? {}).filter(
+          ([key]) => key !== prefix && !key.startsWith(`${prefix}.`),
+        ));
       },
 
       invalidatePreview(): void {
@@ -223,6 +254,7 @@ export function useDesignStore(api: ApiccApi, editor: Editor) {
         if (editor.readOnly) throw new Error("工作区处于只读模式，不能保存设计文档");
         const generation = draft.generation;
         const editorGeneration = session.generation;
+        const diskEpoch = session.diskEpoch;
         const controlDraftIdentity = sessionIdentity(session);
         const submittedControlDrafts = { ...(this.controlDrafts[controlDraftIdentity] ?? {}) };
         const submittedContent = this.content;
@@ -232,7 +264,7 @@ export function useDesignStore(api: ApiccApi, editor: Editor) {
         activeAsset.documentation = submittedContent;
         await editor.save();
         const originalDraft = this.drafts[key];
-        if (editor.sessions[key]?.generation === editorGeneration) {
+        if (editor.sessions[key]?.generation === editorGeneration && editor.sessions[key]?.diskEpoch === diskEpoch) {
           if (originalDraft?.generation === generation && originalDraft.editorGeneration === editorGeneration) {
             originalDraft.snapshot = submittedSnapshot;
             this.snapshot = this.activeKey === key ? submittedSnapshot : this.snapshot;

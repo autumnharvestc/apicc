@@ -48,6 +48,9 @@ export function useEnvsStore(api: ApiccApi, getContext: () => LocalWorkspaceCont
         return getContext().root === root && this.root === root && !!this.projectLocator
           && sameProject(this.projectLocator, locator) && wantsProject(root, locator);
       },
+      requestedProject(root: string): ProjectLocator | null {
+        return requested?.root === root ? { ...requested.locator } : null;
+      },
       assertWritable(): void {
         if (getContext().readOnly) throw new Error("工作区处于只读模式，不能修改环境");
       },

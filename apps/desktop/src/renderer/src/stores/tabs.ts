@@ -185,6 +185,7 @@ export interface TabsStoreDeps {
   leaveTestingAfterConfirmation?: () => boolean | Promise<boolean>;
   beginProjectTransition?: () => () => void;
   testingHasDrafts?: (root: string, project: ProjectLocator) => boolean;
+  environmentHasDrafts?: (root: string, project: ProjectLocator, deletedOnly?: boolean) => boolean;
   onlineDirectoryHasDraft?: (tab: OnlineProjectTab) => boolean;
   /** 持久化存储（缺省 localStorage；测试注入内存 Storage 隔离）。 */
   storage?: Storage;
@@ -334,10 +335,11 @@ export function createTabsStore(deps: TabsStoreDeps) {
           return true;
         }
         if (!hasProjectLocator(tab)) return false;
+        const reviewEnvironment = deps.environmentHasDrafts?.(ref.dir, tab.projectLocator, true);
         let openedRoot: string | void = ref.dir;
         if (!deps.workspace.opened || deps.workspace.root !== ref.dir || deps.workspace.hasPendingOpen?.()) {
           try {
-            openedRoot = await deps.workspace.open(ref.dir, isCurrent, tab.projectLocator);
+            openedRoot = await deps.workspace.open(ref.dir, isCurrent, reviewEnvironment ? undefined : tab.projectLocator);
           } catch (e) {
             if (!isCurrent()) return false;
             this.markOffline(tab.tabId, e instanceof Error ? e.message : String(e));
@@ -349,7 +351,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           this.markOffline(tab.tabId, `工作区根上下文未就绪: ${ref.dir}`);
           return false;
         }
-        if (!findProjectNode(deps.workspace.tree, tab.projectLocator)) {
+        if (!findProjectNode(deps.workspace.tree, tab.projectLocator) && !reviewEnvironment) {
           this.markOffline(tab.tabId, `本地项目 locator 在当前树中不存在: ${tab.projectName}`);
           return false;
         }
@@ -459,11 +461,11 @@ export function createTabsStore(deps: TabsStoreDeps) {
             } else if (!retainedContextReady && hasProjectLocator(tab)) {
               if (deps.workspace.root !== tab.workspaceRef.dir) return false;
               const node = findProjectNode(deps.workspace.tree, tab.projectLocator);
-              if (!node) {
+              if (!node && !deps.environmentHasDrafts?.(tab.workspaceRef.dir, tab.projectLocator, true)) {
                 this.markOffline(tab.tabId, `本地项目 locator 在当前树中不存在: ${tab.projectName}`);
                 return false;
               }
-              deps.tree.select(node);
+              if (node) deps.tree.select(node);
             }
             if (!isCurrent()) return false;
             if (leaving && deps.leaveTestingAfterConfirmation && (!(await deps.leaveTestingAfterConfirmation()) || !isCurrent())) return false;
@@ -483,7 +485,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
           endTransition?.();
         }
         // ③ editor 上下文由活跃项目驱动（任务 4 接线点）
-        if (!isCurrent() || retainedContextReady) return;
+        if (!isCurrent() || retainedContextReady || (hasProjectLocator(tab) && !findProjectNode(deps.workspace.tree, tab.projectLocator))) return;
         await deps.onProjectActivated?.(tab, isCurrent);
       },
 
@@ -516,6 +518,7 @@ export function createTabsStore(deps: TabsStoreDeps) {
         const tab = this.tabs.find((t) => t.tabId === tabId);
         if (!tab) return false;
         if (hasProjectLocator(tab) && deps.testingHasDrafts?.(tab.workspaceRef.dir, tab.projectLocator)) return true;
+        if (hasProjectLocator(tab) && deps.environmentHasDrafts?.(tab.workspaceRef.dir, tab.projectLocator)) return true;
         if (hasProjectLocator(tab) && deps.requestTabs?.hasProjectDrafts(tab.workspaceRef.dir, tab.projectLocator)) return true;
         const wf = deps.workflowDesign;
         if (wf?.dirty && wf.locator && hasProjectLocator(tab)

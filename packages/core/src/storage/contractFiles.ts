@@ -56,7 +56,8 @@ import {
   type ApiFileLocation,
   type ProjectFileLocation,
 } from "./paths.js";
-import { calculateWorkspaceRevision, recoverPendingWriteJournal, type LoadFaultInjector } from "./writeJournal.js";
+import { calculateWorkspaceRevision, captureWorkspaceDefinition, recoverPendingWriteJournal, verifyWorkspaceDefinition, withWorkspaceSnapshotLock, type LoadFaultInjector } from "./writeJournal.js";
+import { WorkspaceStorageError } from "./workspaceErrors.js";
 import { decodeSyncState, defaultSyncStorageLimits, encodeSyncContent, loadSyncState } from "../sync/storage.js";
 import { syncContentReferences } from "../sync/state.js";
 
@@ -82,10 +83,11 @@ export function encodeContractProjectFiles(project: ContractProject): WorkspaceW
 
 export async function decodeContractProjectFiles(files: ReadonlyMap<string, string | Uint8Array>): Promise<ContractProjectLoadState> {
   // All readers receive this byte snapshot: none of the filesystem branches are used.
-  const bytes = new Map<string, Buffer>();
+  const bytes = new Map<string, { size: number; content: Buffer }>();
   for (const [path, content] of files) {
     if (validateRelativeFilePath(path) !== path) throw new TypeError("Project file path is not canonical");
-    bytes.set(path, typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content));
+    const raw = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+    bytes.set(path, { size: raw.byteLength, content: raw });
   }
   const metadata = await parseFile(".", "project.yaml", ProjectFileSchema, false, bytes);
   if (!metadata.value) return { problems: [metadata.problem!], readOnly: true };
@@ -307,7 +309,7 @@ interface ParsedFile<T> {
   problem?: LoadProblem;
 }
 
-type ContractFileSnapshot = ReadonlyMap<string, Buffer>;
+type ContractFileSnapshot = ReadonlyMap<string, { size: number; content?: Buffer }>;
 
 function objectHasFormatVersion(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -343,7 +345,7 @@ async function parseFile<T>(
 ): Promise<ParsedFile<T>> {
   let raw: Buffer;
   if (snapshot) {
-    const file = snapshot.get(relativePath);
+    const file = snapshot.get(relativePath)?.content;
     if (!file) return { problem: { file: relativePath, message: "Contract file could not be read." } };
     raw = file;
   } else try {
@@ -385,7 +387,7 @@ function decodeMarkdown(raw: Buffer): string | undefined {
 
 async function readMarkdown(root: string, path: string, snapshot?: ContractFileSnapshot): Promise<{ value?: string; problem?: LoadProblem }> {
   if (snapshot) {
-    const raw = snapshot.get(path);
+    const raw = snapshot.get(path)?.content;
     if (!raw) return { problem: { file: path, message: "Design document could not be read." } };
     const value = decodeMarkdown(raw);
     if (value === undefined) return { problem: { file: path, message: "Design document is not valid UTF-8." } };
@@ -461,6 +463,8 @@ async function listDirectories(
 function snapshotEntries(relativePath: string, snapshot: ContractFileSnapshot): FileEntry[] {
   const prefix = relativePath ? `${relativePath}/` : "";
   const entries = new Map<string, FileEntry>();
+  // On disk the decoder ignores subtrees without files. Derive their entries
+  // from the captured file paths so that empty directories stay equivalent.
   for (const path of snapshot.keys()) {
     if (!path.startsWith(prefix)) continue;
     const rest = path.slice(prefix.length);
@@ -1000,7 +1004,7 @@ async function validateSynchronization(
   const base = projectDirectoryPath(location.groupId, location.projectId), path = `${base}/synchronization.yaml`;
   const contentBase = `${base}/synchronization/content`;
   try {
-    const raw = snapshot?.get(path);
+    const raw = snapshot?.get(path)?.content;
     const state = snapshot ? (raw ? decodeSyncState(new TextDecoder("utf-8", { fatal: true }).decode(raw), location.projectId) : null) : await loadSyncState(root, location);
     await validateContainerEntries(root, `${base}/synchronization`, [], ["content"], problems, snapshot);
     const entries = await listFiles(root, contentBase, problems, snapshot);
@@ -1016,7 +1020,7 @@ async function validateSynchronization(
       if (snapshot) {
         const content = snapshot.get(contentPath);
         if (!content) throw new Error("SYNC_CONTENT_MISSING");
-        size = content.byteLength;
+        size = content.size;
       } else {
         try { size = (await lstat(nativePath(root, contentPath))).size; } catch { throw new Error("SYNC_CONTENT_MISSING"); }
       }
@@ -1148,11 +1152,12 @@ async function assembleWorkspace(
 export async function validateProspectiveContractFiles(
   files: ReadonlyMap<string, string>,
 ): Promise<{ problems: LoadProblem[]; readOnly: boolean }> {
-  const snapshot = new Map<string, Buffer>();
+  const snapshot = new Map<string, { size: number; content: Buffer }>();
   for (const [path, content] of files) {
     const safePath = validateRelativeFilePath(path);
     if (safePath !== path) throw new TypeError("Prospective contract file path is not canonical");
-    snapshot.set(safePath, Buffer.from(content, "utf8"));
+    const bytes = Buffer.from(content, "utf8");
+    snapshot.set(safePath, { size: bytes.byteLength, content: bytes });
   }
   const state = await assembleWorkspace(".", [], "prospective", snapshot);
   return { problems: state.problems, readOnly: state.readOnly };
@@ -1170,6 +1175,25 @@ export async function decodeContractWorkspace(
     problems.push({ file: ".", message: "Workspace revision could not be calculated." });
   }
   return assembleWorkspace(root, problems, revision);
+}
+
+/** Assemble the returned revision and model from the same bytes. A second disk
+ * revision detects writers outside the journal protocol as well. */
+export async function readStableContractWorkspace(root: string): Promise<WorkspaceLoadState<ContractWorkspace>> {
+  return withWorkspaceSnapshotLock(root, async (assertLease) => {
+    const snapshot = await captureWorkspaceDefinition(root, (path) => {
+      if (path.endsWith(".json")) return false; // Synchronization content needs only its captured size.
+      const name = path.split("/").at(-1)!;
+      if (name.endsWith(".yaml") && isApiFilePath(path, ["cases", name])) return true;
+      try { validateManagedWorkspaceFilePath(path); return true; }
+      catch { return false; } // Unknown entries remain in the inventory for structural diagnostics.
+    });
+    await assertLease();
+    const state = await assembleWorkspace(root, [], snapshot.revision, snapshot.files);
+    await verifyWorkspaceDefinition(root, snapshot);
+    if (state.readOnly) throw new WorkspaceStorageError("read-only", "Workspace has unresolved load or recovery problems and is read-only");
+    return state;
+  });
 }
 
 function isApiFilePath(path: string, finalSegments: readonly string[]): boolean {

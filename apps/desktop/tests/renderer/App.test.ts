@@ -64,7 +64,7 @@ import type { ApiParentLocator, ProjectLocator } from "../../src/shared/location
 import type { ApiccApi, ImportPreviewResult } from "../../src/shared/types.js";
 import type { LocalProjectTreeNodeDTO, LocalTreeNodeDTO } from "../../src/shared/tree-dto.js";
 import { localTreeNodeKey } from "../../src/shared/tree-dto.js";
-import type { DebugInvocation, StressReport } from "@apicc/core";
+import { fileStorage, type DebugInvocation, type StressReport } from "@apicc/core";
 
 const failingApi = createMemoryApi();
 failingApi.seedWorkspace();
@@ -425,6 +425,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       const free = editor.activeFreeSession;
       if (!free || free.request.protocol !== "http") throw new Error("Expected a free HTTP draft");
       free.request.body = { kind: "json", content: "{}", schema: { kind: "modelRef", modelId: model.id } };
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="tab-body"]').exists()).toBe(true));
       await wrapper.get('[data-testid="tab-body"]').trigger("click");
       await wrapper.get('[data-testid="schema-view-model"]').trigger("click");
       await vi.waitFor(() => expect(expectBody(`asset-model-select-${model.id}`).attributes("aria-pressed")).toBe("true"));
@@ -2169,6 +2170,64 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       await opening;
       open.mockRestore();
     }
+  });
+
+  it("从磁盘刷新后，已删除项目仍可回到环境草稿并明确放弃", async () => {
+    const wrapper = await mountApp(document.body);
+    await openLocalDir(wrapper);
+    const workspace = wrapper.getComponent(TopBar).props("workspace");
+    const tabs = wrapper.getComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
+    const project = projectByLabel(await failingApi.treeGet(), "示例项目");
+    const parent = { workspaceId: project.locator.workspaceId, groupId: project.locator.groupId };
+    const created = await realNodeCreate({ kind: "project", parent, name: "环境删除项目回归" });
+    if (created.kind !== "project") throw new Error("Expected a real project");
+    const collection = await realNodeCreate({ kind: "collection", parent: created.locator, name: "消失的模块" });
+    if (collection.kind !== "collection") throw new Error("Expected a real collection");
+    await realNodeCreate({ kind: "api", parent: collection.locator, api: { name: "未更改的删除接口" } });
+    await workspace.refresh();
+    await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+    await wrapper.get(`[data-testid="project-card-${created.id}"] .card-name`).trigger("click");
+    await vi.waitFor(() => expect(tabs.activeTab?.projectName).toBe("环境删除项目回归"));
+    const projectTab = tabs.activeTab!;
+    const index = tabs.tabs.findIndex((tab) => tab.tabId === projectTab.tabId);
+    const module = wrapper.findAll('[data-testid="tree-container-row"]').find((row) => row.text().includes("消失的模块"));
+    const expand = module?.find('[aria-expanded="false"]');
+    if (expand?.exists()) await expand.trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="tree-api"]').exists()).toBe(true));
+    await clickApiAndWait(wrapper);
+    const requests = wrapper.getComponent(RequestTabs).props("tabs") as ReturnType<typeof createRequestTabsStore>;
+    const cleanRequest = requests.activeId!;
+    expect(cleanRequest).toBeTruthy();
+    await wrapper.get('[data-testid="rail-envs"]').trigger("click");
+    await expectBody("manage-environments").trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="env-global-var-add"]').exists()).toBe(true));
+    await wrapper.get('[data-testid="env-global-var-add"]').trigger("click");
+    await wrapper.get('[data-testid="env-global-var-key"]').setValue("region");
+    await wrapper.get('[data-testid="env-global-var-value"]').setValue("preserve this");
+    expect(tabs.projectHasDrafts(projectTab.tabId)).toBe(true);
+    await wrapper.get('[data-testid="topbar-home"]').trigger("click");
+
+    const disk = await fileStorage.load(workspace.root);
+    const group = disk.workspace.groups.find((item) => item.id === parent.groupId)!;
+    group.projects = group.projects.filter((item) => item.id !== created.id);
+    await fileStorage.save(workspace.root, disk.workspace, { expectedRevision: disk.revision, deletions: [] });
+    await wrapper.get('[data-testid="home-workspace-more"]').trigger("click");
+    await expectBody("home-refresh-disk").trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="disk-refresh-success"]').exists()).toBe(true));
+    expect(tabs.projectHasDrafts(projectTab.tabId)).toBe(true);
+    expect(requests.tabs[cleanRequest]).toBeUndefined();
+    await wrapper.get(`[data-testid="project-tab-${index}"]`).trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="env-disk-conflict"]').exists()).toBe(true));
+    const retained = wrapper.get<HTMLInputElement>('[data-testid="env-global-var-value"]');
+    expect(retained.element.value).toBe("preserve this");
+    expect(retained.element.disabled).toBe(true);
+    await wrapper.get('[data-testid="env-disk-conflict"] button').trigger("click");
+    await expectBody("dialog-cancel").trigger("click");
+    expect(retained.element.value).toBe("preserve this");
+    await wrapper.get('[data-testid="env-disk-conflict"] button').trigger("click");
+    await expectBody("dialog-confirm").trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true));
+    expect(tabs.projectHasDrafts(projectTab.tabId)).toBe(false);
   });
 
   it("主页保留本地项目调试环境及用例上下文，在线工作区不暴露请求操作", async () => {

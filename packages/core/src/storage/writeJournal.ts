@@ -22,6 +22,7 @@ import {
   type WorkspaceWritePlan,
 } from "./contractFiles.js";
 import { validateRelativeFilePath, writerLockFilePath, writeJournalDirectoryPath } from "./paths.js";
+import { WorkspaceStorageError } from "./workspaceErrors.js";
 
 export type WriteFaultStage =
   | "after-staging"
@@ -151,13 +152,16 @@ async function listWorkspaceFiles(root: string): Promise<Array<{ path: string; a
   return files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
 }
 
-export async function calculateWorkspaceRevision(root: string): Promise<string> {
+interface WorkspaceDefinitionFile { size: number; content?: Buffer }
+
+async function readWorkspaceFiles(root: string, capture?: (path: string, bytes: Buffer) => void): Promise<string> {
   const base = assertAbsoluteRoot(root);
   const files = await listWorkspaceFiles(base);
   if (files.length === 0) return "empty";
   const hash = createHash("sha256");
   for (const file of files) {
     const content = await readFile(file.absolute);
+    capture?.(file.path, content);
     const pathBytes = Buffer.from(file.path, "utf8");
     const prefix = Buffer.allocUnsafe(8);
     prefix.writeUInt32BE(pathBytes.length, 0);
@@ -169,32 +173,108 @@ export async function calculateWorkspaceRevision(root: string): Promise<string> 
   return hash.digest("hex");
 }
 
+export function calculateWorkspaceRevision(root: string): Promise<string> {
+  return readWorkspaceFiles(root);
+}
+
+interface WorkspaceDefinitionSnapshot {
+  revision: string;
+  files: ReadonlyMap<string, WorkspaceDefinitionFile>;
+}
+
+export async function captureWorkspaceDefinition(
+  root: string,
+  retainContent: (path: string) => boolean,
+): Promise<WorkspaceDefinitionSnapshot> {
+  const files = new Map<string, WorkspaceDefinitionFile>();
+  const revision = await readWorkspaceFiles(root, (path, bytes) => {
+    files.set(path, { size: bytes.byteLength, ...(retainContent(path) ? { content: bytes } : {}) });
+  });
+  return { revision, files };
+}
+
+export async function verifyWorkspaceDefinition(root: string, snapshot: WorkspaceDefinitionSnapshot): Promise<void> {
+  const revision = await calculateWorkspaceRevision(root);
+  if (revision !== snapshot.revision) {
+    throw new WorkspaceStorageError("unstable", "Workspace changed during the disk read.");
+  }
+}
+
+export async function assertWorkspaceWriterIdle(root: string): Promise<void> {
+  if (await hasLock(assertAbsoluteRoot(root))) throw new WorkspaceStorageError("busy", "Another writer owns the workspace lock.");
+}
+
 async function hasLock(root: string): Promise<boolean> {
   await ensureSafeParents(root, writerLockFilePath(), false);
   return Boolean(await maybeLstat(safeAbsolute(root, writerLockFilePath())));
 }
 
-async function acquireLock(root: string, operationId: string): Promise<{ release: () => Promise<void> }> {
+async function acquireLock(root: string, operationId: string): Promise<{ owns: () => Promise<boolean>; release: () => Promise<void> }> {
   const lockPath = safeAbsolute(root, writerLockFilePath());
   await ensureDirectory(dirname(lockPath));
   const handle = await open(lockPath, "wx");
+  const ownership = JSON.stringify({ owner: `${process.pid}@${hostname()}`, operationId }) + "\n";
+  let identity: Awaited<ReturnType<typeof handle.stat>> | undefined;
+  async function owns(): Promise<boolean> {
+    const found = await maybeLstat(lockPath);
+    return !!found?.isFile() && !found.isSymbolicLink() && !!identity
+      && found.dev === identity.dev && found.ino === identity.ino
+      && await readFile(lockPath, "utf8") === ownership;
+  }
   try {
-    await handle.writeFile(`${JSON.stringify({ owner: `${process.pid}@${hostname()}`, operationId })}\n`, "utf8");
+    identity = await handle.stat();
+    await handle.writeFile(ownership, "utf8");
     await handle.sync();
     await handle.close();
   } catch (error) {
     await handle.close().catch(() => undefined);
-    await unlink(lockPath).catch(() => undefined);
+    const found = await maybeLstat(lockPath).catch(() => undefined);
+    if (identity && found && identity.dev === found.dev && identity.ino === found.ino) await unlink(lockPath).catch(() => undefined);
     throw error;
   }
   let released = false;
   return {
+    owns,
     async release() {
       if (released) return;
       released = true;
-      await unlink(lockPath);
+      if (await owns()) await unlink(lockPath);
     },
   };
+}
+
+async function acquireWorkspaceWriter(root: string): ReturnType<typeof acquireLock> {
+  return acquireLock(root, randomUUID()).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new WorkspaceStorageError("busy", "Another writer owns the workspace lock.");
+    throw error;
+  });
+}
+
+/** Bind an explicit snapshot read to the same exclusive lease as a commit. */
+export async function withWorkspaceSnapshotLock<T>(root: string, read: (assertLease: () => Promise<void>) => Promise<T>): Promise<T> {
+  const base = assertAbsoluteRoot(root);
+  const stats = await lstat(base);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new TypeError("Workspace root is not a regular directory");
+  await assertWorkspaceWriterIdle(base);
+  const problems = await recoverPendingWriteJournal(base);
+  if (problems.length) {
+    await assertWorkspaceWriterIdle(base);
+    throw new WorkspaceStorageError("read-only", "Workspace recovery needs attention.");
+  }
+  const lock = await acquireWorkspaceWriter(base);
+  try {
+    const assertLease = async () => {
+      if (!(await lock.owns())) throw new WorkspaceStorageError("unstable", "Workspace moved during the disk read.");
+    };
+    // A writer could have left a journal between recovery and lock acquisition.
+    const pending = await journalDirectories(base);
+    if (!pending || pending.length) throw new WorkspaceStorageError("read-only", "Workspace recovery needs attention.");
+    const result = await read(assertLease);
+    await assertLease();
+    return result;
+  } finally {
+    await lock.release();
+  }
 }
 
 function operationRelative(operationId: string, child: string): string {
@@ -422,12 +502,18 @@ async function checkWritableRoot(root: string): Promise<void> {
   const revision = await calculateWorkspaceRevision(root);
   if (revision === "empty") {
     const recoveryProblems = await recoverPendingWriteJournal(root);
-    if (recoveryProblems.length > 0) throw new Error("Workspace has unresolved load or recovery problems and is read-only");
+    if (recoveryProblems.length > 0) {
+      await assertWorkspaceWriterIdle(root);
+      throw new WorkspaceStorageError("read-only", "Workspace has unresolved load or recovery problems and is read-only");
+    }
     return;
   }
   const { decodeContractWorkspace } = await import("./contractFiles.js");
   const state = await decodeContractWorkspace(root);
-  if (state.readOnly) throw new Error("Workspace has unresolved load or recovery problems and is read-only");
+  if (state.readOnly) {
+    await assertWorkspaceWriterIdle(root);
+    throw new WorkspaceStorageError("read-only", "Workspace has unresolved load or recovery problems and is read-only");
+  }
 }
 
 export async function commitWritePlan(
@@ -439,7 +525,7 @@ export async function commitWritePlan(
   const actions = assertPlan(plan, options.deletions);
   await checkWritableRoot(base);
   const beforeLockRevision = await calculateWorkspaceRevision(base);
-  if (beforeLockRevision !== options.expectedRevision) throw new Error("Workspace revision conflict");
+  if (beforeLockRevision !== options.expectedRevision) throw new WorkspaceStorageError("revision-conflict", "Workspace revision conflict");
 
   const prospectiveFiles = new Map<string, string>();
   for (const file of await listWorkspaceFiles(base)) {
@@ -456,7 +542,7 @@ export async function commitWritePlan(
   await mkdir(base, { recursive: true });
   const rootStats = await lstat(base);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) throw new TypeError("Workspace root is not a regular directory");
-  const lock = await acquireLock(base, randomUUID());
+  const lock = await acquireWorkspaceWriter(base);
   const operationId = randomUUID();
   const operationPath = operationRelative(operationId, "manifest.yaml").slice(0, -"/manifest.yaml".length);
   const operationAbsolute = safeAbsolute(base, operationPath);
@@ -467,7 +553,7 @@ export async function commitWritePlan(
 
   try {
     const currentRevision = await calculateWorkspaceRevision(base);
-    if (currentRevision !== options.expectedRevision) throw new Error("Workspace revision conflict");
+    if (currentRevision !== options.expectedRevision) throw new WorkspaceStorageError("revision-conflict", "Workspace revision conflict");
     for (const action of actions) await ensureRegularTarget(base, action.path);
 
     const journalRoot = safeAbsolute(base, writeJournalDirectoryPath());

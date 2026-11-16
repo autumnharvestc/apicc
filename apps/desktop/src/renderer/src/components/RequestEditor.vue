@@ -26,6 +26,9 @@ import DebugSettings from "./DebugSettings.vue";
 import DebugEnvironmentMenu from "./DebugEnvironmentMenu.vue";
 import ActionMenu from "./ActionMenu.vue";
 import { debugEnvironmentSelection, type DebugEnvironmentSelection } from "../debugEnvironment.js";
+import { LocalWorkspaceError, type LocalWorkspaceFailure } from "../../../shared/workspace-refresh.js";
+import { diskErrorMessage } from "../diskRefreshPresentation.js";
+import { isRefreshableFailure } from "../stores/diskDrafts.js";
 
 const emit = defineEmits<{ "new-free-request": []; "collaboration-history": [trigger: HTMLElement | undefined] }>();
 
@@ -62,6 +65,9 @@ const props = defineProps<{
   createFreeModule?: (tab: RequestTab, name: string) => Promise<ApiParentLocator>;
   saveFreeRequest?: (tab: RequestTab, targetParent: RequestSaveTarget, name: string, request: ApiRequest, fields: DebugFieldState[]) => Promise<{ tabId: string; generation: number } | undefined>;
   reloadSaveTargets?: (tab: RequestTab) => Promise<void>;
+  refreshDisk?: () => Promise<void>;
+  refreshingDisk?: boolean;
+  diskRefreshEpoch?: number;
 }>();
 const { t } = useI18n();
 const isFreeRequest = computed(() => props.requestTab?.source.kind === "free");
@@ -129,6 +135,12 @@ const credentialContextKey = computed(() => {
 });
 const saveFeedback = ref<"" | "debugLoop.freeSavedInherited" | "debugLoop.requestSaved" | "editor.saved">("");
 const saveError = ref("");
+const saveDiskFailure = ref<LocalWorkspaceFailure | null>(null);
+const diskConflict = computed(() => props.editor.activeKey ? props.editor.sessions[props.editor.activeKey]?.diskConflicts : undefined);
+const blockedAssetSave = computed(() => Object.values(diskConflict.value ?? {}).some(Boolean));
+watch(() => props.diskRefreshEpoch, () => {
+  if (saveDiskFailure.value) { saveDiskFailure.value = null; saveError.value = ""; }
+});
 const freeSaveOpen = ref(false);
 const freeSaveBusy = ref(false);
 const freeSaveNeedsReload = ref(false);
@@ -186,7 +198,7 @@ const moreItems = computed(() => [
   ...(props.suggestCases && props.compactSuggest && !isFreeRequest.value ? [{ key: "suggest-cases", label: t("ai.suggestBtn"),
     disabled: props.editor.readOnly || props.suggestingCases, testId: "ai-suggest-btn" }] : []),
   ...(!isFreeRequest.value ? [{ key: "save-request", label: t("requestWorkbench.saveRequestOnly"),
-    disabled: props.editor.readOnly || pendingRestoreFields.value.length > 0, testId: "save-request-btn" }] : []),
+    disabled: props.editor.readOnly || props.refreshingDisk || !!diskConflict.value?.request || pendingRestoreFields.value.length > 0, testId: "save-request-btn" }] : []),
   { key: "settings", label: t("debugLoop.settings"), disabled: !props.api, testId: "debug-settings-open" },
   { key: "history", label: t("collaboration.chooseDebugHistory"), testId: "collaboration-open-history" },
 ]);
@@ -206,7 +218,8 @@ const cancellingRun = computed(() => tabDebugState.value ? tabDebugState.value.c
 const sendAction = computed(() => sending.value && runId.value ? "cancel" : sending.value ? "busy" : "send");
 const sendDisabled = computed(() => sendAction.value === "cancel"
   ? runId.value === cancellingRun.value
-  : sendAction.value === "busy" || pendingRestoreFields.value.length > 0 || environmentUnavailable.value || !!freeSession.value?.urlDraftInvalid);
+  : sendAction.value === "busy" || diskConflict.value?.asset?.reason === "deleted"
+    || pendingRestoreFields.value.length > 0 || environmentUnavailable.value || !!freeSession.value?.urlDraftInvalid);
 
 function selectProtocol(key: string) {
   if (key === "http" || key === "websocket" || key === "soap") switchProtocol(key);
@@ -708,17 +721,21 @@ function metadataTags(value: string) {
 }
 
 async function saveRequest(requestOnly: boolean) {
-  if (props.editor.readOnly || !request.value || pendingRestoreFields.value.length) return;
+  if (props.editor.readOnly || props.refreshingDisk || (requestOnly ? diskConflict.value?.request : blockedAssetSave.value) || !request.value || pendingRestoreFields.value.length) return;
   const operation = ++saveOperation;
   saveFeedback.value = "";
   saveError.value = "";
+  saveDiskFailure.value = null;
   try {
     if (requestOnly) {
       await props.editor.saveRequestDraft(currentRestoreMatches.value ? tabDebugState.value?.fields ?? props.debug.restoredFields : []);
     } else await props.editor.save();
     if (operation === saveOperation) saveFeedback.value = requestOnly ? "debugLoop.requestSaved" : "editor.saved";
   } catch (error) {
-    if (operation === saveOperation) saveError.value = error instanceof Error ? error.message : String(error);
+    if (operation === saveOperation) {
+      saveDiskFailure.value = error instanceof LocalWorkspaceError ? error.failure : null;
+      saveError.value = diskErrorMessage(error, t);
+    }
   }
 }
 </script>
@@ -757,8 +774,8 @@ async function saveRequest(requestOnly: boolean) {
           <button type="button" class="send-slot" data-testid="request-send-slot" :aria-busy="sending" :aria-disabled="sendDisabled" @click="runCommand">
             <span :data-testid="sendAction === 'cancel' ? 'debug-cancel' : 'send-btn'">{{ sendAction === "cancel" ? t('debugLoop.cancelRun') : sending ? t('editor.sending') : t('editor.send') }}</span>
           </button>
-          <a-button v-if="!isFreeRequest" data-testid="save-btn" :disabled="editor.readOnly || pendingRestoreFields.length > 0" @click="saveRequest(false)">{{ t('editor.save') }}</a-button>
-          <a-button v-else data-testid="save-free-btn" :disabled="editor.readOnly || freeSession?.urlDraftInvalid || pendingRestoreFields.length > 0 || !props.saveFreeRequest" @click="openFreeSaveDialog">{{ t('debugLoop.freeSaveAsApi') }}</a-button>
+          <a-button v-if="!isFreeRequest" data-testid="save-btn" :disabled="editor.readOnly || refreshingDisk || blockedAssetSave || pendingRestoreFields.length > 0" @click="saveRequest(false)">{{ t('editor.save') }}</a-button>
+          <a-button v-else data-testid="save-free-btn" :disabled="editor.readOnly || refreshingDisk || freeSession?.urlDraftInvalid || pendingRestoreFields.length > 0 || !props.saveFreeRequest" @click="openFreeSaveDialog">{{ t('debugLoop.freeSaveAsApi') }}</a-button>
           <ActionMenu ref="requestMore" :key="credentialContextKey" test-id="request-more" :label="t('requestWorkbench.more')" :items="moreItems" @select="selectRequestAction"><EllipsisOutlined /></ActionMenu>
           <a-select v-if="!isFreeRequest" class="case-select" data-testid="debug-case-select" size="small" :aria-label="t('requestWorkbench.case')"
             :value="activeCaseValue()" :options="(editor.api?.cases ?? []).map((item) => ({ label: `${item.name} (${item.scope})`, value: caseValue({ caseId: item.id, scope: item.scope }) }))"
@@ -769,7 +786,9 @@ async function saveRequest(requestOnly: boolean) {
       <p v-if="environmentUnavailable" class="request-feedback error" role="status">{{ t("environmentShortcut.unavailable") }}</p>
       <p v-if="cancelError" class="request-feedback error" role="alert">{{ cancelError }}</p>
       <span v-if="saveFeedback" class="request-feedback" role="status" data-testid="save-feedback">{{ t(saveFeedback) }}</span>
-      <span v-if="saveError" class="request-feedback error" role="alert" data-testid="save-error">{{ saveError }}</span>
+      <span v-if="saveError" class="request-feedback error" role="alert" data-testid="save-error">{{ saveDiskFailure ? t(`diskRefresh.error.${saveDiskFailure.reason}`) : saveError }}</span>
+      <a-button v-if="saveError && saveDiskFailure && refreshDisk && isRefreshableFailure(saveDiskFailure)" class="disk-retry" size="small" data-testid="request-refresh-disk"
+        :disabled="refreshingDisk" @click="refreshDisk">{{ t("diskRefresh.action") }}</a-button>
     </header>
 
     <a-modal :open="freeSaveOpen" :title="t('debugLoop.freeSaveTitle')" :confirm-loading="freeSaveBusy" @cancel="closeFreeSaveDialog">
@@ -976,6 +995,7 @@ async function saveRequest(requestOnly: boolean) {
 </template>
 
 <style scoped>
+.disk-retry { align-self: flex-start; max-inline-size: 100%; }
 .editor { container-type: inline-size; display: flex; flex: 1; flex-direction: column; gap: 5px; min-height: 0; padding: 8px 12px 10px; box-sizing: border-box; overflow: hidden; background: var(--bg); }
 .editor-header { flex: none; display: flex; flex-direction: column; gap: 5px; }
 .request-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
