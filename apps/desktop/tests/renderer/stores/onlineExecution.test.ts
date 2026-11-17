@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createOnlineExecutionStore } from "../../../src/renderer/src/stores/onlineExecution.js";
 import { ONLINE_EXECUTION_CACHE_SETTINGS_KEY } from '../../../src/renderer/src/stores/onlineExecutionCachePreferences.js';
-import type { OnlineExecutionContext, OnlineJob, OnlineLocalResult, FullOnlineJob } from "../../../src/shared/online/execution.js";
+import type { OnlineExecutionContext, OnlineJob, OnlineLocalResult, OnlineProjectView, FullOnlineJob } from "../../../src/shared/online/execution.js";
 import { ApiRequestSchema, DebugInvocationSchema, ContractWorkspaceSchema, StressPlanSchema } from '@apicc/core/schema';
 import { workspaceFixture } from '../../../../../packages/core/tests/helpers/contractFixtures.js';
 import { defaultPolicyConfig } from '@apicc/execution/contract';
@@ -13,6 +13,80 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 function localResult(runId: string): OnlineLocalResult { return { location: { kind: 'local' }, runId, snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded-local-runtime', scriptTimeoutMs: 3000, output: { kind: 'failure', targetKind: 'workflow', error: 'Safe preparation failure', result: { collectionId: '', collectionName: 'workflow', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 0, passed: 0, failed: 1, cases: [] } } }; }
 function activateRun(store: ReturnType<typeof createOnlineExecutionStore>) { store.activate(context); store.setVisible(true); store.view = { project: null, problems: [], assets: { ...context.scope, format: 'contract-files-v1', contractProjectId: '00000000-0000-4000-8000-000000000018', version: '1', manifestHash: 'a'.repeat(64), files: [] } }; }
 function job(jobId: string, executionId: string): FullOnlineJob { return { jobId, executionId, agentId: '5', state: 'ended', cancelState: 'none', executionReleased: true, reportState: 'archived', task: { protocolVersion: 1, jobId, executionId, scope: context.scope, submittedByUserId: '7', contractProjectId: '00000000-0000-4000-8000-000000000018', snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'workflow', workflowId }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'recorded-agent-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['task:workflow'] } }; }
+describe("online project update ownership", () => {
+  const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+  const projectView = (version: string, name: string): OnlineProjectView => ({
+    project: { ...structuredClone(project), name }, problems: [],
+    assets: { ...context.scope, format: "contract-files-v1", contractProjectId: project.id, version, manifestHash: "a".repeat(64), files: [] },
+  });
+  it("coalesces reads, pins the reviewed version, and requests execution from the last complete applied version", async () => {
+    let revision = projectView("1", "Initial project"), reads = 0;
+    const executionVersions: string[] = [];
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation === "assets") { reads++; return revision; }
+      if (input.operation === "run") { executionVersions.push(input.expectedVersion); return localResult(input.runId); }
+      throw new Error("Unexpected operation");
+    } }, { storage: null });
+    store.activate(context); store.setVisible(true);
+    await store.checkForUpdates();
+    revision = projectView("2", "Review this project");
+    expect(await Promise.all([store.checkForUpdates(), store.checkForUpdates(), store.checkForUpdates()])).toEqual([true, true, true]);
+    expect(reads).toBe(2);
+    expect(store.project?.name).toBe("Initial project");
+    store.openUpdatePreview();
+    expect(store.updatePreview).toMatchObject({ version: "2", changes: [{ asset: "project", kind: "modified", name: "Review this project" }] });
+    revision = projectView("3", "Newer project");
+    await store.checkForUpdates();
+    await store.run({ kind: "workflow", workflowId });
+    expect(store.applyUpdatePreview()).toBe(true);
+    expect(store.project?.name).toBe("Review this project");
+    expect(store.hasProjectUpdates).toBe(true);
+    await store.run({ kind: "workflow", workflowId });
+    expect(executionVersions).toEqual(["1", "2"]);
+    store.setVisible(false);
+  });
+  it("keeps an unresolved save fenced after a verification permission error", async () => {
+    const initial = projectView("1", project.name);
+    const workflow = { id: workflowId, name: "Saved while response was lost", status: "draft" as const, nodes: [], edges: [] };
+    const fixed = { ...initial, project: { ...initial.project!, workflows: [...initial.project!.workflows, workflow] },
+      assets: { ...initial.assets, version: "2" } };
+    const calls: Array<Extract<OnlineExecutionInput, { operation: "saveAssetEdit" }>> = [];
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation !== "saveAssetEdit") throw new Error("Unexpected operation");
+      calls.push(input);
+      if (!input.verifyOnly) return { status: "unknown" };
+      if (calls.length === 2) return { status: "rejected", reason: "authorization" };
+      return { status: "saved", disposition: "recovered", view: fixed };
+    } }, { storage: null });
+    store.activate(context); store.setVisible(true); store.acceptDirectoryView(context, initial);
+    const save = () => store.saveAssetEdit({ kind: "workflow-create", workflow }, initial.project!, "workflow-create", workflow.name);
+    expect(await save()).toBeNull();
+    expect(await store.verifyAssetSave()).toBeNull();
+    expect(store.saveFeedback).toMatchObject({ status: "unknown", reason: "authorization" });
+    expect(await save()).toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(await store.verifyAssetSave()).toMatchObject({ assets: { version: "2" } });
+    expect(calls.map(row => [row.intentId, row.verifyOnly])).toEqual([[calls[0]?.intentId, undefined], [calls[0]?.intentId, true], [calls[0]?.intentId, true]]);
+    store.setVisible(false);
+  });
+  it("leaves the previous readable snapshot visible for a malformed version and parks it when access is withdrawn", async () => {
+    const initial = projectView("1", project.name);
+    let denied = false;
+    const store = createOnlineExecutionStore({ onlineExecution: async () => {
+      if (denied) throw new Error("online-project-access-lost");
+      return { ...initial, project: null, problems: ["broken asset"], assets: { ...initial.assets, version: "2" } };
+    } }, { storage: null });
+    store.activate(context); store.setVisible(true); store.acceptDirectoryView(context, initial);
+    expect(await store.checkForUpdates()).toBe(false);
+    expect(store.projectReadIssue).toBe("online-project-content-unavailable");
+    expect(store.view?.assets.version).toBe("1");
+    denied = true;
+    expect(await store.checkForUpdates()).toBe(false);
+    expect(store.projectReadIssue).toBe("online-project-access-lost");
+    expect(store.project).toBeNull();
+    expect(store.view).toBeNull();
+  });
+});
 describe("F8 inactive execution cache", () => {
   const at = (id: number): OnlineExecutionContext => ({ ...context, scope: { ...context.scope, projectId: String(id) } });
   function activateAt(store: ReturnType<typeof createOnlineExecutionStore>, selected: OnlineExecutionContext) {

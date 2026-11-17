@@ -15,6 +15,7 @@ import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import type { OnlineBatchResult, OnlineWorkspaceSummary } from "../../../src/shared/online/contract.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
 import { ContractWorkspaceSchema } from "@apicc/core/schema";
+import { applyProjectSave } from "@apicc/core/collaboration/project-save";
 import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
 import type { OnlineProjectView } from "../../../src/shared/online/execution.js";
 
@@ -579,12 +580,15 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
     added.contract.metadata.name = "Created from the directory";
     confirmed.collections[0]!.apis.push(added);
     store.execution.acceptDirectoryView(scope, { assets: { ...assets, version: "2" }, project: confirmed, problems: [] });
-    const put = vi.fn<ApiccApi["onlineExecution"]>(async (input): Promise<OnlineProjectView> => {
-      if (input.operation !== "saveProject") throw new Error("Unexpected operation");
-      expect(input.expectedVersion).toBe("2");
-      expect(input.project.collections[0]!.apis.map(asset => asset.contract.metadata.name)).toEqual(["Edited existing API", "Created from the directory"]);
-      expect(input.project.name).toBe(project.name);
-      return { assets: { ...assets, version: "3" }, project: input.project, problems: [] };
+    let remote: OnlineProjectView = { assets: { ...assets, version: "2" }, project: confirmed, problems: [] };
+    const put = vi.fn<ApiccApi["onlineExecution"]>(async input => {
+      if (input.operation !== "saveAssetEdit") throw new Error("Unexpected operation");
+      const outcome = applyProjectSave(remote.project!, input.change);
+      if (outcome.status === "conflict") return { ...outcome, view: remote };
+      expect(outcome.project.collections[0]!.apis.map(asset => asset.contract.metadata.name)).toEqual(["Edited existing API", "Created from the directory"]);
+      expect(outcome.project.name).toBe(project.name);
+      remote = { assets: { ...assets, version: "3" }, project: outcome.project, problems: [] };
+      return { status: "saved", view: remote, disposition: "written" };
     });
     api.onlineExecution = put;
     try {
@@ -597,13 +601,13 @@ describe("在线接口编辑（步骤 1①②：VIEWER 只读 vs EDITOR 可编�
       expect(store.execution.view?.project?.collections[0]?.apis).toHaveLength(2);
       const overlapping = JSON.parse(JSON.stringify(store.execution.view!.project)) as typeof project;
       overlapping.collections[0]!.apis[0]!.contract.metadata.name = "Other editor changed this API";
-      store.execution.acceptDirectoryView(scope, { assets: { ...assets, version: "4" }, project: overlapping, problems: [] });
+      remote = { assets: { ...assets, version: "4" }, project: overlapping, problems: [] };
       store.editorApi!.contract.metadata.name = "Second unsaved local name";
       await store.saveApi();
-      expect(store.error).toBe("version_conflict");
+      expect(store.execution.saveFeedback).toMatchObject({ status: "conflict", conflict: { reason: "same-field", area: "metadata", field: "name" } });
       expect(store.editorApi?.contract.metadata.name).toBe("Second unsaved local name");
       expect(store.editorDirty).toBe(true);
-      expect(put).toHaveBeenCalledOnce();
+      expect(put).toHaveBeenCalledTimes(2);
     } finally { store.execution.setVisible(false); }
   });
 

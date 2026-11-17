@@ -174,6 +174,8 @@ async function saveCases() {
   try {
     await props.cases.save();
   } catch (e) {
+    // The online collaboration notice describes expected conflicts and unknown results for this draft.
+    if (e instanceof Error && e.message === "online-save-feedback") return;
     if (key === contextKey.value && selected.value?.id === identity.caseId && selected.value.scope === identity.scope) {
       saveError.value = diskErrorMessage(e, t);
       if (e instanceof LocalWorkspaceError) diskFailure.value = e.failure;
@@ -412,7 +414,7 @@ function removeOp(kind: "pre" | "post", index: number) {
         >
           {{ t("case.remove") }}
         </a-button>
-        <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly" @click="saveCases">{{ t("case.save") }}</a-button>
+        <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly || refreshingDisk || diskCaseBlocked || savingCurrent" @click="saveCases">{{ t("case.save") }}</a-button>
       </div>
 
       <div class="case-layout">

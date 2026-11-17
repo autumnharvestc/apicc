@@ -37,7 +37,10 @@ const materialCredentials = computed(() => execution.value.materialMetadata?.cre
 const entries = computed(() => execution.value.project ? props.adapter.apiEntries() : []);
 const bindIndex = ref<WfBindIndex | null>(null);
 const readOnly = computed(() => !execution.value.context || !props.online.canEdit(`${execution.value.context.scope.projectId}/project.yaml`));
-function reportError(error: unknown) { execution.value.error = error instanceof Error ? error.message : String(error); }
+function reportError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message !== "online-save-feedback") execution.value.error = message;
+}
 async function action(operation: () => unknown | Promise<unknown>) { const scope = JSON.stringify(execution.value.context); try { await operation(); } catch (error) { if (scope === JSON.stringify(execution.value.context) && execution.value.visible) reportError(error); } }
 watch(() => [execution.value.context, execution.value.view?.assets.version], async () => { if (!execution.value.project) { bindIndex.value = null; return; } const captured = JSON.stringify(execution.value.context); const result = await buildBindIndex(props.adapter.workspace.tree, props.adapter.locator(), props.adapter.bridge.apiGet); if (captured === JSON.stringify(execution.value.context)) bindIndex.value = result; }, { immediate: true });
 watch(() => props.online.editorPath, () => { if (props.online.editorPath) viewingApi.value = true; });

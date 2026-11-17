@@ -13,7 +13,12 @@ public final class ExecutionDtos {
     private ExecutionDtos() {}
     public record AssetChange(String path, String content) {}
     public record AssetDelta(String format, String contractProjectId, String expectedVersion,
-                             List<AssetChange> changes, List<String> deletes) {}
+                             List<AssetChange> changes, List<String> deletes, String expectedGroupId) {
+        public AssetDelta(String format, String contractProjectId, String expectedVersion,
+                          List<AssetChange> changes, List<String> deletes) {
+            this(format, contractProjectId, expectedVersion, changes, deletes, null);
+        }
+    }
     public record AssetFile(String path, String content, String version, String hash, long size) {}
     public record ProjectAssets(String workspaceId, String groupId, String projectId, String format,
                                 String contractProjectId, String version, String manifestHash, List<AssetFile> files) {

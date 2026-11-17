@@ -93,6 +93,10 @@ public class ProjectAssetsService {
         if (delta == null || !"contract-files-v1".equals(delta.format()) || delta.changes() == null || delta.deletes() == null
                 || delta.contractProjectId() == null || !delta.contractProjectId().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"))
             throw error(HttpStatus.BAD_REQUEST, "validation_failed", "需要有效的 contract-files-v1 项目变更");
+        // Moving a project does not change its asset version. Check its group under
+        // the project lock at both preparation and final commit.
+        if (delta.expectedGroupId() != null && EntityIds.parse(delta.expectedGroupId()) != entity.groupId())
+            throw error(HttpStatus.CONFLICT, "project_scope_conflict", "项目分组已变化，请重新进入项目");
         long expected = version(delta.expectedVersion());
         if (expected != Long.parseLong(current.version())) throw error(HttpStatus.CONFLICT, "version_conflict", "项目版本已变化");
         if ((long)delta.changes().size() + delta.deletes().size() > ((Number)configs.policyForProject(entity.workspaceId(),entity.id()).get("maxAssetChangeFiles")).longValue())

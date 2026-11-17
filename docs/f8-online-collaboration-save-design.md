@@ -1,8 +1,8 @@
 # F8 在线协作保存与更新设计
 
-**状态**　2026-11-16，方案已确认并归档。实施计划另定。评估基线为 CI108 对应的 `3190af4e`。
+**状态**　2026-11-16，方案已确认并归档。原评估基线为 CI108 对应的 `3190af4e`，实施计划以本地刷新合入后的 `bc35464d` 为准备基线。
 
-[F8 工作记录](f8-frontend-polish-worklog.md) · [本地工作区刷新设计](f8-workspace-open-refresh-design.md) · [页面展示规范](ui-presentation-guidelines.md)
+[实施计划](f8-collaboration-save-plan.md) · [F8 工作记录](f8-frontend-polish-worklog.md) · [本地工作区刷新设计](f8-workspace-open-refresh-design.md) · [页面展示规范](ui-presentation-guidelines.md)
 
 ## 1. 现状和目标
 

@@ -47,6 +47,19 @@ export function useCasesStore(_api: ApiccApi, editor: Editor) {
       selectedCaseScope(): string | null { return this.selectedCase?.scope ?? null; },
     },
     actions: {
+      preserveEditsAfterCaseConfirmation(sessionKey: string, generation: number, submitted: CaseIdentity,
+        previousScopes: readonly string[]): void {
+        const session = editor.sessions[sessionKey];
+        if (!session || session.generation !== generation) return;
+        if (session.api.cases.some(item => item.id === submitted.caseId && item.scope === submitted.scope)) return;
+        const replacements = session.api.cases.filter(item => item.id === submitted.caseId && !previousScopes.includes(item.scope));
+        const pending = reconcilePendingDeletes(this.pendingDeletes, sessionKey, generation, session.snapshot);
+        if (pending.some(item => item.caseId === submitted.caseId && item.scope === submitted.scope)) return;
+        const replacementScope = replacements.length === 1 ? replacements[0]!.scope : undefined;
+        pending.push({ ...submitted, generation, kind: replacementScope === undefined ? "explicit" : "scope-migration",
+          ...(replacementScope === undefined ? {} : { replacementScope }) });
+        this.pendingDeletes[sessionKey] = pending;
+      },
       diskDraftUnits(sessionKey: string, generation: number): EditorUnit[] {
         const context = JSON.stringify([sessionKey, generation]);
         return [...this.overrideDrafts.keys()].flatMap((key) => {

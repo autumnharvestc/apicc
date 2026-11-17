@@ -47,6 +47,7 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
 import OnlineApiEditor from "./components/OnlineApiEditor.vue";
 import OnlineProjectAssets from "./components/online/OnlineProjectAssets.vue";
+import OnlineProjectUpdates from "./components/online/OnlineProjectUpdates.vue";
 import CollaborationPanel from './components/online/CollaborationPanel.vue';
 import { createCollaborationStore } from './stores/collaboration.js';
 import type { CollaborationLocalSource } from '../../shared/online/collaboration.js';
@@ -691,12 +692,26 @@ const homeActiveOnlineProjectId = computed(() => {
   return tab && !isLocalProjectTab(tab) && onlineProjectContextAvailable.value ? tab.projectId : null;
 });
 const onlineDirectoryContext = computed(() => !isHome.value && onlineMode.value ? online.executionContext(homeActiveOnlineProjectId.value) : null);
+const onlineProjectAccessLost = computed(() => !!onlineDirectoryContext.value && online.execution.projectAccessLost);
+function checkActiveOnlineProject() {
+  if (onlineDirectoryContext.value) void online.execution.checkForUpdates().catch(reportError);
+}
+onMounted(() => {
+  window.addEventListener("focus", checkActiveOnlineProject);
+  window.addEventListener("online", checkActiveOnlineProject);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("focus", checkActiveOnlineProject);
+  window.removeEventListener("online", checkActiveOnlineProject);
+});
+watch(() => online.execution.appliedUpdate, () => online.refreshAppliedProjectTree());
+watch(onlineProjectAccessLost, (lost) => { if (lost) online.parkUnavailableProject(); });
 const onlineDirectoryRoot = computed(() => {
   const context = onlineDirectoryContext.value;
-  if (!context) return null;
-  const root = onlineProjectTree(online.onlineTree, context.scope.projectId);
+  if (!context || onlineProjectAccessLost.value) return null;
+  const root = online.appliedProjectTree(context) ?? onlineProjectTree(online.onlineTree, context.scope.projectId);
   if (!root) return null;
-  const project = JSON.stringify(online.execution.context) === JSON.stringify(context) ? online.execution.view?.project ?? null : null;
+  const project = JSON.stringify(online.execution.context) === JSON.stringify(context) ? online.execution.project : null;
   const labeled = labelOnlineProjectTree(root, project);
   const workspaceConfig = online.onlineTree?.source === 'online'
     ? online.onlineTree.children?.find(node => node.kind === 'file' && node.id === 'apicc.workspace.yaml') : undefined;
@@ -2255,7 +2270,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :online-expanded="onlineDirectoryContext ? onlineDirectory.tree.value.expanded : undefined"
             :online-selected-key="onlineDirectory.tree.value.selected"
             :project-drafts="!!activeLocalProjectTab && tabs.projectHasDrafts(activeLocalProjectTab.tabId)"
-            :tree-root="onlineMode ? (onlineProjectContextAvailable ? online.onlineTree : null) : undefined"
+            :tree-root="onlineMode ? (onlineProjectContextAvailable && !onlineProjectAccessLost ? online.onlineTree : null) : undefined"
             :readonly="onlineMode"
             :empty-text="onlineMode ? t(online.execution.busy ? 'onlineExecution.loading' : 'online.treeEmpty') : undefined"
             @select="onSelect"
@@ -2322,6 +2337,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             <a-button size="small" data-testid="testing-refresh-disk" :disabled="workspace.hasPendingDiskRefresh()"
               @click="refreshLocalWorkspaceFromDisk">{{ t("diskRefresh.action") }}</a-button>
           </div>
+          <OnlineProjectUpdates v-if="onlineDirectoryContext && !onlineProjectAccessLost" :execution="online.execution" />
           <!-- 主页（M9-C；轨三左右栏）：落点选择/项目卡片/连接管理，恒可用 -->
           <HomeView
             v-if="isHome"
@@ -2346,6 +2362,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @online-workspace-action="requestOnlineWorkspaceAction"
           />
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
+          <div v-else-if="onlineProjectAccessLost" class="panel-view online-context-unavailable" role="alert" data-testid="online-project-access-lost">
+            <p>{{ t(online.execution.projectReadIssue === 'online-project-identity-changed' ? 'onlineProjectUpdate.identityChanged' : 'onlineProjectUpdate.accessLost') }}</p>
+          </div>
           <OnlineProjectAssets v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects"
             :blank="isOnlineDirectoryBlank(online.execution.view)" :directory-writable="onlineDirectory.writable.value" :directory-draft="!!onlineDirectory.draft.value"
             @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome" @api-selected="showOnlineDirectoryPath">

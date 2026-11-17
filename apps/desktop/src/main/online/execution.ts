@@ -3,13 +3,14 @@ import { createHash } from "node:crypto";
 import { createSystemSecretStore, defaultCredentialPrivateRoot, prepareTestData, testDataSelectionsForRequests, prepareNetworkRun, selectCredentialRequests, type SecretStore, type NetworkTLSSettings, type PreparedNetworkRun } from "@apicc/core";
 import { ProjectAssetsSchema, ExecutionSnapshotSchema, ProjectExecutionAgentsSchema, SubmitJobSchema, PolicyConfigSchema, StressRunConfigSchema, runtimeCompatibilityIdForRuntime, logicalNetworkPath, resolveEffectiveConfig, defaultAgentConfig } from "@apicc/execution/contract";
 import { prepareProjectFiles, assertStressExecutionDeadline, createOnlineProjectSecretStore, prepareRunCredentials, withRunCredentials, withDeclaredInputFiles } from "@apicc/execution/host";
-import { createMemberExecutionClient, createMemberMaterialsClient } from "@apicc/execution/client";
+import { createMemberExecutionClient, createMemberMaterialsClient, ExecutionHttpError } from "@apicc/execution/client";
 import { readBuildIdentity } from "@apicc/execution/buildIdentity";
 import { OnlineExecutionInputSchema, OnlineJobSchema, OnlineLocalResultSchema, OnlineReportSchema, type OnlineExecutionInput, type OnlineLocalResult, type OnlineReport } from "../../shared/online/execution.js";
 import type { OnlineSession } from "./session.js";
 import { createExecutionRequest, adaptMemberExecutionError, OnlineApiError } from "./client.js";
 import { readOnlineProject, assertAssetsScope, isBlankOnlineProject, onlineDirectoryDelta, onlineProjectDelta } from "./projectAssets.js";
 import { prepareOnlineDirectoryWrite, recoverOnlineDirectoryWrite } from "./directory.js";
+import { createOnlineAssetEditor } from "./collaborativeSave.js";
 import { encodeContractProjectFiles } from "@apicc/core";
 import { createOnlineLocalCredentialStore } from "./projectCredentials.js";
 import type { PluginsRuntime } from "../plugins/runtime.js";
@@ -19,6 +20,7 @@ import { FullOnlineJobSchema, onlineJobScope } from '../../shared/online/executi
 
 type LocalRun = { context: string; abort: AbortController; completion: Promise<OnlineLocalResult>; result?: OnlineLocalResult; failure?: OnlineReport; started: boolean; settled: boolean };
 export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?: typeof fetch; localStore?: () => SecretStore; plugins?: PluginsRuntime }) {
+  const saveAssetEdit = createOnlineAssetEditor(deps.fetch);
   const localRuns = new Map<string, LocalRun>();
   let closed = false;
   const trimHistory = () => { const terminal = [...localRuns].filter(([, run]) => run.settled); for (const [id] of terminal.slice(0, Math.max(0, terminal.length - 100))) localRuns.delete(id); };
@@ -187,9 +189,16 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
         return job;
       };
       switch (input.operation) {
+        case "saveAssetEdit":
+          return saveAssetEdit(input, binding, path);
         case "assets": {
-          const view = await member.assets(input.context, trusted.signal ?? new AbortController().signal);
-          return isBlankOnlineProject(view.assets) ? { ...view, problems: [] } : view;
+          try {
+            const view = await member.assets(input.context, trusted.signal ?? new AbortController().signal);
+            return isBlankOnlineProject(view.assets) ? { ...view, problems: [] } : view;
+          } catch (error) {
+            if (error instanceof ExecutionHttpError && [401, 403, 404, 410].includes(error.status)) throw new Error("online-project-access-lost");
+            throw error;
+          }
         }
         case "directoryWrite": {
           const fetchView = async () => readOnlineProject(await request("GET", `${path}/assets`, undefined, ProjectAssetsSchema), input.context);

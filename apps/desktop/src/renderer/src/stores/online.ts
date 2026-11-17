@@ -5,6 +5,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 // 纯 schema 一律走 ./schema 子路径（依赖闭包仅 zod）。
 import { ComponentAssetSchema, ModelAssetSchema, ApiAssetSchema } from "@apicc/core/schema";
 import { createProjectAssetContext } from "@apicc/core/assets/context";
+import { sameProjectSaveValue } from "@apicc/core/collaboration/project-save";
 import type { ApiAsset, ComponentAsset, ContractProject, ModelAsset } from "@apicc/core";
 import { OnlineBaseUrlSchema, type OnlineRole, type OnlineTreeProject, type OnlineUser, type OnlineVersionConflict, type OnlineWorkspaceSummary } from "../../../shared/online/contract.js";
 import { chunk, planPull, planPush, restoreLocalPaths, toEntityPath, type LocalFileRow, type ProjectDirRef } from "../../../shared/online/migrate.js";
@@ -15,6 +16,8 @@ import type { ApiccApi } from "../../../shared/types.js";
 import { createOnlineExecutionStore } from "./onlineExecution.js";
 import { createOnlineSchedulesStore } from './onlineSchedules.js';
 import { OnlineDirectoryResultSchema, OnlineExecutionContextSchema, type OnlineDirectoryWrite, type OnlineExecutionContext } from "../../../shared/online/execution.js";
+import { onlineTreeToDto } from "../../../shared/online/tree.js";
+import { onlineProjectTree } from "../onlineDirectory.js";
 
 /**
  * 服务器档案存储键（任务 2 裁定 C）：与既有偏好存储同一先例（renderer localStorage——
@@ -146,11 +149,15 @@ function locateOnlineApi(project: ContractProject, path: string) {
   const segments = path.split("/");
   if (segments[0] !== "collections") return null;
   let container: Pick<ContractProject["collections"][number], "folders" | "apis"> | undefined = project.collections.find(row => row.id === segments[1]);
+  const folderIds: string[] = [];
   let index = 2;
-  while (segments[index] === "folders") { container = container?.folders.find(row => row.id === segments[index + 1]); index += 2; }
+  while (segments[index] === "folders" && segments[index + 1]) {
+    folderIds.push(segments[index + 1]!);
+    container = container?.folders.find(row => row.id === segments[index + 1]); index += 2;
+  }
   if (!container || segments[index] !== "apis" || segments[index + 2] !== "api.yaml" || segments.length !== index + 3) return null;
   const assetIndex = container.apis.findIndex(row => row.contract.id === segments[index + 1]);
-  return assetIndex < 0 ? null : { container, assetIndex, asset: container.apis[assetIndex]! };
+  return assetIndex < 0 ? null : { target: { collectionId: segments[1]!, folderIds, apiId: segments[index + 1]! }, asset: container.apis[assetIndex]! };
 }
 
 /**
@@ -167,6 +174,7 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
   const api = deps.api;
   const storage = deps.storage ?? localStorage;
   const execution = createOnlineExecutionStore(api, { storage });
+  const formalBaselines = new WeakMap<OnlineEditorBuffer, { context: OnlineExecutionContext; version: string; project: ContractProject }>();
   const schedules = createOnlineSchedulesStore(api);
   watch(() => [execution.context, execution.visible] as const, ([context, visible]) => schedules.activate(context, visible), { flush: 'sync' });
   // Renderer results belong to the authentication attempt that selected their target.
@@ -317,6 +325,39 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         const project = this.projects.find(row => row.id === context.scope.projectId && row.groupId === context.scope.groupId);
         return !!project && (project.myRole === "EDITOR" || project.myRole === "ADMIN" || project.myRole === "OWNER");
       },
+      appliedProjectTree(context: OnlineExecutionContext) {
+        const view = execution.view;
+        const row = this.projects.find(project => project.id === context.scope.projectId && project.groupId === context.scope.groupId);
+        if (!row || !view || !execution.project || JSON.stringify(execution.context) !== JSON.stringify(context)) return null;
+        const files = execution.directoryFiles.map(file => ({ ...file, path: `${row.id}/${file.path}`, version: Number(file.version) }));
+        return onlineProjectTree(onlineTreeToDto({ workspaceId: context.scope.workspaceId, rootVersion: 0, projects: [row], files }), row.id);
+      },
+      refreshAppliedProjectTree(): void {
+        const session = activeSessionOf(this), context = execution.context, view = execution.view;
+        const project = execution.confirmedProject();
+        if (!session || !context || !project || !view || !this.executionContext(context.scope.projectId)) return;
+        const prefix = `${context.scope.projectId}/`;
+        for (const [path, buffer] of Object.entries(session.buffers)) {
+          if (!path.startsWith(prefix) || buffer.loading || buffer.kind === "api" && JSON.stringify(buffer.api) !== buffer.snapshot) continue;
+          const relative = path.slice(prefix.length), file = view.assets.files.find(row => row.path === relative);
+          const destination = locateOnlineApi(project, relative);
+          if (!file || buffer.kind === "api" && !destination) {
+            delete session.buffers[path];
+            if (session.activeEditorPath === path) session.activeEditorPath = null;
+            continue;
+          }
+          buffer.version = Number(file.version); buffer.raw = file.content;
+          if (buffer.kind === "api" && destination) {
+            buffer.snapshot = JSON.stringify(destination.asset);
+            buffer.api = JSON.parse(buffer.snapshot) as ApiAsset;
+            formalBaselines.set(buffer, { project, context, version: view.assets.version });
+          }
+        }
+      },
+      parkUnavailableProject(): void {
+        const session = activeSessionOf(this), context = execution.context;
+        if (session && context && session.activeEditorPath?.startsWith(`${context.scope.projectId}/`)) session.activeEditorPath = null;
+      },
 
       async writeDirectory(input: OnlineDirectoryWrite) {
         if (!this.canWriteDirectory(input.context) || !execution.visible || JSON.stringify(execution.context) !== JSON.stringify(input.context)) {
@@ -325,8 +366,8 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         const scope = captureMigration(this);
         const inProject = () => scope?.isCurrent() && execution.visible && JSON.stringify(execution.context) === JSON.stringify(input.context);
         const result = OnlineDirectoryResultSchema.parse(await api.onlineExecution(input));
-        if (inProject() && result.view) execution.acceptDirectoryView(input.context, result.view);
-        if ((result.status === "saved" || result.status === "version-conflict") && scope?.isCurrent()) {
+        if (inProject() && result.view) execution.receiveDirectoryWrite(input, result);
+        if (result.status === "saved" && scope?.isCurrent()) {
           const refreshed = await this.refreshTreeView();
           return { result, refreshed, current: inProject() === true };
         }
@@ -336,14 +377,16 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
       openCreatedDirectoryApi(context: OnlineExecutionContext, path: string): void {
         const session = activeSessionOf(this);
         const view = execution.view;
-        if (!session || !view?.project || JSON.stringify(execution.context) !== JSON.stringify(context)
+        const project = execution.confirmedProject();
+        if (!session || !view || !project || JSON.stringify(execution.context) !== JSON.stringify(context)
           || JSON.stringify(this.executionContext(context.scope.projectId)) !== JSON.stringify(context)) return;
-        const asset = locateOnlineApi(view.project, path)?.asset;
-        const file = view.assets.files.find(row => row.path === path);
+        const asset = locateOnlineApi(project, path)?.asset;
+        const file = execution.directoryFiles.find(row => row.path === path);
         const fullPath = `${context.scope.projectId}/${path}`;
         if (!asset || !file) return;
         if (!session.buffers[fullPath]) session.buffers[fullPath] = { path: fullPath, kind: "api", api: JSON.parse(JSON.stringify(asset)),
           raw: file.content, problems: [], version: Number(file.version), snapshot: JSON.stringify(asset), loading: false };
+        formalBaselines.set(session.buffers[fullPath]!, { context, version: view.assets.version, project });
         session.activeEditorPath = fullPath;
       },
       persistProfiles(): void {
@@ -730,6 +773,30 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
         slot.loading = true;
         this.error = null;
         try {
+          const context = execution.context;
+          if (context?.scope.workspaceId === wsId && id.startsWith(`${context.scope.projectId}/`) && execution.visible) {
+            if (!slot.path || !execution.view) await execution.checkForUpdates();
+            if (!ownsSlot() || JSON.stringify(context) !== JSON.stringify(execution.context)) return;
+            if (execution.projectAccessLost || !execution.view) return;
+            const model = execution.editorProject(!slot.path);
+            const project = model?.project;
+            const view = model?.view ?? execution.view;
+            if (view?.assets.format === "contract-files-v1") {
+              const relative = id.slice(context.scope.projectId.length + 1);
+              const file = view.assets.files.find(row => row.path === relative);
+              const destination = project && locateOnlineApi(project, relative);
+              if (!file || kind === "api" && !destination) {
+                if (!slot.path) delete session.buffers[id];
+                if (session.activeEditorPath === id && !slot.path) session.activeEditorPath = null;
+                return;
+              }
+              slot.path = id; slot.kind = kind; slot.raw = file.content; slot.version = Number(file.version);
+              slot.problems = []; slot.snapshot = destination && kind === "api" ? JSON.stringify(destination.asset) : "";
+              slot.api = slot.snapshot ? JSON.parse(slot.snapshot) as ApiAsset : null;
+              if (project && destination && kind === "api") formalBaselines.set(slot, { context, version: view.assets.version, project });
+              return;
+            }
+          }
           const result = await api.onlineFilesGet({ workspaceId: wsId, paths: [id] });
           if (!ownsSlot()) return;
           const file = result.files[0];
@@ -753,12 +820,6 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             return;
           }
           slot.kind = "api";
-          const storedProject = execution.view?.project;
-          const context = execution.context;
-          if (storedProject && context?.scope.workspaceId === wsId && id.startsWith(`${context.scope.projectId}/`)) {
-            const asset = locateOnlineApi(storedProject, id.slice(context.scope.projectId.length + 1))?.asset;
-            if (asset) { slot.api = JSON.parse(JSON.stringify(asset)); slot.snapshot = JSON.stringify(slot.api); slot.problems = []; return; }
-          }
           try {
             const parsed = ApiAssetSchema.safeParse(parseYaml(file.content));
             if (parsed.success) {
@@ -824,15 +885,23 @@ export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
             this.error = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`).join("\n");
             return;
           }
-          const storedProject = execution.view?.project;
+          const storedProject = execution.confirmedProject();
           const context = execution.context;
-          if (storedProject && context?.scope.workspaceId === wsId && path.startsWith(`${context.scope.projectId}/`)) {
-            const draft = JSON.parse(JSON.stringify(storedProject)) as typeof storedProject;
-            const destination = locateOnlineApi(draft, path.slice(context.scope.projectId.length + 1));
-            if (destination?.asset.contract.id !== parsed.data.contract.id || JSON.stringify(destination.asset) !== buffer.snapshot) throw new Error("version_conflict");
-            destination.container.apis[destination.assetIndex] = parsed.data;
-            await execution.saveProject(draft, "api-buffer");
-            if (isCurrent()) accept(parsed.data);
+          const scopeMatches = context?.scope.workspaceId === wsId && path.startsWith(`${context.scope.projectId}/`);
+          const captured = formalBaselines.get(buffer);
+          if (scopeMatches && (!execution.view || execution.projectAccessLost)) return;
+          if (captured || scopeMatches && execution.view?.assets.format === "contract-files-v1") {
+            if (!scopeMatches || !context || !storedProject || !this.canWriteDirectory(context) || captured && !sameProjectSaveValue(captured.context, context)) return;
+            const project = captured?.project ?? storedProject;
+            const destination = locateOnlineApi(project, path.slice(context.scope.projectId.length + 1));
+            if (!destination || destination.asset.contract.id !== parsed.data.contract.id) throw new Error("online-project-unavailable");
+            const baseline = JSON.parse(buffer.snapshot) as ApiAsset;
+            await execution.saveAssetEdit({ kind: "api", target: destination.target, baseline, submitted: parsed.data },
+              project, JSON.stringify(["api", destination.target]), baseline.contract.metadata.name, receipt => {
+                if (session.buffers[path] !== buffer || this.user?.id !== context.ownerId || session.baseUrl && this.activeBaseUrl !== session.baseUrl) return;
+                accept(parsed.data);
+                formalBaselines.set(buffer, { context, project, version: receipt.assets.version });
+              }, captured?.version);
             return;
           }
           const content = stringifyYaml(JSON.parse(JSON.stringify(parsed.data)) as Record<string, unknown>);

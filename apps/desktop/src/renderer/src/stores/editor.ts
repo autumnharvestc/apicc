@@ -398,15 +398,15 @@ export function useEditorStore(api: ApiccApi, getContext: () => LocalWorkspaceCo
         const fixedLocator = locatorCopy(current.locator);
         const caseLocator = { ...fixedLocator, caseId: identity.caseId, scope: identity.scope };
         const submitted = copy(testCase);
-        const baseline = copy(JSON.parse(current.snapshot) as ApiAsset);
-        const deletedKeys = new Set(deletedCases.map((item) => `${item.caseId}\0${item.scope}`));
-        baseline.cases = baseline.cases.filter((item) => !deletedKeys.has(`${item.id}\0${item.scope}`));
-        const previousIndex = baseline.cases.findIndex((item) => item.id === identity.caseId && item.scope === identity.scope);
-        if (previousIndex < 0) baseline.cases.push(copy(submitted));
-        else baseline.cases[previousIndex] = copy(submitted);
         const saved = await api.caseDraftSave(caseLocator, submitted, current.sourceApiRevision, deletedCases.map((item) => ({ ...item })), fields.map((field) => ({ ...field })));
         const original = this.sessions[key];
         if (original?.generation === generation && original.diskEpoch === diskEpoch) {
+          const baseline = JSON.parse(original.snapshot) as ApiAsset;
+          const deletedKeys = new Set(deletedCases.map((item) => `${item.caseId}\0${item.scope}`));
+          baseline.cases = baseline.cases.filter((item) => !deletedKeys.has(`${item.id}\0${item.scope}`));
+          const previousIndex = baseline.cases.findIndex((item) => item.id === identity.caseId && item.scope === identity.scope);
+          if (previousIndex < 0) baseline.cases.push(copy(submitted));
+          else baseline.cases[previousIndex] = copy(submitted);
           original.sourceApiRevision = saved.sourceApiRevision;
           original.snapshot = JSON.stringify(baseline);
         }

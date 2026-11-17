@@ -1,6 +1,7 @@
 import { watch } from "vue";
 import { ContractProjectSchema, DatasetAssetSchema, SuiteAssetSchema, WorkflowSchema } from "@apicc/core/schema";
-import type { ContractWorkspace, ContractCollection, ContractFolder, ApiAsset, Workflow } from "@apicc/core";
+import type { ContractWorkspace, ContractProject, ContractCollection, ContractFolder, ApiAsset, Workflow } from "@apicc/core";
+import { findProjectSaveApi, sameProjectSaveValue, type ProjectApiTarget } from "@apicc/core/collaboration/project-save";
 import type { ApiccApi, ApiDetail } from "../../../shared/types.js";
 import type { TestingAssets, TestingContext } from "../../../shared/testing.js";
 import type { ApiLocator } from "../../../shared/locations.js";
@@ -16,6 +17,7 @@ import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "..
 import type { OnlineExecutionStore } from "./onlineExecution.js";
 import { OnlineDatasetContentSchema } from "../../../shared/online/execution.js";
 import { z } from "zod";
+import { apiSessionKey } from "./localIdentity.js";
 
 /** Reuses the existing business editors. Every mutation is captured against the explicit
  * online scope/version and saved with the atomic assets API. The renderer-only root key
@@ -25,6 +27,11 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
   const editorRoot = () => execution.context ? `online:${JSON.stringify(execution.context)}` : "";
   const locator = () => { if (!execution.context || !execution.project) throw new Error("online-project-unavailable"); return { workspaceId: execution.context.scope.workspaceId, groupId: execution.context.scope.groupId, projectId: execution.project.id }; };
   const project = () => { if (!execution.project) throw new Error("online-project-unavailable"); return execution.project; };
+  const confirmed = () => {
+    const model = execution.confirmedProject();
+    if (!model) throw new Error("online-project-unavailable");
+    return model;
+  };
   const context = () => ({ root: editorRoot(), project: locator(), revision: execution.view!.assets.version });
   function assertDatasetContext(input: TestingContext) {
     const current = locator();
@@ -47,15 +54,24 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     }
     return entries;
   }
-  const changeApi = async (id: string, edit: (asset: ApiAsset) => void, expected?: string) => {
-    if (expected && expected !== execution.view?.assets.manifestHash) throw new Error("version_conflict");
-    await change(draft => {
-      let found = 0;
-      const visit = (container: ContractCollection | ContractFolder) => { for (const asset of container.apis) if (asset.contract.id === id) { edit(asset); found++; } for (const folder of container.folders) visit(folder); };
-      for (const collection of draft.collections) visit(collection);
-      if (found !== 1) throw new Error("api-not-found");
-    });
+  const apiTarget = (where: ApiLocator): ProjectApiTarget => ({ collectionId: where.collectionId, folderIds: [...where.folderIds], apiId: where.apiId });
+  const assertApiScope = (where: ApiLocator) => {
+    const current = locator();
+    if (where.workspaceId !== current.workspaceId || where.groupId !== current.groupId || where.projectId !== current.projectId) throw new Error("online-session-changed");
   };
+  const apiBaselines = new Map<string, { project: ContractProject; version: string }>();
+  function captureApi(where: ApiLocator, expected?: string) {
+    if (readOnly()) throw new Error("online-project-read-only");
+    assertApiScope(where);
+    const root = editorRoot(), key = apiSessionKey(root, where);
+    const session = editor.sessions[key];
+    const target = apiTarget(where);
+    const baseline = session ? JSON.parse(session.snapshot) as ApiAsset : findProjectSaveApi(confirmed(), target);
+    if (!baseline || session && expected && expected !== session.sourceApiRevision) throw new Error("version_conflict");
+    return { key, session, target, baseline, version: apiBaselines.get(key)?.version ?? execution.view!.assets.version,
+      project: apiBaselines.get(key)?.project ?? confirmed() };
+  }
+  const workflowReceipts = new Map<string, { signature: string; workflow: Workflow }>();
   const credentialAction = async (action: "put" | "remove" | "status", ref: import("@apicc/core").SecretRef, value?: string) => {
     if (!execution.context) throw new Error("online-project-unavailable");
     const raw = await api.onlineExecution({ operation: "credential", context: clone(execution.context), action, ref, contractProjectId: project().id, storage: execution.localOnlyRefIds.includes(ref.id) ? "local" : "project", ...(value === undefined ? {} : { value }) });
@@ -94,13 +110,83 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     deleteTestingAsset: async input => { const target = input.target; await change(draft => { if (target.kind === "dataset") draft.datasets = draft.datasets?.filter(item => item.id !== target.locator.datasetId); else draft.suites = draft.suites?.filter(item => item.id !== target.locator.suiteId); }); return testingView(); },
     wfList: async () => project().workflows.map(workflow => ({ id: workflow.id, name: workflow.name, status: workflow.status, locator: { ...locator(), workflowId: workflow.id } })),
     wfGet: async where => { const workflow = project().workflows.find(item => item.id === where.workflowId); if (!workflow) throw new Error("workflow-not-found"); return { workflow: clone(workflow), locator: where }; },
-    wfCreate: async input => { const workflow = WorkflowSchema.parse({ id: crypto.randomUUID(), name: input.name, status: "draft", ...(input.executionVersion === 2 ? { executionVersion: 2, inputs: {}, outputs: {} } : {}), nodes: [], edges: [] }); await change(draft => { draft.workflows.push(workflow); }); return workflow; },
+    wfCreate: async input => {
+      if (readOnly()) throw new Error("online-project-read-only");
+      const root = editorRoot();
+      if (!sameProjectSaveValue(input.locator, locator())) throw new Error("online-session-changed");
+      const signature = JSON.stringify([input.name, input.executionVersion]);
+      const prior = workflowReceipts.get(root);
+      if (prior?.signature === signature) { workflowReceipts.delete(root); return clone(prior.workflow); }
+      const workflow = WorkflowSchema.parse({ id: crypto.randomUUID(), name: input.name, status: "draft",
+        ...(input.executionVersion === 2 ? { executionVersion: 2, inputs: {}, outputs: {} } : {}), nodes: [], edges: [] });
+      const saved = await execution.saveAssetEdit({ kind: "workflow-create", workflow }, confirmed(), "workflow-create", workflow.name,
+        () => workflowReceipts.set(root, { signature, workflow }));
+      if (!saved) throw new Error("online-save-feedback");
+      workflowReceipts.delete(root);
+      return workflow;
+    },
     wfSave: async (where, value) => { const workflow = WorkflowSchema.parse(value); await change(draft => { const index = draft.workflows.findIndex(item => item.id === where.workflowId); if (index < 0 || workflow.id !== where.workflowId) throw new Error("workflow-not-found"); draft.workflows[index] = workflow; }); return clone(workflow); },
     wfSetStatus: async (where, status) => { await change(draft => { const workflow = draft.workflows.find(item => item.id === where.workflowId); if (!workflow) throw new Error("workflow-not-found"); workflow.status = status; }); return { workflow: clone(project().workflows.find(item => item.id === where.workflowId)!), errors: [], warnings: [] }; },
     wfDelete: async where => { await change(draft => { draft.workflows = draft.workflows.filter(item => item.id !== where.workflowId); }); },
-    apiGet: async where => { const found = apiEntries().find(entry => entry.asset.contract.id === where.apiId); if (!found) throw new Error("api-not-found"); return { api: clone(found.asset), locator: where, envs: project().environments.map(env => ({ id: env.id, name: env.name, locator: { ...locator(), environmentId: env.id } })), sourceApiRevision: execution.view!.assets.manifestHash, sourceProjectRevision: execution.view!.assets.manifestHash } satisfies ApiDetail; },
-    apiSave: async (where, asset, expected) => { await changeApi(where.apiId, current => Object.assign(current, clone(asset)), expected); return { api: clone(asset), sourceApiRevision: execution.view!.assets.manifestHash, sourceProjectRevision: execution.view!.assets.manifestHash }; },
-    caseDraftSave: async (where, value, expected, deletes) => { await changeApi(where.apiId, asset => { asset.cases = asset.cases.filter(item => !(deletes ?? []).some(deleted => deleted.caseId === item.id && deleted.scope === item.scope) && !(item.id === value.id && item.scope === value.scope)); asset.cases.push(clone(value)); }, expected); return { testCase: clone(value), sourceApiRevision: execution.view!.assets.manifestHash }; },
+    apiGet: async where => {
+      assertApiScope(where);
+      const root = editorRoot();
+      await execution.checkForUpdates();
+      if (root !== editorRoot()) throw new Error("online-session-changed");
+      assertApiScope(where);
+      const latest = execution.editorProject(true);
+      const baseline = latest?.project ?? confirmed();
+      const asset = findProjectSaveApi(baseline, apiTarget(where));
+      if (!asset) throw new Error("api-not-found");
+      const view = latest?.view ?? execution.view!;
+      apiBaselines.set(apiSessionKey(root, where), { project: baseline, version: view.assets.version });
+      return { api: clone(asset), locator: where, envs: project().environments.map(env => ({ id: env.id, name: env.name, locator: { ...locator(), environmentId: env.id } })),
+        sourceApiRevision: view.assets.manifestHash, sourceProjectRevision: view.assets.manifestHash } satisfies ApiDetail;
+    },
+    apiSave: async (where, asset, expected) => {
+      const fixed = captureApi(where, expected);
+      const submitted = clone(asset);
+      const saved = await execution.saveAssetEdit({ kind: "api", target: fixed.target, baseline: fixed.baseline, submitted },
+        fixed.project, JSON.stringify(["api", fixed.target]), fixed.baseline.contract.metadata.name, receipt => {
+          const original = editor.sessions[fixed.key];
+          if (original && original === fixed.session) {
+            original.snapshot = JSON.stringify({ ...submitted, cases: (JSON.parse(original.snapshot) as ApiAsset).cases });
+            original.sourceApiRevision = receipt.assets.manifestHash;
+            original.sourceProjectRevision = receipt.assets.manifestHash;
+            apiBaselines.set(fixed.key, { project: fixed.project, version: receipt.assets.version });
+          }
+        }, fixed.version);
+      if (!saved) throw new Error("online-save-feedback");
+      return { api: submitted, sourceApiRevision: saved.assets.manifestHash, sourceProjectRevision: saved.assets.manifestHash };
+    },
+    caseDraftSave: async (where, value, expected, deletes) => {
+      const fixed = captureApi(where, expected);
+      const matches = (item: { id: string; scope: string }, target: { caseId: string; scope: string }) => item.id === target.caseId && item.scope === target.scope;
+      const baseline = fixed.baseline.cases.find(item => matches(item, where)) ?? null;
+      if (value.id !== where.caseId || value.scope !== where.scope) throw new Error("api-not-found");
+      const explicit = (deletes ?? []).flatMap(item => {
+        const deleted = fixed.baseline.cases.find(candidate => matches(candidate, item));
+        return deleted ? [{ ...item, baseline: deleted }] : [];
+      });
+      if (explicit.length !== (deletes?.length ?? 0)) throw new Error("version_conflict");
+      const submitted = clone(value);
+      const previousScopes = fixed.session?.api.cases.filter(item => item.id === value.id).map(item => item.scope) ?? [];
+      const saved = await execution.saveAssetEdit({ kind: "case", target: fixed.target, baseline, baselineRequest: fixed.baseline.contract.request,
+        submitted, deletes: explicit }, fixed.project, JSON.stringify(["case", fixed.target, value.id]), value.name, receipt => {
+        const original = editor.sessions[fixed.key];
+        if (!original || original !== fixed.session) return;
+        const asset = JSON.parse(original.snapshot) as ApiAsset;
+        asset.cases = asset.cases.filter(item => !explicit.some(deleted => matches(item, deleted)));
+        const index = asset.cases.findIndex(item => matches(item, where));
+        if (index < 0) asset.cases.push(submitted); else asset.cases[index] = submitted;
+        original.snapshot = JSON.stringify(asset);
+        original.sourceApiRevision = receipt.assets.manifestHash;
+        cases.preserveEditsAfterCaseConfirmation(fixed.key, original.generation, { caseId: where.caseId, scope: where.scope }, previousScopes);
+        apiBaselines.set(fixed.key, { project: fixed.project, version: receipt.assets.version });
+      }, fixed.version);
+      if (!saved) throw new Error("online-save-feedback");
+      return { testCase: submitted, sourceApiRevision: saved.assets.manifestHash };
+    },
     credentialStatus: async input => CredentialStatusResultSchema.parse(await credentialAction("status", input.ref)),
     credentialPut: async input => CredentialMutationResultSchema.parse(await credentialAction("put", input.ref, input.value)),
     credentialRemove: async input => CredentialMutationResultSchema.parse(await credentialAction("remove", input.ref)),
@@ -112,7 +198,7 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
   const testing = createTestingStore(bridge, { confirmDiscard, getActive: () => execution.project ? { ...getContext(), project: locator() } : null });
   const workflowDesign = useWorkflowDesignStore(bridge, getContext); const wfList = useWfListStore(bridge, getContext);
   const editor = useEditorStore(bridge, getContext); const cases = useCasesStore(bridge, editor);
-  const stop = watch(() => [editorRoot(), execution.view?.assets.version, execution.project !== null, readOnly()], () => {
+  const stop = watch(() => [editorRoot(), execution.project, readOnly()], () => {
     if (!execution.project) { workspace.reset(); return; }
     workspace.root = editorRoot(); workspace.opened = true; workspace.readOnly = readOnly();
     (workspace as unknown as { workspace: ContractWorkspace | null }).workspace = facade(); workspace.name = project().name;
@@ -121,5 +207,20 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     void testing.activate(editorRoot(), locator(), readOnly()).catch(error => { execution.error = error.message; });
     void wfList.load(editorRoot(), locator()).catch(error => { execution.error = error.message; });
   }, { immediate: true });
-  return { bridge, workspace, envs, testing, workflowDesign, wfList, editor, cases, locator, editorRoot, apiEntries, stop };
+  const stopRebase = watch(() => execution.appliedUpdate, () => {
+    if (!execution.project || !execution.view) return;
+    const root = editorRoot(), baseline = confirmed(), view = execution.view;
+    for (const [key, session] of Object.entries(editor.sessions)) {
+      if (session.root !== root || JSON.stringify(session.api) !== session.snapshot
+          || cases.diskDraftUnits(key, session.generation).length || cases.pendingDeletes[key]?.length) continue;
+      const asset = findProjectSaveApi(baseline, apiTarget(session.locator));
+      if (!asset) { delete editor.sessions[key]; if (editor.activeKey === key) editor.activeKey = null; continue; }
+      session.api = clone(asset); session.snapshot = JSON.stringify(session.api);
+      session.sourceApiRevision = view.assets.manifestHash; session.sourceProjectRevision = view.assets.manifestHash;
+      session.envs = baseline.environments.map(env => ({ id: env.id, name: env.name, locator: { ...locator(), environmentId: env.id } }));
+      apiBaselines.set(key, { project: baseline, version: view.assets.version });
+    }
+  });
+  return { bridge, workspace, envs, testing, workflowDesign, wfList, editor, cases, locator, editorRoot, apiEntries,
+    stop: () => { stop(); stopRebase(); } };
 }

@@ -86,6 +86,35 @@ class ProjectAssetsApiTest {
             assertThat(current.get("files").toString()).contains(a == 200 ? "left-a" : "right-a").doesNotContain(a == 200 ? "right-a" : "left-a");
         }
     }
+    @Test void guardedDeltaRejectsThePreviousGroupAfterAnActualProjectMove() throws Exception {
+        Fixture f = fixture();
+        String authorization = "Bearer " + f.token();
+        String assetsPath = f.url() + "/assets";
+        JsonNode original = body(save(f, "0", List.of(Map.of("path", "project.yaml", "content", "original")), List.of())
+            .andExpect(status().isOk()));
+        String newGroup = body(mvc.perform(post("/api/v1/workspaces/" + f.ws() + "/groups")
+            .header("Authorization", authorization).contentType("application/json")
+            .content(json.writeValueAsString(Map.of("name", "scope-rebind-" + f.project()))))
+            .andExpect(status().isCreated())).get("id").asText();
+        mvc.perform(post(f.url() + "/move").header("Authorization", authorization).contentType("application/json")
+            .content(json.writeValueAsString(Map.of("groupId", newGroup)))).andExpect(status().isNoContent());
+
+        mvc.perform(get(assetsPath).header("Authorization", authorization)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.groupId").value(newGroup)).andExpect(jsonPath("$.version").value("1"));
+        var guarded = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(
+            delta("1", List.of(Map.of("path", "project.yaml", "content", "edited")), List.of()));
+        guarded.put("expectedGroupId", original.get("groupId").asText());
+        mvc.perform(put(assetsPath).header("Authorization", authorization).contentType("application/json")
+            .content(json.writeValueAsString(guarded))).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("project_scope_conflict"));
+        mvc.perform(get(assetsPath).header("Authorization", authorization)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.version").value("1")).andExpect(jsonPath("$.files[0].content").value("original"));
+
+        guarded.put("expectedGroupId", newGroup);
+        mvc.perform(put(assetsPath).header("Authorization", authorization).contentType("application/json")
+            .content(json.writeValueAsString(guarded))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.version").value("2")).andExpect(jsonPath("$.files[0].content").value("edited"));
+    }
     @Test void snapshotPersistsExactBytesVersionsAndHashAfterSourceEdit() throws Exception {
         Fixture f = fixture();
         save(f,"0",List.of(Map.of("path","project.yaml","content","original 雪\n")),List.of()).andExpect(status().isOk());

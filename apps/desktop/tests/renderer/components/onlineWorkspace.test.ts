@@ -28,6 +28,7 @@ import OnlineStressPanel from "../../../src/renderer/src/components/online/Onlin
 import OnlineProjectAssets from "../../../src/renderer/src/components/online/OnlineProjectAssets.vue";
 import { createOnlineProjectAdapter } from "../../../src/renderer/src/stores/onlineProjectAdapter.js";
 import { ContractWorkspaceSchema } from "@apicc/core/schema";
+import { applyProjectSave } from "@apicc/core/collaboration/project-save";
 import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
 import type { OnlineExecutionContext, OnlineLocalResult, OnlineExecutionInput, OnlineJob } from "../../../src/shared/online/execution.js";
 import { InvocationOutputSchema } from "../../../src/shared/online/execution.js";
@@ -292,12 +293,17 @@ describe('online execution readable projection', () => {
     project.environments = [{ id: envId, name: 'Remote preview', variables: {}, baseUrls: {} }];
     const api = createMemoryApi();
     const viewOf = (saved: typeof project, version: number) => ({ project: saved, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1' as const, contractProjectId: saved.id, version: String(version), manifestHash: String(version).repeat(64), files: [] } });
-    const writes: Extract<OnlineExecutionInput, { operation: 'saveProject' }>[] = [];
+    const writes: Extract<OnlineExecutionInput, { operation: 'saveAssetEdit' }>[] = [];
+    let remote = viewOf(project, 1);
     let run: Extract<OnlineExecutionInput, { operation: 'run' }> | undefined;
     api.onlineExecution = async (input) => {
-      if (input.operation === 'saveProject') {
+      if (input.operation === 'assets') return remote;
+      if (input.operation === 'saveAssetEdit') {
         writes.push(input);
-        return viewOf(input.project, writes.length + 1);
+        const applied = applyProjectSave(remote.project, input.change);
+        if (applied.status === 'conflict') return { ...applied, view: remote };
+        remote = viewOf(applied.project, writes.length + 1);
+        return { status: 'saved', disposition: 'written', view: remote };
       }
       if (input.operation === 'run') {
         run = input;
@@ -322,7 +328,10 @@ describe('online execution readable projection', () => {
     const adapter = createOnlineProjectAdapter(execution, api, () => !canEdit(), () => true);
     const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
     const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
-    const savedCase = (nth: number) => writes[nth]?.project.collections[0]?.apis[0]?.cases.find(item => item.id === originalCase.id && item.scope === originalCase.scope);
+    const savedCase = (nth: number) => {
+      const write = writes[nth]?.change;
+      return write?.kind === 'case' ? write.submitted : undefined;
+    };
     const runButton = () => wrapper.findAll('button').find(item => item.text() === i18n.global.t('onlineExecution.runCase'))!;
     try {
       await wrapper.get('[data-testid="online-execution-environment"]').setValue(envId);
@@ -338,9 +347,11 @@ describe('online execution readable projection', () => {
       expect(savedCase(0)?.requestOverride).toEqual(asset.contract.request);
 
       await wrapper.get('[data-testid="case-request-inherit"]').trigger('click');
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="case-save"]').attributes('disabled')).toBeUndefined());
       await wrapper.get('[data-testid="case-save"]').trigger('click');
-      await vi.waitFor(() => expect(runButton().attributes('disabled')).toBeUndefined());
-      expect(writes.map(write => write.expectedVersion)).toEqual(['1', '2']);
+      await vi.waitFor(() => expect(runButton().attributes('disabled'), wrapper.find('[data-testid="case-save-error"]').exists()
+        ? wrapper.get('[data-testid="case-save-error"]').text() : JSON.stringify({ feedback: execution.saveFeedback, writes: writes.length })).toBeUndefined());
+      expect(writes.map(write => write.baseVersion)).toEqual(['1', '2']);
       expect(savedCase(1)).toBeDefined();
       expect(savedCase(1)?.requestOverride).toBeUndefined();
       await runButton().trigger('click');
@@ -367,9 +378,9 @@ describe('online execution readable projection', () => {
     const online = createOnlineStore({ api });
     const execution = online.execution;
     execution.activate(EXECUTION_CONTEXT);
-    execution.project = project;
+    execution.setVisible(true);
     const files = remote.map(({ path }) => ({ path, content: '', hash: 'a'.repeat(64), size: 0, version: '1' }));
-    execution.view = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files } };
+    execution.acceptDirectoryView(EXECUTION_CONTEXT, { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files } });
     online.activeWorkspaceId = EXECUTION_CONTEXT.scope.workspaceId;
     online.sessions[EXECUTION_CONTEXT.scope.workspaceId] = { workspace: { id: EXECUTION_CONTEXT.scope.workspaceId, name: 'Team', myRole: 'EDITOR' },
       projects: [{ id: EXECUTION_CONTEXT.scope.projectId, name: project.name, myRole: 'EDITOR' }], tree: null, buffers: {}, activeEditorPath: null };
@@ -389,8 +400,44 @@ describe('online execution readable projection', () => {
       await flushPromises();
       expect(online.editorApi?.contract.metadata.name).toBe('First API local draft');
       expect(online.editorDirty).toBe(true);
-      expect(read).toHaveBeenCalledTimes(2);
-    } finally { wrapper.unmount(); adapter.stop(); }
+      expect(read).not.toHaveBeenCalled();
+    } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
+  });
+  it('defers a case scope migration while its original save requires verification', async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    project.environments.push({ id: crypto.randomUUID(), name: "test", variables: {}, baseUrls: {} });
+    const api = createMemoryApi();
+    const online = createOnlineStore({ api });
+    const execution = online.execution;
+    let remote = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: "contract-files-v1" as const,
+      contractProjectId: project.id, version: "1", manifestHash: "a".repeat(64), files: [] } };
+    const writes: Extract<OnlineExecutionInput, { operation: 'saveAssetEdit' }>[] = [];
+    api.onlineExecution = async input => {
+      if (input.operation === "assets") return remote;
+      if (input.operation !== "saveAssetEdit") throw new Error("Unexpected operation");
+      if (input.verifyOnly) return { status: "saved", disposition: "recovered", view: remote };
+      writes.push(input);
+      const merged = applyProjectSave(remote.project, input.change);
+      if (merged.status === "conflict") return { ...merged, view: remote };
+      remote = { ...remote, project: merged.project, assets: { ...remote.assets, version: String(writes.length + 1) } };
+      return writes.length === 1 ? { status: "unknown" } : { status: "saved", disposition: "written", view: remote };
+    };
+    execution.activate(EXECUTION_CONTEXT); execution.setVisible(true);
+    execution.acceptDirectoryView(EXECUTION_CONTEXT, remote);
+    const adapter = createOnlineProjectAdapter(execution, api, () => false, () => false);
+    try {
+      await adapter.editor.load(adapter.apiEntries()[0]!.locator);
+      const testCase = adapter.cases.addCase({ name: "New case", scope: "base" });
+      await expect(adapter.cases.save()).rejects.toThrow("online-save-feedback");
+      adapter.cases.changeScope(testCase.id, "base", "test");
+      await expect(adapter.cases.save()).rejects.toThrow("online-save-feedback");
+      expect(writes).toHaveLength(1);
+      expect(await execution.verifyAssetSave()).toMatchObject({ assets: { version: "2" } });
+      await adapter.cases.save();
+      expect(writes[1]?.change).toMatchObject({ kind: "case", submitted: { id: testCase.id, scope: "test" },
+        deletes: [{ caseId: testCase.id, scope: "base" }] });
+      expect(remote.project.collections[0]!.apis[0]!.cases.filter(row => row.id === testCase.id).map(row => row.scope)).toEqual(["test"]);
+    } finally { adapter.stop(); execution.setVisible(false); }
   });
   it('shows connection, cancellation, release and missing evidence in Chinese and English without opening raw data', () => {
     for (const language of ['zh-CN', 'en'] as const) {

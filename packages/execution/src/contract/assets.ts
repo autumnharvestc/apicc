@@ -9,6 +9,7 @@ export const ProjectAssetsSchema = z.object({
   version: AssetVersionSchema, manifestHash: HashSchema, files: z.array(AssetFileSchema),
 }).strict();
 export const AssetDeltaSchema = z.object({ format: z.literal("contract-files-v1"), contractProjectId: z.string().uuid(), expectedVersion: AssetVersionSchema,
+  expectedGroupId: EntityIdSchema.optional(),
   changes: z.array(z.object({ path: ProjectRelativePathSchema, content: z.string() }).strict()), deletes: z.array(ProjectRelativePathSchema),
 }).strict();
 export const ExecutionSnapshotSchema = z.object({ snapshotId: EntityIdSchema, createdByUserId: EntityIdSchema, assets: ProjectAssetsSchema }).strict();

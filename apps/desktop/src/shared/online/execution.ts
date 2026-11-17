@@ -3,6 +3,7 @@ export { OnlineExecutionContextSchema, ExecutionLocationSchema, OnlineProjectVie
 export { FullOnlineJobSchema, MinimalOnlineJobSchema, isFullOnlineJob, onlineJobScope, type FullOnlineJob } from '@apicc/execution/client/memberTypes';
 import { z } from "zod";
 import { ApiRequestSchema, ContractProjectSchema, JsonValueSchema, SecretRefSchema } from "@apicc/core/schema";
+import { ProjectSaveConflictSchema, ProjectSaveOperationSchema } from "@apicc/core/collaboration/project-save";
 import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "../credentials.js";
 import { EntityIdSchema, ServerProjectScopeSchema, TaskTargetSchema, RunConfigSchema, FixedMaterialSelectionSchema, AssetDeltaSchema, FixedNetworkInputSchema, ProjectExecutionAgentsSchema, ConfigVersionSchema, CredentialMetadataSchema, AttachmentMetadataSchema, AttachmentWriteSchema } from "@apicc/execution/contract";
 
@@ -24,11 +25,15 @@ export type OnlineDirectoryChange = z.infer<typeof OnlineDirectoryChangeSchema>;
 export const OnlineDirectoryWriteSchema = z.object({ ...base, operation: z.literal("directoryWrite"), expectedVersion: ConfigVersionSchema,
   expectedContractProjectId: uuid.nullable(), initialProjectId: uuid, projectName: onlineAssetName, change: OnlineDirectoryChangeSchema, verifyOnly: z.literal(true).optional() }).strict();
 export type OnlineDirectoryWrite = z.infer<typeof OnlineDirectoryWriteSchema>;
+export const OnlineAssetEditWriteSchema = z.object({ ...base, operation: z.literal("saveAssetEdit"), intentId: uuid,
+  baseVersion: ConfigVersionSchema, contractProjectId: uuid, change: ProjectSaveOperationSchema, verifyOnly: z.literal(true).optional() }).strict();
+export type OnlineAssetEditWrite = z.infer<typeof OnlineAssetEditWriteSchema>;
 export const OnlineExecutionInputSchema = z.discriminatedUnion("operation", [
   z.object({ ...base, operation: z.literal("assets") }).strict(),
   z.object({ ...base, operation: z.literal("save"), delta: AssetDeltaSchema }).strict(),
   z.object({ ...base, operation: z.literal("saveProject"), project: ContractProjectSchema, expectedVersion: ConfigVersionSchema }).strict(),
   OnlineDirectoryWriteSchema,
+  OnlineAssetEditWriteSchema,
   z.object({ ...base, operation: z.literal("publish"), project: ContractProjectSchema }).strict(),
   z.object({ ...base, operation: z.literal("publishNew"), name: z.string().min(1).max(128), project: ContractProjectSchema }).strict(),
   z.object({ ...base, operation: z.literal("agents") }).strict(),
@@ -51,6 +56,16 @@ export const OnlineDirectoryResultSchema = z.discriminatedUnion("status", [
     view: OnlineProjectViewSchema.optional() }).strict(),
 ]);
 export type OnlineDirectoryResult = z.infer<typeof OnlineDirectoryResultSchema>;
-export const OnlineExecutionResultSchema = z.union([OnlineProjectViewSchema, ProjectExecutionAgentsSchema, OnlineJobSchema, z.array(OnlineJobSchema), OnlineLocalResultSchema, OnlineReportSchema, OnlineMaterialsMetadataSchema, AttachmentMetadataSchema, CredentialMutationResultSchema, CredentialStatusResultSchema, OnlinePublishResultSchema, OnlineDirectoryResultSchema, OnlineDatasetContentSchema, z.string()]);
+export const OnlineAssetSaveRejectionSchema = z.enum(["authorization", "removed", "scope", "identity", "quota", "invalid", "unsupported", "unavailable", "intent"]);
+export const OnlineAssetEditResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("saved"), view: OnlineProjectViewSchema, disposition: z.enum(["written", "converged", "recovered"]) }).strict(),
+  z.object({ status: z.literal("conflict"), conflict: ProjectSaveConflictSchema, view: OnlineProjectViewSchema }).strict(),
+  z.object({ status: z.enum(["busy", "read-only"]), view: OnlineProjectViewSchema.optional() }).strict(),
+  z.object({ status: z.literal("unknown"), view: OnlineProjectViewSchema.optional(), reason: OnlineAssetSaveRejectionSchema.optional() }).strict(),
+  z.object({ status: z.literal("rejected"), reason: OnlineAssetSaveRejectionSchema }).strict(),
+]);
+export type OnlineAssetSaveRejection = z.infer<typeof OnlineAssetSaveRejectionSchema>;
+export type OnlineAssetEditResult = z.infer<typeof OnlineAssetEditResultSchema>;
+export const OnlineExecutionResultSchema = z.union([OnlineProjectViewSchema, ProjectExecutionAgentsSchema, OnlineJobSchema, z.array(OnlineJobSchema), OnlineLocalResultSchema, OnlineReportSchema, OnlineMaterialsMetadataSchema, AttachmentMetadataSchema, CredentialMutationResultSchema, CredentialStatusResultSchema, OnlinePublishResultSchema, OnlineDirectoryResultSchema, OnlineAssetEditResultSchema, OnlineDatasetContentSchema, z.string()]);
 export type OnlineExecutionResult = z.infer<typeof OnlineExecutionResultSchema>;
 export interface OnlineExecutionPort { onlineExecution(input: OnlineExecutionInput): Promise<unknown> }

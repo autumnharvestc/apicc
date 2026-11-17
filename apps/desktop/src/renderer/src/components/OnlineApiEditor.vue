@@ -94,8 +94,12 @@ let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function onSave() {
   if (props.draft) { emit("save-draft"); return; }
-  await props.online.saveApi();
-  if (props.online.conflict === null && props.online.error === null && props.online.editorDirty === false) {
+  const { online } = props;
+  const address = () => [online.activeBaseUrl, online.user?.id, online.activeWorkspaceId, online.editorPath].join("\u0000");
+  const captured = address();
+  const formal = online.execution?.view?.assets.format === "contract-files-v1";
+  await online.saveApi();
+  if (!formal && captured === address() && online.conflict === null && online.error === null && online.editorDirty === false) {
     savedTip.value = true;
     clearTimeout(savedTimer);
     savedTimer = setTimeout(() => {

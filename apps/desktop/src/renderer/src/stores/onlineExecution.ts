@@ -1,11 +1,16 @@
 import { reactive, shallowReactive, ref } from "vue";
 import { ClientConfigSchema, ProjectExecutionAgentsSchema, StressRunConfigSchema, type ProjectExecutionAgents, type TaskTarget, type AssetDelta } from "@apicc/execution/contract";
 import type { ContractProject } from "@apicc/core";
+import { applyProjectSave, projectSaveDependencies, sameProjectSaveValue, type ProjectSaveConflict, type ProjectSaveIntent } from "@apicc/core/collaboration/project-save";
 import type { PluginsListResult } from "../../../shared/plugins/contract.js";
 import { OnlineProjectViewSchema, OnlineJobSchema, OnlineLocalResultSchema, OnlineReportSchema, OnlineMaterialsMetadataSchema, type OnlineExecutionContext, type ExecutionLocation, type OnlineExecutionPort, type OnlineProjectView, type OnlineJob, type OnlineLocalResult, type OnlineReport } from "../../../shared/online/execution.js";
 import type { AttachmentWriteSchema } from "@apicc/execution/contract";
 import { z } from "zod";
 import { isFullOnlineJob } from '../../../shared/online/execution.js';
+import { OnlineAssetEditResultSchema, type OnlineAssetEditResult, type OnlineAssetEditWrite, type OnlineAssetSaveRejection } from "../../../shared/online/execution.js";
+import { projectChanges, projectSaveDetails, type OnlineProjectChange } from "./onlineProjectUpdates.js";
+import { projectDirectoryReceipt } from "./onlineDirectoryReceipt.js";
+import type { OnlineDirectoryResult, OnlineDirectoryWrite } from "../../../shared/online/execution.js";
 import { defaultExecutionCacheStorage, readExecutionCachePreferences, OnlineExecutionCachePreferencesSchema, ONLINE_EXECUTION_CACHE_SETTINGS_KEY,
   type ExecutionCacheStorage, type OnlineExecutionCachePreferences } from './onlineExecutionCachePreferences.js';
 type ResultSelection = { kind: 'local'; runId: string; environmentId?: string } | { kind: 'agent'; runId: string } | { kind: 'agent'; job: OnlineJob };
@@ -13,6 +18,13 @@ type RunRecord = { context: OnlineExecutionContext; runId: string; target: Pick<
 type CachedContext = { context: OnlineExecutionContext; lastUsed: number; payloadBytes?: number; debugKeys: Set<string>;
   pending: Set<string>; uncertain: Set<string>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
 export interface OnlineExecutionCacheOptions { storage?: ExecutionCacheStorage | null; now?: () => number; preferences?: OnlineExecutionCachePreferences }
+export type OnlineAssetSaveFeedback = { status: "saving" | OnlineAssetEditResult["status"]; target: string; conflict?: ProjectSaveConflict;
+  reason?: OnlineAssetSaveRejection; disposition?: "written" | "converged" | "recovered";
+  details?: { baseline?: unknown; submitted?: unknown; current?: unknown } };
+type SaveRecord = { input: OnlineAssetEditWrite; feedback: OnlineAssetSaveFeedback;
+  onSaved?: (view: OnlineProjectView) => void; result?: OnlineAssetEditResult };
+type DirectoryFiles = OnlineProjectView["assets"]["files"];
+type ProjectViewCache = { view: OnlineProjectView; latest: OnlineProjectView; project: ContractProject | null; saved: string; directoryFiles: DirectoryFiles };
 export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsList?(): Promise<PluginsListResult> }, options: OnlineExecutionCacheOptions = {}) {
   let generation = 0; let timer: ReturnType<typeof setTimeout> | undefined;
   const stressConfirmation = ref('');
@@ -20,6 +32,12 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
   const debugSessions = new Map<string, string>();
   const runs = new Map<string, RunRecord>();
   const contexts = new Map<string, CachedContext>();
+  const projectViews = new Map<string, ProjectViewCache>();
+  const assetSaves = new Map<string, Map<string, SaveRecord>>();
+  let checking: { token: number; promise: Promise<boolean> } | undefined;
+  let preview: OnlineProjectView | null = null;
+  let memoSnapshot = "";
+  let memoProject: ContractProject | null = null;
   const statusPageSize = 20;
   const storage = options.storage === undefined ? defaultExecutionCacheStorage() : options.storage;
   const initial = readExecutionCachePreferences(storage);
@@ -31,9 +49,23 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
   const editableProject = (value: ContractProject | null): ContractProject | null => value ? reactive(plain(value) as object) as ContractProject : null;
   const stressIntent = (plan: import('@apicc/core').StressPlan) => JSON.stringify([store.context, store.view?.assets.version, store.location, plan, store.environmentId, store.stressWorkerCount, store.stressConfirmedOrigins]);
   const current = (token: number, context: OnlineExecutionContext) => generation === token && store.visible && key(context) === key(store.context);
+  const sameScope = (view: OnlineProjectView, context: OnlineExecutionContext) => view.assets.workspaceId === context.scope.workspaceId
+    && view.assets.groupId === context.scope.groupId && view.assets.projectId === context.scope.projectId;
+  function savedProject() {
+    if (memoSnapshot !== store.saved) {
+      memoSnapshot = store.saved;
+      memoProject = store.saved ? JSON.parse(store.saved) as ContractProject | null : null;
+    }
+    return memoProject;
+  }
+  function loseProjectAccess() {
+    store.projectAccessLost = true;
+    store.view = null; store.latestView = null; store.project = null; store.saved = "";
+    store.projectedDirectoryFiles = [];
+    store.closeUpdatePreview(); store.saveFeedback = null;
+  }
   function acceptProjectView(context: OnlineExecutionContext, view: OnlineProjectView, preserveDraft: boolean) {
-    if (key(context) !== key(store.context) || !store.visible || view.assets.workspaceId !== context.scope.workspaceId
-      || view.assets.groupId !== context.scope.groupId || view.assets.projectId !== context.scope.projectId) return false;
+    if (key(context) !== key(store.context) || !store.visible || !sameScope(view, context)) return false;
     const previous = store.view?.assets.version;
     if (previous !== undefined) {
       const nextVersion = BigInt(view.assets.version);
@@ -43,12 +75,112 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     }
     const dirty = preserveDraft && store.dirty;
     store.view = view;
+    store.projectedDirectoryFiles = [];
+    store.projectAccessLost = false;
+    if (!store.latestView || BigInt(view.assets.version) >= BigInt(store.latestView.assets.version)) store.latestView = view;
     store.directoryDraftConflict = dirty;
     if (!dirty) {
       store.project = editableProject(view.project);
-      store.saved = JSON.stringify(store.project);
+    }
+    store.saved = JSON.stringify(view.project);
+    return true;
+  }
+  function observeProject(context: OnlineExecutionContext, view: OnlineProjectView) {
+    if (!sameScope(view, context) || key(context) !== key(store.context) || !store.visible) return false;
+    if (store.latestView && BigInt(view.assets.version) < BigInt(store.latestView.assets.version)) return true;
+    if (store.view?.assets.contractProjectId && store.view.assets.contractProjectId !== view.assets.contractProjectId) {
+      loseProjectAccess();
+      store.error = "online-project-identity-changed";
+      store.projectReadIssue = "online-project-identity-changed";
+      return false;
+    }
+    if (!view.project && view.assets.format === "contract-files-v1") {
+      store.error = "online-project-content-unavailable";
+      store.projectReadIssue = "online-project-content-unavailable";
+      return false;
+    }
+    store.latestView = view;
+    if (!store.view) return acceptProjectView(context, view, false);
+    if (!preview && view.project && !view.problems.length && sameProjectSaveValue(savedProject(), view.project)) {
+      store.view = view; store.projectedDirectoryFiles = [];
     }
     return true;
+  }
+  function saveRecords(context: OnlineExecutionContext) {
+    const id = key(context);
+    let records = assetSaves.get(id);
+    if (!records) { records = new Map(); assetSaves.set(id, records); }
+    return records;
+  }
+  function setFeedback(record: SaveRecord) {
+    if (key(record.input.context) === key(store.context)) store.saveFeedback = record.feedback;
+  }
+  function acceptAssetEdit(record: SaveRecord, result: Extract<OnlineAssetEditResult, { status: "saved" }>): boolean {
+    const context = record.input.context;
+    const prior = savedProject();
+    if (!prior || prior.id !== record.input.contractProjectId || result.view.project?.id !== prior.id || !sameScope(result.view, context)) return false;
+    const projected = applyProjectSave(prior, record.input.change, { projection: true });
+    if (projected.status === "ready" && projected.changed) {
+      if (!store.dirty) store.project = editableProject(projected.project);
+      else if (store.project) {
+        const withDraft = applyProjectSave(plain(store.project), record.input.change, { projection: true });
+        if (withDraft.status === "ready") store.project = editableProject(withDraft.project);
+        else store.directoryDraftConflict = true;
+      }
+      store.saved = JSON.stringify(projected.project);
+    }
+    observeProject(context, result.view);
+    return true;
+  }
+  function deliverSaves(context: OnlineExecutionContext) {
+    const records = assetSaves.get(key(context));
+    if (!records || !store.visible || !store.view) return;
+    for (const [subject, record] of records) {
+      if (record.result?.status === "saved") {
+        if (acceptAssetEdit(record, record.result)) {
+          records.delete(subject);
+          record.onSaved?.(record.result.view);
+        } else continue;
+      }
+      setFeedback(record);
+    }
+    if (!records.size) assetSaves.delete(key(context));
+  }
+  async function performAssetEdit(record: SaveRecord, verifyOnly: boolean): Promise<OnlineProjectView | null> {
+    const { context } = record.input;
+    record.feedback = { status: "saving", target: record.feedback.target };
+    retain(context).payloadBytes = undefined;
+    setFeedback(record);
+    let result: OnlineAssetEditResult;
+    try {
+      result = OnlineAssetEditResultSchema.parse(await api.onlineExecution({ ...record.input, ...(verifyOnly ? { verifyOnly: true as const } : {}) }));
+    } catch (error) {
+      result = !verifyOnly && error instanceof Error && error.message.endsWith("online-session-changed")
+        ? { status: "rejected", reason: "authorization" } : { status: "unknown" };
+    }
+    if (verifyOnly && result.status === "rejected") result = { status: "unknown", reason: result.reason };
+    if (result.status === "saved" && (!sameScope(result.view, context) || result.view.project?.id !== record.input.contractProjectId
+      || result.view.assets.contractProjectId !== record.input.contractProjectId || BigInt(result.view.assets.version) < BigInt(record.input.baseVersion))) {
+      result = { status: "unknown" };
+    }
+    record.result = result;
+    const feedback: OnlineAssetSaveFeedback = { status: result.status, target: record.feedback.target };
+    if (result.status === "saved") feedback.disposition = result.disposition;
+    if (result.status === "rejected" || result.status === "unknown") feedback.reason = result.reason;
+    if (result.status === "conflict") {
+      feedback.conflict = result.conflict;
+      feedback.details = projectSaveDetails(record.input.change, result.conflict, result.view.project);
+    }
+    record.feedback = feedback;
+    retain(context).payloadBytes = undefined;
+    if (key(store.context) === key(context) && store.visible) {
+      if ("reason" in result && (result.reason === "removed" || result.reason === "scope" || result.reason === "identity")) loseProjectAccess();
+      if (result.status !== "saved" && "view" in result && result.view) observeProject(context, result.view);
+      deliverSaves(context);
+      setFeedback(record);
+    }
+    prune();
+    return result.status === "saved" ? result.view : null;
   }
   const stop = () => { if (timer) clearTimeout(timer); timer = undefined; };
   const schedule = () => {
@@ -59,6 +191,12 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     context: null as OnlineExecutionContext | null, location: { kind: "local" } as ExecutionLocation,
     environmentId: undefined as string | undefined, visible: false, jobs: [] as OnlineJob[], error: "", statusRefreshMs: 2000,
     connection: "unknown" as "unknown" | "connected" | "disconnected", view: null as OnlineProjectView | null,
+    latestView: null as OnlineProjectView | null, appliedUpdate: 0,
+    projectedDirectoryFiles: [] as DirectoryFiles,
+    projectAccessLost: false,
+    projectReadIssue: "" as "" | "online-project-content-unavailable" | "online-project-access-lost" | "online-project-identity-changed",
+    updatePreview: null as { version: string; changes: OnlineProjectChange[] } | null,
+    saveFeedback: null as OnlineAssetSaveFeedback | null,
     agents: null as ProjectExecutionAgents | null, project: null as ContractProject | null, saved: "", directoryDraftConflict: false, busy: false, running: false,
     localResult: null as OnlineLocalResult | null, report: null as OnlineReport | null, selectedJobId: "",
     resultSelection: null as ResultSelection | null,
@@ -69,15 +207,42 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     materialMetadata: null as z.infer<typeof OnlineMaterialsMetadataSchema> | null,
     localOnlyRefIds: [] as string[], materials: { credentials: [] as Array<{ refId: string; version: string }>, attachments: [] as Array<{ refId: string; version: string; hash: string }>, attachmentPaths: {} as Record<string, { refId: string; version: string; hash: string }> },
     get dirty(): boolean { return !!store.project && JSON.stringify(store.project) !== store.saved; },
+    get directoryFiles(): DirectoryFiles {
+      const projected = new Map(store.view?.assets.files.map(file => [file.path, file]));
+      for (const file of store.projectedDirectoryFiles) projected.set(file.path, file);
+      return [...projected.values()];
+    },
+    confirmedProject(): ContractProject | null { return savedProject(); },
+    editorProject(fresh: boolean): { view: OnlineProjectView; project: ContractProject } | null {
+      if (store.projectAccessLost) return null;
+      const latest = store.latestView;
+      if (fresh && latest?.project && latest.project.id === store.view?.assets.contractProjectId) return { view: latest, project: latest.project };
+      const confirmed = savedProject();
+      return store.view && confirmed ? { view: store.view, project: confirmed } : null;
+    },
+    get hasProjectUpdates(): boolean {
+      const latest = store.latestView?.project;
+      return !!latest && !!store.view && !sameProjectSaveValue(savedProject(), latest);
+    },
     get activeStressLocalRunId(): string { const run = runs.get(key(store.context)); return store.activeLocalRunId && run?.target.kind === 'stress' && run.runId === store.activeLocalRunId ? run.runId : ''; },
     activate(context: OnlineExecutionContext | null) {
       if (key(context) === key(store.context)) return;
       prune();
       if (store.context) {
+        if (store.view && store.latestView) projectViews.set(key(store.context), { view: store.view, latest: store.latestView,
+          project: store.project, saved: store.saved, directoryFiles: store.projectedDirectoryFiles });
         selections.set(key(store.context), { location: plain(store.location), environmentId: store.environmentId });
         const previous = retain(store.context); previous.lastUsed = now(); previous.payloadBytes = undefined;
       }
       generation++; stop(); store.context = context ? plain(context) : null; store.jobs = []; store.view = null; store.project = null; store.agents = null; store.saved = ""; store.directoryDraftConflict = false; store.error = ""; store.localResult = null; store.report = null; store.busy = false; store.running = false; store.connection = "unknown"; store.localOnlyRefIds = []; store.materials = { credentials: [], attachments: [], attachmentPaths: {} };
+      store.latestView = null; store.projectedDirectoryFiles = []; store.updatePreview = null; store.saveFeedback = null;
+      store.projectAccessLost = false; store.projectReadIssue = ""; preview = null;
+      const cachedProject = projectViews.get(key(context));
+      if (cachedProject) {
+        projectViews.delete(key(context));
+        store.view = cachedProject.view; store.latestView = cachedProject.latest; store.project = cachedProject.project; store.saved = cachedProject.saved;
+        store.projectedDirectoryFiles = cachedProject.directoryFiles;
+      }
       stressConfirmation.value = ''; store.stressConfirmedOrigins = []; store.stressWorkerCount = 1;
       store.materialMetadata = null; store.activeLocalRunId = ''; store.selectedJobId = ''; store.resultSelection = null;
       if (context) retain(context).lastUsed = now();
@@ -95,13 +260,97 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     },
     isStressConfirmed(plan: import('@apicc/core').StressPlan) { return !!stressConfirmation.value && stressConfirmation.value === stressIntent(plan); },
     newDebugSession() { debugSessions.delete(JSON.stringify([store.context, store.location])); },
+    openUpdatePreview() {
+      const before = savedProject(), latest = store.latestView?.project;
+      if (!store.hasProjectUpdates || !before || !latest) return;
+      preview = store.latestView;
+      store.updatePreview = { version: preview!.assets.version, changes: projectChanges(before, latest) };
+    },
+    closeUpdatePreview() { preview = null; store.updatePreview = null; },
+    applyUpdatePreview() {
+      const context = store.context;
+      if (!context || !preview?.project || !store.visible || !sameScope(preview, context)) return false;
+      // A pinned preview may be older than a subsequent observation, but cannot replace a newer applied version.
+      const applied = acceptProjectView(context, preview, true);
+      if (applied) store.appliedUpdate++;
+      store.closeUpdatePreview();
+      return applied;
+    },
+    async checkForUpdates(): Promise<boolean> {
+      const context = store.context && plain(store.context);
+      if (!context || !store.visible) return false;
+      const token = generation;
+      if (checking?.token === token) return checking.promise;
+      const promise = (async () => {
+        try {
+          const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "assets", context }));
+          if (!current(token, context)) return false;
+          const accepted = observeProject(context, view);
+          if (accepted && store.projectReadIssue) {
+            if (store.error === store.projectReadIssue) store.error = "";
+            store.projectReadIssue = "";
+          }
+          deliverSaves(context);
+          return accepted;
+        } catch (error) {
+          if (current(token, context)) {
+            store.error = error instanceof Error ? error.message : String(error);
+            if (/online-project-access-lost|forbidden|unauthorized|online-session-changed|online-project-scope-mismatch/.test(store.error)) {
+              loseProjectAccess();
+              store.projectReadIssue = "online-project-access-lost";
+            }
+          }
+          return false;
+        }
+      })().finally(() => { if (checking?.token === token) checking = undefined; });
+      checking = { token, promise };
+      return promise;
+    },
+    async saveAssetEdit(change: ProjectSaveIntent, baseline: ContractProject, subject: string, target: string, onSaved?: (view: OnlineProjectView) => void, baseVersion?: string): Promise<OnlineProjectView | null> {
+      const context = store.context && plain(store.context);
+      if (!context || !store.visible || !store.view?.project || baseline.id !== store.project?.id) throw new Error("online-project-unavailable");
+      const records = saveRecords(context);
+      const pending = [...records].find(([owner, record]) => {
+        if (record.feedback.status !== "saving" && record.feedback.status !== "unknown") return false;
+        if (owner === subject) return true;
+        const previous = record.input.change;
+        if (previous.kind !== "case" || change.kind !== "case" || !sameProjectSaveValue(previous.target, change.target)) return false;
+        const ids = new Set([change.submitted.id, ...change.deletes.map(row => row.caseId)]);
+        return ids.has(previous.submitted.id) || previous.deletes.some(row => ids.has(row.caseId));
+      })?.[1];
+      if (pending) {
+        setFeedback(pending);
+        return null;
+      }
+      const fixed = plain(change);
+      const input: OnlineAssetEditWrite = { context, operation: "saveAssetEdit", intentId: crypto.randomUUID(),
+        baseVersion: baseVersion ?? store.view.assets.version, contractProjectId: baseline.id,
+        change: fixed.kind === "workflow-create" ? fixed : { ...fixed, dependencies: projectSaveDependencies(baseline, fixed) } };
+      const record: SaveRecord = { input, feedback: { status: "saving", target }, onSaved };
+      records.set(subject, record);
+      return performAssetEdit(record, false);
+    },
+    async verifyAssetSave() {
+      const context = store.context;
+      if (!context || !store.visible) return false;
+      const record = [...(assetSaves.get(key(context))?.values() ?? [])].find(row => row.feedback === store.saveFeedback && row.feedback.status === "unknown");
+      if (!record) return false;
+      return performAssetEdit(record, true);
+    },
+    dismissSaveFeedback() {
+      const context = store.context;
+      if (!context || store.saveFeedback?.status === "unknown" || store.saveFeedback?.status === "saving") return;
+      const records = assetSaves.get(key(context));
+      if (records) for (const [subject, record] of records) if (record.feedback === store.saveFeedback) records.delete(subject);
+      store.saveFeedback = null;
+      retain(context).payloadBytes = undefined;
+    },
     async load() {
       const context = store.context && plain(store.context); if (!context || !store.visible) return;
       const token = generation; store.busy = true;
       try {
-        const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "assets", context }));
+        if (!await store.checkForUpdates()) return;
         if (!current(token, context)) return;
-        store.acceptDirectoryView(context, view);
         const agents = ProjectExecutionAgentsSchema.parse(await api.onlineExecution({ operation: "agents", context }));
         if (!current(token, context)) return;
         store.agents = agents; store.connection = "connected"; store.error = "";
@@ -183,6 +432,25 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     acceptDirectoryView(context: OnlineExecutionContext, view: OnlineProjectView): boolean {
       return acceptProjectView(context, view, true);
     },
+    receiveDirectoryWrite(input: OnlineDirectoryWrite, result: OnlineDirectoryResult): boolean {
+      const { context } = input;
+      if (!result.view || !store.view || key(store.context) !== key(context) || !sameScope(result.view, context) || !store.visible) return false;
+      if (result.status !== "saved") { observeProject(context, result.view); return false; }
+      if (!result.recovered && input.expectedVersion === store.view.assets.version
+          && BigInt(result.view.assets.version) === BigInt(input.expectedVersion) + 1n) {
+        return acceptProjectView(context, result.view, true);
+      }
+      const projected = projectDirectoryReceipt(savedProject(), input, result);
+      if (!projected) { observeProject(context, result.view); return false; }
+      if (!store.dirty) store.project = editableProject(projected.project);
+      else store.directoryDraftConflict = true;
+      store.saved = JSON.stringify(projected.project);
+      const files = new Map(store.projectedDirectoryFiles.map(file => [file.path, file]));
+      for (const file of projected.files) files.set(file.path, file);
+      store.projectedDirectoryFiles = [...files.values()];
+      observeProject(context, result.view);
+      return true;
+    },
     async run(target: TaskTarget) {
       const context = store.context && plain(store.context); if (!context || !store.view || !store.visible) throw new Error("online-project-unavailable");
       if (target.kind === 'stress' && store.location.kind === 'agent') {
@@ -205,7 +473,10 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
         const raw = await api.onlineExecution({ operation: "run", context, runId, location, target: plain(target), expectedVersion: store.view.assets.version, environmentId: run.environmentId, ...(target.kind === 'debug' && debugSessions.has(sessionKey) ? { debugSessionId: debugSessions.get(sessionKey) } : {}), runConfig: stress ? { stress } : {}, materials: { projectId: context.scope.projectId, ...plain(store.materials) }, localOnlyRefIds: [...store.localOnlyRefIds] });
         if (location.kind === 'local') { const result = OnlineLocalResultSchema.parse(raw); if (result.runId !== runId) throw new Error('fixed-input-mismatch'); run.result = result; if (result.debugSessionId) { debugSessions.set(sessionKey, result.debugSessionId); cached.debugKeys.add(sessionKey); } }
         else { run.job = OnlineJobSchema.parse(raw); observeJob(context, run.job); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) { debugSessions.set(sessionKey, run.job.task.debugSessionId); cached.debugKeys.add(sessionKey); } }
-      } catch (error) { const failure = error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('output')) ? new Error('invalid-core-output') : error; run.error = failure instanceof Error ? failure.message : String(failure); throw failure; }
+      } catch (error) { const failure = error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('output')) ? new Error('invalid-core-output') : error; run.error = failure instanceof Error ? failure.message : String(failure);
+        if (/version_conflict/.test(run.error) && key(context) === key(store.context)) void store.checkForUpdates();
+        throw failure;
+      }
       finally { run.pending = false; cached.pending.delete(runId); if (!run.result && !run.job) cached.uncertain.add(runId); cached.payloadBytes = undefined; publishRun(run); prune(); }
     },
     async cancelLocal() { if (!store.context || !store.activeLocalRunId) return; await api.onlineExecution({ operation: 'cancel', context: plain(store.context), location: { kind: 'local' }, runId: store.activeLocalRunId }); },
@@ -258,13 +529,19 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     if (released) entry.jobs.delete(id); else entry.jobs.set(id, { jobId: job.jobId, executionId: job.executionId, agentId: job.agentId });
     entry.payloadBytes = undefined;
   }
-  function protectedContext(entry: CachedContext) { return entry.pending.size > 0 || entry.uncertain.size > 0 || entry.jobs.size > 0; }
+  function protectedContext(entry: CachedContext) {
+    const saves = assetSaves.get(key(entry.context));
+    return entry.pending.size > 0 || entry.uncertain.size > 0 || entry.jobs.size > 0
+      || !!saves && [...saves.values()].some(record => record.feedback.status === "saving" || record.feedback.status === "unknown");
+  }
   function payloadBytes(id: string, entry: CachedContext) {
     return entry.payloadBytes ??= new TextEncoder().encode(JSON.stringify({ selection: selections.get(id), run: runs.get(id),
+      project: projectViews.get(id), saves: [...(assetSaves.get(id)?.values() ?? [])],
       debugSessions: [...entry.debugKeys].map(debugKey => debugSessions.get(debugKey)) })).byteLength;
   }
   function drop(id: string, entry: CachedContext) {
-    selections.delete(id); runs.delete(id); for (const debugKey of entry.debugKeys) debugSessions.delete(debugKey); contexts.delete(id);
+    selections.delete(id); runs.delete(id); projectViews.delete(id); assetSaves.delete(id);
+    for (const debugKey of entry.debugKeys) debugSessions.delete(debugKey); contexts.delete(id);
   }
   function prune() {
     const active = key(store.context), instant = now(), preferences = store.cachePreferences;

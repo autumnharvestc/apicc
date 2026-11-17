@@ -73,6 +73,7 @@ function location(event: Event) { const value = (event.target as HTMLSelectEleme
 function date(value: unknown) { const epoch=typeof value==='number'?value:typeof value==='string'?Date.parse(value):NaN;if(!Number.isFinite(epoch)||!Number.isFinite(new Date(epoch).getTime()))return t('onlineExecution.notCollected');return new Intl.DateTimeFormat(locale.value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, timeZoneName: 'longOffset' }).format(new Date(epoch)); }
 async function action(operation: () => Promise<unknown>) { const scope = JSON.stringify(props.execution.context); try { await operation(); } catch (error) { if (scope === JSON.stringify(props.execution.context) && props.execution.visible) props.execution.error = error instanceof Error ? error.message : String(error); } }
 const reason = computed(() => {
+  if (props.execution.projectReadIssue && props.execution.error === props.execution.projectReadIssue) return '';
   const reportCode = props.execution.error.match(/(?:^|Error: )(invalid-core-output|report_expired)(?:['"])?$/)?.[1];
   if (reportCode) return t(reportCode === 'invalid-core-output' ? 'onlineExecution.invalidOutput' : 'onlineExecution.expiredArchive');
   const text = props.execution.error; const code = text.split(/[:\s]/, 1)[0]!; const key = code === 'online-run-in-progress' ? 'onlineExecution.runInProgress' : code === 'invalid-core-output' ? 'onlineExecution.invalidOutput' : `onlineExecution.reasons.${code}`;

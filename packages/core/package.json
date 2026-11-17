@@ -19,6 +19,10 @@
       "types": "./dist/ai/catalog.d.ts",
       "default": "./dist/ai/catalog.js"
     },
+    "./ai/contract-view": {
+      "types": "./dist/ai/contractView.d.ts",
+      "default": "./dist/ai/contractView.js"
+    },
     "./assets/context": {
       "types": "./dist/assets/context.d.ts",
       "default": "./dist/assets/context.js"
@@ -70,6 +74,10 @@
     "./collaboration/presentation": {
       "types": "./dist/collaboration/presentation.d.ts",
       "default": "./dist/collaboration/presentation.js"
+    },
+    "./collaboration/project-save": {
+      "types": "./dist/collaboration/projectSave.d.ts",
+      "default": "./dist/collaboration/projectSave.js"
     },
     "./sync": {
       "browser": { "types": "./dist/sync/shared.d.ts", "default": "./dist/sync/shared.js" },

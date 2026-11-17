@@ -12,6 +12,7 @@ import { createOnlineSession } from "../../../src/main/online/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
 import type { OnlineDirectoryWrite, OnlineExecutionContext, OnlineExecutionInput } from "../../../src/shared/online/execution.js";
 import { ContractWorkspaceSchema, encodeContractProjectFiles } from "@apicc/core";
+import { projectSaveDependencies } from "@apicc/core/collaboration/project-save";
 import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
 import { projectAssetsManifestHash } from "@apicc/execution/host";
 import { createHash, randomUUID } from "node:crypto";
@@ -80,6 +81,99 @@ async function fixture(extra?: (url: string, init?: RequestInit) => Response | P
   return { session, requests, fetcher, host: createOnlineExecutionHost({ session, fetch: fetcher }) };
 }
 describe("online execution main boundary", () => {
+  it("saves a stale formal API edit while an unrelated workflow already exists on the server", async () => {
+    const baseline = assetsFixture();
+    const remote = assetsFixture(project => {
+      project.workflows.push({ id: "00000000-0000-4000-8000-000000000092", name: "Concurrent workflow", status: "draft", nodes: [], edges: [] });
+    });
+    const submitted = structuredClone(baseline.project);
+    submitted.collections[0]!.apis[0]!.contract.metadata.description = "Saved by another client";
+    const merged = assetsFixture(project => {
+      project.workflows = remote.project.workflows;
+      project.collections[0]!.apis[0]!.contract.metadata.description = "Saved by another client";
+    });
+    const f = await fixture((url, init) => url.endsWith("/assets") ? init?.method === "PUT"
+      ? Response.json({ ...merged.assets, version: "3" }) : Response.json({ ...remote.assets, version: "2" }) : undefined);
+    try {
+      const baselineCollection = baseline.project.collections[0]!;
+      const change = { kind: "api" as const, target: { collectionId: baselineCollection.id, folderIds: [], apiId: baselineCollection.apis[0]!.contract.id },
+        baseline: baselineCollection.apis[0]!, submitted: submitted.collections[0]!.apis[0]! };
+      const result = await f.host.handle({ context, operation: "saveAssetEdit", intentId: randomUUID(), contractProjectId: baseline.project.id, baseVersion: "1",
+        change: { ...change, dependencies: projectSaveDependencies(baseline.project, change) } });
+      expect(result).toMatchObject({ status: "saved", view: { project: {
+        workflows: expect.arrayContaining([expect.objectContaining({ name: "Concurrent workflow" })]),
+        collections: [expect.objectContaining({ apis: [expect.objectContaining({ contract: expect.objectContaining({ metadata: expect.objectContaining({ description: "Saved by another client" }) }) })] })],
+      } } });
+      expect(f.requests.filter(row => row.method === "PUT")).toHaveLength(1);
+    } finally { await f.host.close(); }
+  });
+  it("collaborative save retries only the exact version race and uses a group-fenced delta", async () => {
+    const baseline = assetsFixture();
+    const workflow = { id: randomUUID(), name: "Queued workflow", status: "draft" as const, nodes: [], edges: [] };
+    const merged = assetsFixture(project => { project.workflows.push(workflow); });
+    let puts = 0;
+    const f = await fixture((url, init) => {
+      if (!url.endsWith("/assets")) return;
+      if (init?.method !== "PUT") return Response.json({ ...baseline.assets, version: puts ? "2" : "1" });
+      if (++puts === 1) return Response.json({ code: "version_conflict" }, { status: 409 });
+      return Response.json({ ...merged.assets, version: "3" });
+    });
+    const input = { context, operation: "saveAssetEdit", intentId: randomUUID(), contractProjectId: baseline.project.id, baseVersion: "1",
+      change: { kind: "workflow-create", workflow } } as const;
+    try {
+      await expect(f.host.handle(input)).resolves.toMatchObject({ status: "saved", disposition: "written", view: { assets: { version: "3" } } });
+      const writes = f.requests.filter(row => row.method === "PUT");
+      expect(writes.map(row => row.body)).toEqual(["1", "2"].map(expectedVersion => expect.objectContaining({
+        expectedVersion, expectedGroupId: context.scope.groupId, deletes: [], changes: [expect.objectContaining({ path: "project.yaml" })],
+      })));
+    } finally { await f.host.close(); }
+  });
+  it("collaborative save keeps an uncertain workflow intent fixed through GET-only verification", async () => {
+    const baseline = assetsFixture();
+    const workflow = { id: randomUUID(), name: "Workflow after lost receipt", status: "draft" as const, nodes: [], edges: [] };
+    const stored = assetsFixture(project => { project.workflows.push(workflow); });
+    let wrote = false, canVerify = false;
+    const f = await fixture((url, init) => {
+      if (!url.endsWith("/assets")) return;
+      if (init?.method === "PUT") {
+        wrote = true;
+        throw new TypeError("lost receipt");
+      }
+      return !wrote ? Response.json(baseline.assets) : canVerify
+        ? Response.json({ ...stored.assets, version: "2" }) : Response.json({ code: "unavailable" }, { status: 503 });
+    });
+    const input = { context, operation: "saveAssetEdit", intentId: randomUUID(), contractProjectId: baseline.project.id, baseVersion: "1",
+      change: { kind: "workflow-create", workflow } } as const;
+    try {
+      await expect(f.host.handle(input)).resolves.toEqual({ status: "unknown" });
+      await expect(f.host.handle(input)).resolves.toEqual({ status: "unknown" });
+      await expect(f.host.handle({ ...input, verifyOnly: true, change: { ...input.change, workflow: { ...workflow, id: randomUUID() } } }))
+        .resolves.toEqual({ status: "rejected", reason: "intent" });
+      canVerify = true;
+      await expect(f.host.handle({ ...input, verifyOnly: true })).resolves.toMatchObject({ status: "saved", disposition: "recovered" });
+      expect(f.requests.filter(row => row.url.endsWith("/assets")).map(row => row.method)).toEqual(["GET", "PUT", "GET", "GET"]);
+    } finally { await f.host.close(); }
+  });
+  it("collaborative save reports withdrawal between competing versions without another write", async () => {
+    const baseline = assetsFixture();
+    let puts = 0;
+    const f = await fixture((url, init) => {
+      if (!url.endsWith("/assets")) return;
+      if (init?.method === "PUT") {
+        ++puts;
+        return Response.json({ code: "version_conflict" }, { status: 409 });
+      }
+      return puts < 2 ? Response.json({ ...baseline.assets, version: String(puts + 1) })
+        : Response.json({ code: "project_forbidden" }, { status: 403 });
+    });
+    try {
+      await expect(f.host.handle({ context, operation: "saveAssetEdit", intentId: randomUUID(), contractProjectId: baseline.project.id, baseVersion: "1", change: {
+        kind: "workflow-create", workflow: { id: randomUUID(), name: "Prepared", status: "draft", nodes: [], edges: [] },
+      } })).resolves.toEqual({ status: "rejected", reason: "authorization" });
+      await expect(f.host.handle({ context, operation: "assets" })).rejects.toThrow("online-project-access-lost");
+      expect(puts).toBe(2);
+    } finally { await f.host.close(); }
+  });
   it("directory first write applies one atomic delta and an uncertain receipt recovers by exact API identity", async () => {
     const empty = { ...context.scope, format: null, contractProjectId: null, version: "0", manifestHash: projectAssetsManifestHash([]), files: [] };
     let remote: unknown = empty;
