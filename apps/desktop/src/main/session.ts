@@ -802,16 +802,18 @@ export function createSession(options: SessionOptions = {}) {
    * changes or erases its already-persisted receipt. Storage CAS is read fresh. */
   function runSyncContext<T>(
     context: Pick<DraftWriteContext, "root" | "generation">,
-    operation: (view: SessionView) => Promise<T>,
+    operation: (view: SessionView, assertDirectory: () => Promise<void>) => Promise<T>,
   ): Promise<T> {
     return enqueue(async () => {
       const current = requireActive();
       if (current.root !== context.root || activeContextGeneration !== context.generation) throw new Error("SYNC_CONTEXT_CHANGED");
       if (current.partial) await workspaceSaveOptions(current, []);
-      await verifyWorkspaceDirectory(current.directory);
-      const result = await operation(publicView(current));
-      await verifyWorkspaceDirectory(current.directory);
+      const assertDirectory = () => verifyWorkspaceDirectory(current.directory);
+      await assertDirectory();
+      const result = await operation(publicView(current), assertDirectory);
+      await assertDirectory();
       const loaded = await storage.load(current.root);
+      await assertDirectory();
       active = { ...current, partial: undefined, workspace: ContractWorkspaceSchema.parse(loaded.workspace), revision: loaded.revision, problems: clone(loaded.problems), readOnly: loaded.readOnly };
       return result;
     });

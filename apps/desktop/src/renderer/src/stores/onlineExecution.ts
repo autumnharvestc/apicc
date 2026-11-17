@@ -90,12 +90,10 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     if (store.latestView && BigInt(view.assets.version) < BigInt(store.latestView.assets.version)) return true;
     if (store.view?.assets.contractProjectId && store.view.assets.contractProjectId !== view.assets.contractProjectId) {
       loseProjectAccess();
-      store.error = "online-project-identity-changed";
       store.projectReadIssue = "online-project-identity-changed";
       return false;
     }
     if (!view.project && view.assets.format === "contract-files-v1") {
-      store.error = "online-project-content-unavailable";
       store.projectReadIssue = "online-project-content-unavailable";
       return false;
     }
@@ -286,18 +284,17 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
           const view = OnlineProjectViewSchema.parse(await api.onlineExecution({ operation: "assets", context }));
           if (!current(token, context)) return false;
           const accepted = observeProject(context, view);
-          if (accepted && store.projectReadIssue) {
-            if (store.error === store.projectReadIssue) store.error = "";
-            store.projectReadIssue = "";
-          }
+          if (accepted) store.projectReadIssue = "";
           deliverSaves(context);
           return accepted;
         } catch (error) {
           if (current(token, context)) {
-            store.error = error instanceof Error ? error.message : String(error);
-            if (/online-project-access-lost|forbidden|unauthorized|online-session-changed|online-project-scope-mismatch/.test(store.error)) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/(?:^|: )(?:online-project-access-lost|forbidden|unauthorized|online-session-changed|online-project-scope-mismatch)$/.test(message)) {
               loseProjectAccess();
               store.projectReadIssue = "online-project-access-lost";
+            } else if (!store.projectAccessLost) {
+              store.projectReadIssue = "online-project-content-unavailable";
             }
           }
           return false;

@@ -7,7 +7,7 @@ import { sameProjectSaveValue } from "@apicc/core/collaboration/project-save";
 import type { OnlineExecutionStore } from "../../stores/onlineExecution.js";
 
 const props = defineProps<{ execution: Pick<OnlineExecutionStore, "hasProjectUpdates" | "updatePreview" | "openUpdatePreview"
-  | "closeUpdatePreview" | "applyUpdatePreview" | "saveFeedback" | "verifyAssetSave" | "dismissSaveFeedback" | "projectReadIssue"> }>();
+  | "closeUpdatePreview" | "applyUpdatePreview" | "saveFeedback" | "verifyAssetSave" | "dismissSaveFeedback" | "projectReadIssue" | "view"> }>();
 const { t, te } = useI18n();
 const feedback = computed(() => props.execution.saveFeedback);
 const conflict = computed(() => feedback.value?.conflict);
@@ -55,7 +55,7 @@ function describeValue(value: unknown) {
 <template>
   <div v-if="execution.hasProjectUpdates || feedback || execution.projectReadIssue" class="project-updates">
     <div v-if="execution.projectReadIssue === 'online-project-content-unavailable'" class="update-line" role="status" data-testid="online-update-unreadable">
-      {{ t('onlineProjectUpdate.contentUnavailable') }}
+      {{ t(execution.view?.project ? 'onlineProjectUpdate.contentUnavailable' : 'onlineProjectUpdate.initialContentUnavailable') }}
     </div>
     <div v-if="execution.hasProjectUpdates" class="update-line" role="status" data-testid="online-project-updates">
       <span>{{ t("onlineProjectUpdate.available") }}</span>

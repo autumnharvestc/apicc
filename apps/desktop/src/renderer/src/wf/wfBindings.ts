@@ -112,7 +112,7 @@ function emptyIndex(projectLocator: ProjectLocator | null = null): WfBindIndex {
 export async function buildBindIndex(
   tree: LocalTreeNodeDTO | null,
   projectLocator: ProjectLocator | null,
-  fetchCases: FetchApiDetail,
+  fetchCases: (locator: ApiLocator) => Promise<Pick<ApiDetail, "api">>,
 ): Promise<WfBindIndex> {
   if (!tree || !projectLocator) return emptyIndex(projectLocator);
   const project = findProject(tree, projectLocator);

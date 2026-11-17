@@ -254,6 +254,7 @@
     "accessLost": "无法继续访问此项目。未保存的输入仍保留在当前会话。",
     "identityChanged": "服务端项目身份已变化，请重新打开项目。未保存的输入仍保留在当前会话。",
     "contentUnavailable": "暂时无法读取服务器的最新内容，正在显示上一份可读取的版本。",
+    "initialContentUnavailable": "暂时无法读取项目内容，请刷新后重试。",
     "compare": "比较三方内容",
     "baseline": "编辑基线",
     "submitted": "我的提交",

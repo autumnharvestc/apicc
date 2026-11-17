@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
-import { resolve } from "node:path";
 import { createProjectSnapshot, type ContractProject } from "@apicc/core";
 import {
   buildSyncCandidate, buildSyncRollback, canonical, commitWritePlan, decodeContractWorkspace, defaultSyncPolicyValues,
@@ -12,6 +10,7 @@ import {
 } from "@apicc/core/sync";
 import { createSourceHost, type SourceCacheEntry, type SourceContentCache, type SourceValidatedContent } from "@apicc/execution/source-host";
 import type { SessionView } from "../session.js";
+import { resolveWorkspaceDirectory } from "../workspaceDirectory.js";
 import type { LocalSync, LocalSyncAdmission, LocalSyncAuthorization, LocalSyncDependencies, LocalSyncLocation } from "./types.js";
 
 /** Process-wide by default. A retained unsafe owner consumes its slot for the
@@ -52,13 +51,18 @@ interface LoadedSync {
   authorization: LocalSyncAuthorization;
   coreBuildId: string;
   beforeReferences: SyncContentRef[];
+  assertDirectory: () => Promise<void>;
 }
 
 /** A main-process service bound to the real session context. This is the trusted
  * production seam for T12: the caller supplies route/material/tool/private-owner
  * providers, including configured maxRedirects. No renderer/private-data bridge. */
 export async function openLocalSync(directory: string, deps: LocalSyncDependencies): Promise<LocalSync> {
-  const root = resolve(directory), session = deps.session, context = session.captureDraftWriteContext();
+  const session = deps.session, context = session.captureDraftWriteContext();
+  const physicalRoot = await resolveWorkspaceDirectory(directory).catch(() => null);
+  if (!physicalRoot || physicalRoot.root !== context.root) throw new Error("SYNC_CONTEXT_CHANGED");
+  const root = physicalRoot.root;
+  const admissionRoot = [physicalRoot.device.toString(), physicalRoot.inode === 0n ? root : physicalRoot.inode.toString()];
   const policy = SyncPolicyValuesSchema.parse(deps.policy ?? defaultSyncPolicyValues), limits = deps.storageLimits ?? defaultSyncStorageLimits;
   const compareBudget = { maxCompareInputBytes: policy.maxCompareInputBytes, maxCompareOutputBytes: policy.maxCompareOutputBytes };
   const normalizeBudget = { maxSourceBytes: policy.maxSourceBytes, maxCompareInputBytes: policy.maxCompareInputBytes, maxNormalizeDepth: policy.maxNormalizeDepth, maxNormalizeNodes: policy.maxNormalizeNodes };
@@ -67,19 +71,20 @@ export async function openLocalSync(directory: string, deps: LocalSyncDependenci
     const current = session.captureDraftWriteContext();
     if (context.root !== root || current.root !== root || current.generation !== context.generation) throw new Error("SYNC_CONTEXT_CHANGED");
   }
-  async function load(location: LocalSyncLocation, view: SessionView, write: boolean, signal?: AbortSignal): Promise<LoadedSync> {
+  async function load(location: LocalSyncLocation, view: SessionView, write: boolean, assertDirectory: () => Promise<void>, signal?: AbortSignal): Promise<LoadedSync> {
     if (write && view.readOnly) throw new Error("SYNC_READ_ONLY");
-    const loaded = await decodeContractWorkspace(root);
+    const loaded = await decodeContractWorkspace(root, { assertDirectory });
     if (write && loaded.readOnly) throw new Error("SYNC_READ_ONLY");
     const project = loaded.workspace.groups.find(g => g.id === location.groupId)?.projects.find(p => p.id === location.projectId);
     if (!project) throw new Error("SYNC_PROJECT_NOT_FOUND");
     const authorization = await deps.authorize(project.id, signal), coreBuildId = await deps.readCoreBuildId();
+    await assertDirectory();
     const state = await loadSyncState(root, location, limits) ?? { formatVersion: 1, projectId: project.id, sources: [], candidates: [], history: [], operations: [] };
-    return { project, state, storageRevision: loaded.revision, authorization, coreBuildId, beforeReferences: syncContentReferences(state) };
+    return { project, state, storageRevision: loaded.revision, authorization, coreBuildId, beforeReferences: syncContentReferences(state), assertDirectory };
   }
   async function run<T>(location: LocalSyncLocation, write: boolean, operation: (loaded: LoadedSync) => Promise<T> | T, signal?: AbortSignal): Promise<T> {
     assertContext();
-    return session.runSyncContext(context, async view => operation(await load(location, view, write, signal)));
+    return session.runSyncContext(context, async (view, assertDirectory) => operation(await load(location, view, write, assertDirectory, signal)));
   }
   function source(loaded: LoadedSync, sourceId: string): SyncSourceState {
     const entry = loaded.state.sources.find(s => s.source.id === sourceId);
@@ -119,7 +124,7 @@ export async function openLocalSync(directory: string, deps: LocalSyncDependenci
       if (Date.now() >= lifetime.deadlineAtMs) throw new Error("SYNC_DEADLINE");
       if (lifetime.signal.aborted) throw new Error("SYNC_CANCELLED");
     }
-    await commitWritePlan(root, { files }, { expectedRevision: loaded.storageRevision, deletions: [...new Set(deletions)].filter(path => !files.has(path)), faultInjector: deps.writeFault });
+    await commitWritePlan(root, { files }, { expectedRevision: loaded.storageRevision, deletions: [...new Set(deletions)].filter(path => !files.has(path)), faultInjector: deps.writeFault, assertDirectory: loaded.assertDirectory });
   }
   function addContent(location: LocalSyncLocation, files: Map<string, string>, value: SyncPlanInput["localFiles"]): SyncContentRef {
     const content = encodeSyncContent(value, limits); files.set(syncContentFilePath(location, content.reference), content.text); return content.reference;
@@ -165,11 +170,8 @@ export async function openLocalSync(directory: string, deps: LocalSyncDependenci
     }); },
     async check(location, sourceId, callerSignal) {
       const initial = await run(location, true, loaded => { source(loaded, sourceId); return loaded; }, callerSignal), entry = source(initial, sourceId), capturedStamp = stamp(initial, entry);
-      // Session fencing keeps its lexical root/generation. Admission instead
-      // binds the trusted physical directory identity, including Windows case
-      // and junction aliases, without case-folding paths on other platforms.
-      const physicalRoot = await stat(await realpath(root), { bigint: true });
-      const slot = admission.acquire(canonical([physicalRoot.dev.toString(), physicalRoot.ino.toString(), location.projectId]), policy.projectConcurrency, policy.hostConcurrency);
+      await initial.assertDirectory();
+      const slot = admission.acquire(canonical([...admissionRoot, location.projectId]), policy.projectConcurrency, policy.hostConcurrency);
       const abort = new AbortController(), cancel = () => abort.abort(); callerSignal?.addEventListener("abort", cancel, { once: true }); if (callerSignal?.aborted) cancel();
       const deadlineAtMs = Date.now() + (entry.source.kind === "url" ? policy.urlDeadlineMs : policy.gitDeadlineMs), timer = setTimeout(cancel, deadlineAtMs - Date.now());
       let staged: SourceValidatedContent | undefined;
@@ -180,6 +182,8 @@ export async function openLocalSync(directory: string, deps: LocalSyncDependenci
         // of this awaited three-argument read authorizes a usable candidate.
         const read = await host.readSource({ formatVersion: 1, source: entry.source, deadlineAtMs, budget: { connectTimeoutMs: policy.connectTimeoutMs, maxAttempts: policy.maxAttempts, maxSourceBytes: policy.maxSourceBytes, gitDiskThresholdBytes: policy.gitDiskThresholdBytes } }, lease, abort.signal);
         if (!staged) throw new Error("SYNC_CONTENT_UNAVAILABLE");
+        assertContext();
+        await initial.assertDirectory();
         const normalized = normalizeSyncSource({ rawText: staged.rawText, source: entry.source, mapping: entry.mapping, allocationSeed: "apicc-sync-id-v1", budget: normalizeBudget });
         const input: SyncPlanInput = { source: entry.source, stamp: capturedStamp, upstream: read.upstream, mapping: normalized.mapping, baselineFiles: entry.baselineContent ? await readSyncContent(root, location, entry.baselineContent, limits) : [], localFiles: encodeSyncProject(initial.project), remoteFiles: normalized.files, normalizationDiagnostics: normalized.diagnostics, otherSourceMappings: initial.state.sources.filter(s => s.source.id !== sourceId).map(s => s.mapping), budget: compareBudget };
         const fixed = await buildSyncCandidate(input);

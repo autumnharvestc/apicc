@@ -59,6 +59,12 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     const current = locator();
     if (where.workspaceId !== current.workspaceId || where.groupId !== current.groupId || where.projectId !== current.projectId) throw new Error("online-session-changed");
   };
+  async function readBindingApi(where: ApiLocator): Promise<Pick<ApiDetail, "api">> {
+    assertApiScope(where);
+    const asset = findProjectSaveApi(project(), apiTarget(where));
+    if (!asset) throw new Error("api-not-found");
+    return { api: asset };
+  }
   const apiBaselines = new Map<string, { project: ContractProject; version: string }>();
   function captureApi(where: ApiLocator, expected?: string) {
     if (readOnly()) throw new Error("online-project-read-only");
@@ -221,6 +227,6 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
       apiBaselines.set(key, { project: baseline, version: view.assets.version });
     }
   });
-  return { bridge, workspace, envs, testing, workflowDesign, wfList, editor, cases, locator, editorRoot, apiEntries,
+  return { bridge, workspace, envs, testing, workflowDesign, wfList, editor, cases, locator, editorRoot, apiEntries, readBindingApi,
     stop: () => { stop(); stopRebase(); } };
 }

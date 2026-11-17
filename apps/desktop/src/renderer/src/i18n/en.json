@@ -254,6 +254,7 @@
     "accessLost": "This project can no longer be accessed. Unsaved input is retained in this session.",
     "identityChanged": "The server project changed identity. Reopen it to continue. Unsaved input is retained in this session.",
     "contentUnavailable": "The latest server content could not be read. Showing the last readable version.",
+    "initialContentUnavailable": "The project could not be loaded. Refresh to try again.",
     "compare": "Compare versions",
     "baseline": "Editing baseline",
     "submitted": "My submission",

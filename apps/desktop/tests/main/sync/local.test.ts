@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { realpath, stat, symlink, unlink } from "node:fs/promises";
+import { cp, realpath, rename, stat, symlink, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createProjectSnapshot, fileStorage } from "@apicc/core";
 import { decodeContractWorkspace, defaultSyncPolicyValues } from "@apicc/core/sync";
@@ -33,6 +33,29 @@ describe("main local synchronization authority and durable transactions", () => 
       await f.client.saveSource(f.location, { ...f.source, revision: "2", url: f.source.url + "?next" }, "1");
       expect((await f.state()).sources[0]!.source.revision).toBe("2");
       expect((await f.state()).sources[0]!.baselineRevision).toBe("0"); expect(createProjectSnapshot(f.readProject()).definitionRevision).toBe(before);
+    });
+  });
+  it("does not save a source into a replacement workspace at the same path", async () => {
+    await withLocalSync(async f => {
+      const authorize = f.deps.authorize, entered = deferred(), resume = deferred();
+      const before = await f.state();
+      f.deps.authorize = async (...args) => {
+        entered.resolve();
+        await resume.promise;
+        return authorize(...args);
+      };
+      const update = f.client.saveSource(f.location, { ...f.source, revision: "2" }, "1");
+      const outcome = expect(update).rejects.toThrow("工作区目录已被替换或移动");
+      try {
+        await entered.promise;
+        const moved = join(f.workspaceContainer, "moved-workspace");
+        await rename(f.root, moved);
+        await cp(moved, f.root, { recursive: true });
+      } finally {
+        resume.resolve();
+        await outcome;
+      }
+      expect(await f.state()).toEqual(before);
     });
   });
   it.each(["revision", "new-revision", "module", "module-change"])("rejects an invalid source %s write", async kind => {

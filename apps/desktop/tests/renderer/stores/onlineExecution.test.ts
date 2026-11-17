@@ -86,6 +86,23 @@ describe("online project update ownership", () => {
     expect(store.project).toBeNull();
     expect(store.view).toBeNull();
   });
+  it("keeps execution errors intact while an unreadable project response is retried", async () => {
+    const initial = projectView("1", project.name);
+    let result: unknown = { unexpected: "protocol detail must stay out of execution errors" };
+    const store = createOnlineExecutionStore({ onlineExecution: async () => result }, { storage: null });
+    store.activate(context); store.setVisible(true); store.acceptDirectoryView(context, initial);
+    store.error = "report-unavailable";
+
+    expect(await store.checkForUpdates()).toBe(false);
+    expect(store.projectReadIssue).toBe("online-project-content-unavailable");
+    expect(store.error).toBe("report-unavailable");
+    expect(store.view?.assets.version).toBe("1");
+
+    result = projectView("2", project.name);
+    expect(await store.checkForUpdates()).toBe(true);
+    expect(store.projectReadIssue).toBe("");
+    expect(store.error).toBe("report-unavailable");
+  });
 });
 describe("F8 inactive execution cache", () => {
   const at = (id: number): OnlineExecutionContext => ({ ...context, scope: { ...context.scope, projectId: String(id) } });

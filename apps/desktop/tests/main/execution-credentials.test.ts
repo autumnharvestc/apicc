@@ -145,7 +145,8 @@ describe("desktop execution credential wiring", () => {
       const childId = uuid(94); const parentId = uuid(95);
       project.workflows.push({ id: childId, name: "child", status: "enabled", nodes: [{ id: "request", kind: "request", apiId: IDS.deepApi, caseId: asset.cases[0]!.id }], edges: [] });
       project.workflows.push(Core.WorkflowSchema.parse({ id: parentId, name: "parent", status: "enabled", executionVersion: 2, nodes: [{ id: "twice", kind: "loop", workflowId: childId, count: 2, inputs: {}, outputs: {} }], edges: [] }));
-      await fileStorage.save(temp.path, Core.ContractWorkspaceSchema.parse(workspace), { expectedRevision: session.revision!, deletions: [] }); await session.open(temp.path);
+      const written = await fileStorage.save(temp.path, Core.ContractWorkspaceSchema.parse(workspace), { expectedRevision: session.revision!, deletions: [] });
+      await session.refreshFromDisk({ root: session.root!, workspaceId: workspace.id, observedRevision: written.revision });
       const deps = createIpcDeps({ session, pickDirectory: async () => "", saveFile: async () => "", credentials: { secretStore: secretStore.store, networkPrivateRoot } });
       const locator = { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId, workflowId: parentId };
       const ordinary = await deps.handle(IpcChannel.WfRun, null, { locator, envName: "dev", strict: true }) as Core.WorkflowRunResult;
@@ -170,7 +171,8 @@ describe("desktop execution credential wiring", () => {
       const datasetId = uuid(90); const entryId = uuid(91); const workflowId = "original-dependent-workflow";
       project.datasets = [{ formatVersion: 1, id: datasetId, name: "rows", columns: ["value"], rows: [{ value: "one" }, { value: "two" }] }];
       project.workflows.push({ id: workflowId, name: "original workflow", status: "enabled", nodes: [{ id: "node", kind: "request", apiId: IDS.deepApi, caseId: asset.cases[0]!.id }], edges: [] });
-      await fileStorage.save(temp.path, Core.ContractWorkspaceSchema.parse(workspace), { expectedRevision: session.revision!, deletions: [] }); await session.open(temp.path);
+      const written = await fileStorage.save(temp.path, Core.ContractWorkspaceSchema.parse(workspace), { expectedRevision: session.revision!, deletions: [] });
+      await session.refreshFromDisk({ root: session.root!, workspaceId: workspace.id, observedRevision: written.revision });
       const context = { root: temp.path, project: { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId }, revision: session.revision! };
       const testing = createTestingController(session, async () => createDefaultRegistry(), credentials, { render: false, persist: (_path, value) => ({ value, warning: "安全 JSON 报告保存失败" }) });
       const identity = { projectId: IDS.projectOne, definitionRevision: "old-definition", dataDigest: "old-digest", entryId, suiteRow: 1, rowIndex: 1, datasetId, locator: { collectionId: IDS.collectionOne, folderIds: [...LOCATOR.folderIds], apiId: IDS.deepApi, caseId: asset.cases[0]!.id, scope: asset.cases[0]!.scope } };

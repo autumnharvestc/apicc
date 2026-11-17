@@ -42,7 +42,14 @@ function reportError(error: unknown) {
   if (message !== "online-save-feedback") execution.value.error = message;
 }
 async function action(operation: () => unknown | Promise<unknown>) { const scope = JSON.stringify(execution.value.context); try { await operation(); } catch (error) { if (scope === JSON.stringify(execution.value.context) && execution.value.visible) reportError(error); } }
-watch(() => [execution.value.context, execution.value.view?.assets.version], async () => { if (!execution.value.project) { bindIndex.value = null; return; } const captured = JSON.stringify(execution.value.context); const result = await buildBindIndex(props.adapter.workspace.tree, props.adapter.locator(), props.adapter.bridge.apiGet); if (captured === JSON.stringify(execution.value.context)) bindIndex.value = result; }, { immediate: true });
+watch(() => [execution.value.context, execution.value.project], async (_, __, onCleanup) => {
+  bindIndex.value = null;
+  if (!execution.value.project) return;
+  let active = true;
+  onCleanup(() => { active = false; });
+  const index = await buildBindIndex(props.adapter.workspace.tree, props.adapter.locator(), props.adapter.readBindingApi);
+  if (active) bindIndex.value = index;
+}, { immediate: true });
 watch(() => props.online.editorPath, () => { if (props.online.editorPath) viewingApi.value = true; });
 watch(() => execution.value.context, () => { viewingApi.value = false; pane.value = 'api'; });
 async function pickApi(id: string) { selectedApi.value = id; const entry = entries.value.find(entry => entry.asset.contract.id === id); if (entry) await props.adapter.editor.load(entry.locator); }

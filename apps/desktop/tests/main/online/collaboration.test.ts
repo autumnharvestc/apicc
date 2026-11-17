@@ -92,7 +92,7 @@ async function fixture() {
   const project = { workspaceId: IDS.workspace, groupId: IDS.groupTwo, projectId: IDS.projectTwo };
   const debugOwner = { sourceKind: 'free' as const, project, draftId: '40000000-0000-4000-8000-000000000009' };
   const context = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } };
-  const history = createDesktopDebugHistoryStore({ privateRoot: join(root, 'private-history') });
+  const history = createDesktopDebugHistoryStore({ privateRoot: join(root, '.apicc', 'private-history') });
   const key = createDebugHistoryOwnerKey(realpathSync(root), debugOwner);
   const record = (await history.append(debugResult(), { ownerKey: key }))!;
   const requests: { url: string; method: string; body: any }[] = []; const copied: string[] = []; let serverArtifact: any; let loginUser = '7';
@@ -117,6 +117,15 @@ async function fixture() {
   const host = createCollaborationHost({ session: online, localSession: session, fetch: transport, readOnlineResult: (sender: object) => sender === owner ? onlineResult : undefined, readCurrentReport: (sender: object) => sender === owner ? currentReport : undefined, writeClipboard: (text: string) => { copied.push(text); }, readDebugHistory: async (id: string, ownerKey: string) => { reads++; readIds.push(id); const gate = readGate; readGate = undefined; if (gate) { gate.entered(); await gate.wait; } return history.getOwned(id, ownerKey); } });
   const input = { operation: 'preview-local' as const, context, title: 'Selected debug', source: { kind: 'debug' as const, historyId: record.historyId, owner: debugOwner, project } };
   return { root, session, online, host, history, owner, context, input, requests, copied, reportDigest, currentReport, onlineResult, readIds, get reads() { return reads; },
+    async switchLocalSession() {
+      const previous = session.captureDraftWriteContext();
+      const alternate = join(root, '.apicc', 'alternate-workspace');
+      mkdirSync(alternate, { recursive: true });
+      await persistWorkspace(alternate, makeWorkspace());
+      await session.open(alternate);
+      await session.open(root);
+      expect(session.captureDraftWriteContext()).toEqual({ ...previous, generation: previous.generation + 2 });
+    },
     blockNextRead() { let entered!: () => void, release!: () => void; const reached = new Promise<void>(r => { entered = r; }); const wait = new Promise<void>(r => { release = r; }); readGate = { entered, wait }; return { reached, release }; },
     intercept(handler: NonNullable<typeof interceptor>) { interceptor = handler; }, setUser(id: string) { loginUser = id; }, close() { rmSync(root, { recursive: true, force: true }); } };
 }
@@ -248,7 +257,7 @@ it.each(['relogin', 'actor', 'server', 'workspace', 'project', 'local-source'])(
   try {
     const local = await f.host.handle(f.input, f.owner); expect(local.artifact.kind).toBe('debug-history');
     let context = structuredClone(f.context);
-    if (change === 'local-source') await f.session.open(f.root);
+    if (change === 'local-source') await f.switchLocalSession();
     else if (change === 'project') { context.scope.projectId = '34'; await f.host.handle({ operation: 'activate', context }, f.owner); }
     else if (change === 'workspace') { context.scope.workspaceId = '12'; f.online.openWorkspace({ workspaceId: '12', name: 'Other workspace', myRole: 'EDITOR' }); }
     else {
@@ -620,7 +629,7 @@ it.each(['project', 'digest', 'generation', 'window'])('refuses a current-result
     expect((await f.host.handle({ ...f.input, source }, f.owner)).stage).toBe('local');
     if (change === 'project') f.currentReport.project.projectId = IDS.projectOne;
     if (change === 'digest') source.expectedReportDigest = 'e'.repeat(64);
-    if (change === 'generation') await f.session.open(f.root);
+    if (change === 'generation') await f.switchLocalSession();
     await expect(f.host.handle({ ...f.input, source }, change === 'window' ? {} : f.owner)).rejects.toThrow('collaboration-source-unavailable'); expect(f.requests).toEqual([]);
   } finally { f.close(); }
 });
