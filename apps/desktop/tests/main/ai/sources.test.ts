@@ -25,6 +25,10 @@ it("captures a fixed local project from the actual session and detects generatio
     expect(captured.snapshot.project.collections[0]!.apis[0]!.contract.metadata.name).toBe("project two API");
     expect(captured.source.projectId).toBe(IDS.projectTwo);
     await session.open(root);
+    await expect(captured.assertCurrent(new AbortController().signal)).resolves.toBeUndefined();
+    const other = join(root, "other-workspace");
+    await persistWorkspace(other, makeWorkspace());
+    await session.open(other);
     await expect(captured.assertCurrent(new AbortController().signal)).rejects.toThrow();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -284,6 +284,7 @@ describe("desktop contract workspace session", () => {
   });
 
   it("rejects ambiguous same-level projects instead of selecting one", async () => {
+    const temporary = await makeTempRoot("apicc-ambiguous-projects-");
     const workspace = makeWorkspace();
     const duplicate = structuredClone(projectOne(workspace));
     duplicate.name = "same-level duplicate";
@@ -292,9 +293,11 @@ describe("desktop contract workspace session", () => {
       async load() { return { workspace, problems: [], readOnly: false, revision: "ambiguous-revision" }; },
       async save() { return { revision: "unused" }; },
     } });
-    await session.open("ambiguous-root");
-    const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
-    expect(() => session.locateProject(locator)).toThrow(/Ambiguous project/i);
+    try {
+      await session.open(temporary.path);
+      const locator = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+      expect(() => session.locateProject(locator)).toThrow(/Ambiguous project/i);
+    } finally { await temporary.dispose(); }
   });
 
   it("returns independent editable views without exposing active in-memory definitions", async () => {

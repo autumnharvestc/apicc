@@ -3,7 +3,7 @@ import { ref } from "vue";
 import type { ContractWorkspace, LoadProblem, StressTargetPolicy } from "@apicc/core";
 import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { ApiccApi, OpenResult, WorkspaceRefreshResult } from "../../../shared/types.js";
-import { localWorkspaceError } from "../../../shared/workspace-refresh.js";
+import { LocalWorkspaceError, localWorkspaceError, type LocalWorkspaceFailureReason, type WorkspaceObservationResult } from "../../../shared/workspace-refresh.js";
 import type { LocalGroupTreeNodeDTO, LocalProjectTreeNodeDTO, LocalRootTreeNodeDTO, LocalTreeNodeDTO } from "../../../shared/tree-dto.js";
 
 function normalizeOrigin(value: string): string {
@@ -67,6 +67,8 @@ export function useWorkspaceStore(api: ApiccApi) {
   const pendingOpenCount = ref(0);
   const diskRefreshPending = ref(false);
   let diskRefreshTask: Promise<WorkspaceRefreshResult | undefined> | null = null;
+  let observationEpoch = 0;
+  let observingDisk: { epoch: number; task: Promise<WorkspaceObservationResult | undefined> } | undefined;
 
   const enqueueContextOperation = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = operationQueue.then(operation, operation);
@@ -89,6 +91,8 @@ export function useWorkspaceStore(api: ApiccApi) {
       problems: [] as LoadProblem[],
       readOnly: false,
       revision: "",
+      diskObservation: null as WorkspaceObservationResult | null,
+      diskObservationIssue: null as LocalWorkspaceFailureReason | null,
     }),
     actions: {
       resolveRoot(rootPath: string): Promise<string> {
@@ -136,7 +140,42 @@ export function useWorkspaceStore(api: ApiccApi) {
         });
       },
 
-      refreshFromDisk(reconcile: (receipt: WorkspaceRefreshResult, isCurrent: () => boolean) => Promise<void>): Promise<WorkspaceRefreshResult | undefined> {
+      observeAfterWrite(): void {
+        const context = contextEpoch;
+        // A save can complete after a foreground check has already started.
+        // Wait for that check before observing the saved projection.
+        void Promise.resolve(observingDisk?.task).then(() => { if (context === contextEpoch) return this.observeDisk(); });
+      },
+
+      observeDisk(): Promise<WorkspaceObservationResult | undefined> {
+        const root = this.root;
+        const workspaceId = this.workspace?.id;
+        if (!root || !workspaceId || pendingOpenCount.value || diskRefreshPending.value || typeof api.wsObserve !== "function") return Promise.resolve(undefined);
+        const epoch = observationEpoch;
+        if (observingDisk?.epoch === epoch) return observingDisk.task;
+        const context = contextEpoch;
+        const isCurrent = () => epoch === observationEpoch && context === contextEpoch && root === this.root && workspaceId === this.workspace?.id;
+        const task = Promise.resolve().then(() => api.wsObserve({ root, workspaceId })).then(result => {
+          if (!isCurrent() || result.root !== root || result.workspaceId !== workspaceId) return undefined;
+          this.diskObservation = result.changes.length ? result : null;
+          this.diskObservationIssue = null;
+          return result;
+        }).catch(error => {
+          if (!isCurrent()) return undefined;
+          const reason = error instanceof LocalWorkspaceError ? error.failure.reason : "failed";
+          if (reason !== "busy" && reason !== "context-changed") {
+            this.diskObservationIssue = reason;
+            if (reason === "directory-changed" || reason === "directory-unavailable" || reason === "workspace-replaced") this.diskObservation = null;
+          }
+          return undefined;
+        }).finally(() => {
+          if (observingDisk?.task === task) observingDisk = undefined;
+        });
+        observingDisk = { epoch, task };
+        return task;
+      },
+
+      refreshFromDisk(reconcile: (receipt: WorkspaceRefreshResult, isCurrent: () => boolean) => Promise<void>, observedRevision?: string): Promise<WorkspaceRefreshResult | undefined> {
         if (diskRefreshTask) return diskRefreshTask;
         const root = this.root;
         const workspaceId = this.workspace?.id;
@@ -148,7 +187,7 @@ export function useWorkspaceStore(api: ApiccApi) {
         diskRefreshPending.value = true;
         const task = enqueueContextOperation(async () => {
           if (contextEpoch !== epoch || !isCurrent()) return;
-          const result = await api.wsRefresh({ root, workspaceId });
+          const result = await api.wsRefresh({ root, workspaceId, ...(observedRevision ? { observedRevision } : {}) });
           if (!isCurrent() || result.root !== root || result.workspace.id !== workspaceId) return;
           // A queued open waits for reconciliation of the receipt already sent
           // to main, including when the newer open later fails.
@@ -181,6 +220,9 @@ export function useWorkspaceStore(api: ApiccApi) {
           this.problems = [];
           this.readOnly = false;
           this.revision = "";
+          this.diskObservation = null;
+          this.diskObservationIssue = null;
+          observationEpoch++;
         });
       },
 
@@ -222,6 +264,9 @@ export function useWorkspaceStore(api: ApiccApi) {
         // Pinia's recursive `this` typing expands deeply with ContractWorkspace; the runtime state
         // has this exact, explicitly declared shape and the cast is limited to that boundary.
         this.$patch((state) => applyOpenResult(state as unknown as WorkspaceState, result));
+        observationEpoch++;
+        this.diskObservation = null;
+        this.diskObservationIssue = null;
       },
 
       findProject(locator: ProjectLocator): LocalProjectTreeNodeDTO | null {

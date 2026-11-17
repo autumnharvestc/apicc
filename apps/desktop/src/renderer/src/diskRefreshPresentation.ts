@@ -9,7 +9,7 @@ const writes = new Set<string>([
 
 /** Keep the editing controls available during reconciliation, while draft
  * submissions still belong to the version the user saw before refresh. */
-export function guardLocalDiskWrites(api: ApiccApi, pending: () => boolean) {
+export function guardLocalDiskWrites(api: ApiccApi, pending: () => boolean, afterWrite: () => void) {
   let count = 0;
   return {
     get writing() { return count > 0; },
@@ -21,7 +21,7 @@ export function guardLocalDiskWrites(api: ApiccApi, pending: () => boolean) {
           if (pending()) throw localWorkspaceError("busy", "A disk refresh is in progress.");
           count++;
           try { return await method.apply(target, args); }
-          finally { count--; }
+          finally { count--; afterWrite(); }
         };
       },
     }),

@@ -1,5 +1,5 @@
 import type { SynchronizationInput, SynchronizationResult } from './synchronization.js';
-import type { WorkspaceRefreshInput } from "./workspace-refresh.js";
+import type { WorkspaceObservationInput, WorkspaceObservationResult, WorkspaceRefreshInput } from "./workspace-refresh.js";
 import type {
   ApiAsset,
   ApiRequest,
@@ -390,6 +390,7 @@ export interface ApiccApi extends TestingApi {
   wsOpen(rootPath: string, project?: ProjectLocator): Promise<WorkspaceOpenResult>;
   wsResolveRoot(rootPath: string): Promise<string>;
   wsRefresh(input: WorkspaceRefreshInput): Promise<WorkspaceRefreshResult>;
+  wsObserve(input: WorkspaceObservationInput): Promise<WorkspaceObservationResult>;
   wsCreate(rootPath: string, name: string): Promise<OpenResult>;
   wsPickDirectory(): Promise<string>;
   wsValidate(): Promise<LoadProblem[]>;

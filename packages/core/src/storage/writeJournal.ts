@@ -40,6 +40,7 @@ export interface SaveOptions {
   expectedRevision: string;
   deletions: readonly string[];
   faultInjector?: WriteFaultInjector;
+  assertDirectory?: () => Promise<void>;
 }
 
 interface JournalFileRecord {
@@ -154,6 +155,14 @@ async function listWorkspaceFiles(root: string): Promise<Array<{ path: string; a
 
 interface WorkspaceDefinitionFile { size: number; content?: Buffer }
 
+function hashDefinitionFile(hash: ReturnType<typeof createHash>, path: string, content: Buffer) {
+  const pathBytes = Buffer.from(path, "utf8");
+  const prefix = Buffer.allocUnsafe(8);
+  prefix.writeUInt32BE(pathBytes.length, 0);
+  prefix.writeUInt32BE(content.length, 4);
+  hash.update(prefix).update(pathBytes).update(content);
+}
+
 async function readWorkspaceFiles(root: string, capture?: (path: string, bytes: Buffer) => void): Promise<string> {
   const base = assertAbsoluteRoot(root);
   const files = await listWorkspaceFiles(base);
@@ -162,13 +171,7 @@ async function readWorkspaceFiles(root: string, capture?: (path: string, bytes: 
   for (const file of files) {
     const content = await readFile(file.absolute);
     capture?.(file.path, content);
-    const pathBytes = Buffer.from(file.path, "utf8");
-    const prefix = Buffer.allocUnsafe(8);
-    prefix.writeUInt32BE(pathBytes.length, 0);
-    prefix.writeUInt32BE(content.length, 4);
-    hash.update(prefix);
-    hash.update(pathBytes);
-    hash.update(content);
+    hashDefinitionFile(hash, file.path, content);
   }
   return hash.digest("hex");
 }
@@ -204,14 +207,38 @@ export async function assertWorkspaceWriterIdle(root: string): Promise<void> {
   if (await hasLock(assertAbsoluteRoot(root))) throw new WorkspaceStorageError("busy", "Another writer owns the workspace lock.");
 }
 
-async function hasLock(root: string): Promise<boolean> {
-  await ensureSafeParents(root, writerLockFilePath(), false);
-  return Boolean(await maybeLstat(safeAbsolute(root, writerLockFilePath())));
+// A lease can be unreachable during release if its physical root was moved.
+// Only an exact, already-released lease from this process can be reclaimed.
+type DisplacedLease = { owns(): Promise<boolean>; repair?: () => Promise<void>; releasing?: Promise<void> };
+const displacedLeases = new Map<string, Set<DisplacedLease>>();
+async function releaseReturnedLease(path: string): Promise<void> {
+  const leases = displacedLeases.get(path);
+  if (!leases) return;
+  for (const lease of leases) {
+    if (!lease.releasing && !await lease.owns()) continue;
+    const task = lease.releasing ??= (async () => {
+      await lease.repair?.();
+      if (!await lease.owns()) throw new WorkspaceStorageError("unstable", "Workspace moved while releasing a returned lease.");
+      await unlink(path);
+    })();
+    try { await task; leases.delete(lease); }
+    finally { if (lease.releasing === task) delete lease.releasing; }
+    break;
+  }
+  if (!leases.size) displacedLeases.delete(path);
 }
 
-async function acquireLock(root: string, operationId: string): Promise<{ owns: () => Promise<boolean>; release: () => Promise<void> }> {
+async function hasLock(root: string): Promise<boolean> {
+  await ensureSafeParents(root, writerLockFilePath(), false);
+  const path = safeAbsolute(root, writerLockFilePath());
+  await releaseReturnedLease(path);
+  return Boolean(await maybeLstat(path));
+}
+
+async function acquireLock(root: string, operationId: string): Promise<{ owns: () => Promise<boolean>; release: (repair?: () => Promise<void>) => Promise<void> }> {
   const lockPath = safeAbsolute(root, writerLockFilePath());
   await ensureDirectory(dirname(lockPath));
+  await releaseReturnedLease(lockPath);
   const handle = await open(lockPath, "wx");
   const ownership = JSON.stringify({ owner: `${process.pid}@${hostname()}`, operationId }) + "\n";
   let identity: Awaited<ReturnType<typeof handle.stat>> | undefined;
@@ -235,10 +262,16 @@ async function acquireLock(root: string, operationId: string): Promise<{ owns: (
   let released = false;
   return {
     owns,
-    async release() {
+    async release(repair) {
       if (released) return;
       released = true;
-      if (await owns()) await unlink(lockPath);
+      if (await owns()) {
+        await unlink(lockPath);
+      } else {
+        const displaced = displacedLeases.get(lockPath) ?? new Set();
+        displaced.add({ owns, repair });
+        displacedLeases.set(lockPath, displaced);
+      }
     },
   };
 }
@@ -251,12 +284,13 @@ async function acquireWorkspaceWriter(root: string): ReturnType<typeof acquireLo
 }
 
 /** Bind an explicit snapshot read to the same exclusive lease as a commit. */
-export async function withWorkspaceSnapshotLock<T>(root: string, read: (assertLease: () => Promise<void>) => Promise<T>): Promise<T> {
+export async function withWorkspaceSnapshotLock<T>(root: string, read: (assertLease: () => Promise<void>) => Promise<T>, assertDirectory?: () => Promise<void>): Promise<T> {
   const base = assertAbsoluteRoot(root);
+  await assertDirectory?.();
   const stats = await lstat(base);
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new TypeError("Workspace root is not a regular directory");
   await assertWorkspaceWriterIdle(base);
-  const problems = await recoverPendingWriteJournal(base);
+  const problems = await recoverPendingWriteJournal(base, undefined, assertDirectory);
   if (problems.length) {
     await assertWorkspaceWriterIdle(base);
     throw new WorkspaceStorageError("read-only", "Workspace recovery needs attention.");
@@ -264,8 +298,10 @@ export async function withWorkspaceSnapshotLock<T>(root: string, read: (assertLe
   const lock = await acquireWorkspaceWriter(base);
   try {
     const assertLease = async () => {
+      await assertDirectory?.();
       if (!(await lock.owns())) throw new WorkspaceStorageError("unstable", "Workspace moved during the disk read.");
     };
+    await assertLease();
     // A writer could have left a journal between recovery and lock acquisition.
     const pending = await journalDirectories(base);
     if (!pending || pending.length) throw new WorkspaceStorageError("read-only", "Workspace recovery needs attention.");
@@ -403,8 +439,10 @@ async function journalDirectories(root: string): Promise<string[] | undefined> {
 export async function recoverPendingWriteJournal(
   root: string,
   faultInjector?: LoadFaultInjector,
+  assertDirectory?: () => Promise<void>,
 ): Promise<LoadProblem[]> {
   const base = assertAbsoluteRoot(root);
+  await assertDirectory?.();
   const problems: LoadProblem[] = [];
   let directories = await journalDirectories(base);
   if (directories === undefined) {
@@ -423,6 +461,11 @@ export async function recoverPendingWriteJournal(
     return [{ file: writerLockFilePath(), message: "Workspace recovery could not acquire the writer lock." }];
   }
   try {
+    const assertRecoveryLease = async () => {
+      await assertDirectory?.();
+      if (!(await lock!.owns())) throw new WorkspaceStorageError("unstable", "Workspace moved during journal recovery.");
+    };
+    await assertRecoveryLease();
     directories = await journalDirectories(base);
     if (!directories) {
       problems.push({ file: writeJournalDirectoryPath(), message: "Write journal directory is not readable or is unsafe." });
@@ -446,6 +489,7 @@ export async function recoverPendingWriteJournal(
         continue;
       }
       if (await validMarker(base, operationId)) {
+        await assertRecoveryLease();
         try {
           await rm(operationAbsolute, { recursive: true, force: false });
         } catch {
@@ -458,8 +502,10 @@ export async function recoverPendingWriteJournal(
         await preflightBackups(base, operationId, manifest.files);
         for (const record of [...manifest.files].reverse()) {
           await faultInjector?.("before-recovery-restore", record.path);
+          await assertRecoveryLease();
           await restoreTarget(base, operationId, record);
         }
+        await assertRecoveryLease();
         await rm(operationAbsolute, { recursive: true, force: false });
       } catch {
         problems.push({ file: operationPath, message: "Interrupted write could not be recovered; original files and journal were retained." });
@@ -498,10 +544,10 @@ function assertPlan(plan: WorkspaceWritePlan, deletions: readonly string[]): Arr
   return actions.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
 }
 
-async function checkWritableRoot(root: string): Promise<void> {
+async function checkWritableRoot(root: string, assertDirectory?: () => Promise<void>): Promise<void> {
   const revision = await calculateWorkspaceRevision(root);
   if (revision === "empty") {
-    const recoveryProblems = await recoverPendingWriteJournal(root);
+    const recoveryProblems = await recoverPendingWriteJournal(root, undefined, assertDirectory);
     if (recoveryProblems.length > 0) {
       await assertWorkspaceWriterIdle(root);
       throw new WorkspaceStorageError("read-only", "Workspace has unresolved load or recovery problems and is read-only");
@@ -509,7 +555,7 @@ async function checkWritableRoot(root: string): Promise<void> {
     return;
   }
   const { decodeContractWorkspace } = await import("./contractFiles.js");
-  const state = await decodeContractWorkspace(root);
+  const state = await decodeContractWorkspace(root, { assertDirectory });
   if (state.readOnly) {
     await assertWorkspaceWriterIdle(root);
     throw new WorkspaceStorageError("read-only", "Workspace has unresolved load or recovery problems and is read-only");
@@ -523,38 +569,75 @@ export async function commitWritePlan(
 ): Promise<{ revision: string }> {
   const base = assertAbsoluteRoot(root);
   const actions = assertPlan(plan, options.deletions);
-  await checkWritableRoot(base);
+  await options.assertDirectory?.();
+  await checkWritableRoot(base, options.assertDirectory);
   const beforeLockRevision = await calculateWorkspaceRevision(base);
   if (beforeLockRevision !== options.expectedRevision) throw new WorkspaceStorageError("revision-conflict", "Workspace revision conflict");
 
-  const prospectiveFiles = new Map<string, string>();
+  const prospectiveFiles = new Map<string, Buffer>();
   for (const file of await listWorkspaceFiles(base)) {
-    prospectiveFiles.set(file.path, await readFile(file.absolute, "utf8"));
+    prospectiveFiles.set(file.path, await readFile(file.absolute));
   }
+  const originalBytes = new Map(actions.map(action => [action.path, prospectiveFiles.get(action.path)]));
   for (const action of actions) {
     if (action.action === "delete") prospectiveFiles.delete(action.path);
-    else prospectiveFiles.set(action.path, action.content!);
+    else prospectiveFiles.set(action.path, Buffer.from(action.content!, "utf8"));
   }
+  const plannedBytes = new Map(actions.map(action => [action.path, prospectiveFiles.get(action.path)]));
   const { validateProspectiveContractFiles } = await import("./contractFiles.js");
   const prospective = await validateProspectiveContractFiles(prospectiveFiles);
   if (prospective.readOnly) throw new Error("Write plan does not produce a structurally valid workspace");
+  const plannedRevision = options.assertDirectory ? (() => {
+    if (!prospectiveFiles.size) return "empty";
+    const hash = createHash("sha256");
+    for (const path of [...prospectiveFiles.keys()].sort()) hashDefinitionFile(hash, path, prospectiveFiles.get(path)!);
+    return hash.digest("hex");
+  })() : undefined;
 
   await mkdir(base, { recursive: true });
   const rootStats = await lstat(base);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) throw new TypeError("Workspace root is not a regular directory");
+  await options.assertDirectory?.();
   const lock = await acquireWorkspaceWriter(base);
   const operationId = randomUUID();
   const operationPath = operationRelative(operationId, "manifest.yaml").slice(0, -"/manifest.yaml".length);
   const operationAbsolute = safeAbsolute(base, operationPath);
   let journalCreated = false;
   let manifestWritten = false;
+  let committed = false;
   const applied: JournalFileRecord[] = [];
   const stagedRecords: JournalFileRecord[] = [];
+  const assertWriteLease = async () => {
+    await options.assertDirectory?.();
+    if (!(await lock.owns())) throw new WorkspaceStorageError("unstable", "Workspace moved during the disk write.");
+  };
+  const matchesBytes = async (path: string, expected: Buffer | undefined) => {
+    const current = await ensureRegularTarget(base, path);
+    if (!current || !expected) return !current && !expected;
+    return (await readFile(safeAbsolute(base, path))).equals(expected);
+  };
+  const assertRevision = () => { throw new WorkspaceStorageError("revision-conflict", "Workspace revision conflict"); };
+  const repairReturnedJournal = async () => {
+    if (!journalCreated) return;
+    await assertWriteLease();
+    if (!committed && manifestWritten) {
+      for (const record of [...applied].reverse()) {
+        await assertWriteLease();
+        if (await matchesBytes(record.path, plannedBytes.get(record.path))) {
+          await restoreTarget(base, operationId, record);
+        }
+      }
+    }
+    await assertWriteLease();
+    await rm(operationAbsolute, { recursive: true, force: true });
+  };
 
   try {
+    await assertWriteLease();
     const currentRevision = await calculateWorkspaceRevision(base);
     if (currentRevision !== options.expectedRevision) throw new WorkspaceStorageError("revision-conflict", "Workspace revision conflict");
     for (const action of actions) await ensureRegularTarget(base, action.path);
+    await assertWriteLease();
 
     const journalRoot = safeAbsolute(base, writeJournalDirectoryPath());
     await ensureDirectory(dirname(journalRoot));
@@ -563,6 +646,7 @@ export async function commitWritePlan(
     journalCreated = true;
 
     for (const action of actions) {
+      await assertWriteLease();
       const existed = await ensureRegularTarget(base, action.path);
       const record: JournalFileRecord = { path: action.path, action: action.action, existed };
       stagedRecords.push(record);
@@ -580,43 +664,61 @@ export async function commitWritePlan(
     await writeStagedFile(base, manifestPath(operationId), stringify(manifest));
     manifestWritten = true;
     await options.faultInjector?.("after-staging");
+    if (options.assertDirectory && await calculateWorkspaceRevision(base) !== options.expectedRevision) {
+      assertRevision();
+    }
 
     for (const record of stagedRecords) {
+      await assertWriteLease();
+      if (options.assertDirectory && !await matchesBytes(record.path, originalBytes.get(record.path))) assertRevision();
       const target = safeAbsolute(base, record.path);
       if (record.action === "replace") {
         await ensureSafeParents(base, record.path, true);
+        await assertWriteLease();
         await rename(safeAbsolute(base, stagedPath(operationId, record.path)), target);
         applied.push(record);
         await options.faultInjector?.("after-replace", record.path);
       } else {
         const existedNow = await ensureRegularTarget(base, record.path);
-        if (existedNow) await unlink(target);
+        if (existedNow) { await assertWriteLease(); await unlink(target); }
         applied.push(record);
         await options.faultInjector?.("after-delete", record.path);
       }
     }
 
     await options.faultInjector?.("before-revision-calculation");
-    const revision = await calculateWorkspaceRevision(base);
+    await assertWriteLease();
+    let revision = await calculateWorkspaceRevision(base);
     await options.faultInjector?.("before-committed-marker");
+    if (plannedRevision !== undefined) {
+      if (options.faultInjector) revision = await calculateWorkspaceRevision(base);
+      if (revision !== plannedRevision) assertRevision();
+    }
+    await assertWriteLease();
     await writeStagedFile(base, markerPath(operationId), `${operationId}\n`);
-    await rm(operationAbsolute, { recursive: true, force: false }).catch(() => undefined);
+    committed = true;
+    await assertWriteLease().then(() => rm(operationAbsolute, { recursive: true, force: false })).catch(() => undefined);
     return { revision };
   } catch (error) {
+    // If the root moved, leave its own journal with that directory. Never
+    // restore or remove staged files through a path now held by another root.
+    await assertWriteLease();
     if (journalCreated && manifestWritten && applied.length > 0) {
       try {
         for (const record of [...applied].reverse()) {
           await options.faultInjector?.("before-rollback-restore", record.path);
+          await assertWriteLease();
+          if (options.assertDirectory && !await matchesBytes(record.path, plannedBytes.get(record.path))) continue;
           await restoreTarget(base, operationId, record);
         }
       } catch {
         throw new Error("Workspace write failed and rollback failed; recovery is required.");
       }
     }
-    if (journalCreated) await rm(operationAbsolute, { recursive: true, force: true }).catch(() => undefined);
+    if (journalCreated) { await assertWriteLease(); await rm(operationAbsolute, { recursive: true, force: true }).catch(() => undefined); }
     if (error instanceof Error && error.message === "Workspace revision conflict") throw error;
     throw new Error("Workspace write failed; no success was recorded.");
   } finally {
-    await lock.release().catch(() => undefined);
+    await lock.release(journalCreated ? repairReturnedJournal : undefined).catch(() => undefined);
   }
 }

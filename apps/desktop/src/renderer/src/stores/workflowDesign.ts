@@ -1,11 +1,11 @@
 import { createPinia, defineStore } from "pinia";
 import { shallowRef } from "vue";
-import { findProjectApi, workflowCalls } from "@apicc/core/workflow/references";
-import type { ContractProject, JsonValue, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
+import type { JsonValue, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
 import type { ApiccApi, WorkspaceRefreshResult } from "../../../shared/types.js";
 import type { WorkflowLocator } from "../../../shared/locations.js";
 import type { LocalWorkspaceContext } from "./localIdentity.js";
 import { currentDiskRead, diskProject, jsonCopy, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
+import { localTestingDependencies } from "../../../shared/workspace-testing-dependencies.js";
 
 const RUN_HISTORY_LIMIT = 2;
 
@@ -16,25 +16,6 @@ function copyLocator(locator: WorkflowLocator): WorkflowLocator {
 function sameLocator(left: WorkflowLocator | null, right: WorkflowLocator): boolean {
   return !!left && left.workspaceId === right.workspaceId && left.groupId === right.groupId
     && left.projectId === right.projectId && left.workflowId === right.workflowId;
-}
-
-function workflowDependencies(project: ContractProject | undefined, workflow: Workflow): unknown {
-  if (!project) return null;
-  const visited = new Set<string>([workflow.id]);
-  const visit = (flow: Workflow): unknown => flow.nodes.map((node) => {
-    const target = node.kind === "request" && node.apiId ? findProjectApi(project, node.apiId) : undefined;
-    const request = target && {
-      request: target.api.contract.request,
-      cases: target.api.cases.filter((item) => !("caseId" in node) || !node.caseId || item.id === node.caseId),
-    };
-    return { request, calls: workflowCalls(node).flatMap(({ workflowId }) => {
-      if (visited.has(workflowId)) return [];
-      visited.add(workflowId);
-      const called = project.workflows.find((item) => item.id === workflowId);
-      return [{ id: workflowId, called, dependencies: called ? visit(called) : null }];
-    }) };
-  });
-  return visit(workflow);
 }
 
 export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWorkspaceContext = () => ({ root: "", readOnly: false })) {
@@ -165,7 +146,8 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
           this.warnings = [];
         };
         if (this.dirty && (this.diskConflict || !next || !sameDiskValue(JSON.parse(this.snapshot), next)
-          || !sameDiskValue(workflowDependencies(before, local), workflowDependencies(after, local)))) {
+          || !sameDiskValue(localTestingDependencies(receipt.previousWorkspace, before, locator, local),
+            localTestingDependencies(receipt.workspace, after, locator, local)))) {
           this.diskConflict = { reason: next ? "changed" : "deleted", name: local.name, restore };
         } else {
           if (!next) {

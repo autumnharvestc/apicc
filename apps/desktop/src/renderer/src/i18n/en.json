@@ -364,10 +364,23 @@
       "directory-unavailable": "The selected workspace directory is unavailable.",
       "workspace-unreadable": "The selected directory has no readable workspace metadata.",
       "project-missing": "The selected project is missing from the workspace.",
+      "asset-changed": "The asset changed on disk. Your draft is retained. Review the disk version before saving.",
+      "asset-missing": "The asset was removed on disk. Your draft is retained.",
+      "dependency-changed": "A dependency for this edit changed on disk. Your draft is retained. Review the disk version before saving.",
       "context-changed": "The active workspace changed. Open the intended workspace and try again.",
       "workspace-replaced": "The directory now contains a different workspace. Open that workspace to continue.",
       "failed": "The workspace could not be refreshed from disk."
     }
+  },
+  "diskUpdate": {
+    "singleProject": "Disk updates are available for {name}.",
+    "singleGroupedProject": "Disk updates are available for {name} in {group}.",
+    "multipleProjects": "Disk updates are available for {count} projects.",
+    "workspace": "Workspace updates are available on disk.",
+    "title": "Workspace changes on disk",
+    "apply": "Apply disk updates",
+    "noChanges": "The disk already matches the current workspace view.",
+    "previewStale": "The disk changed after you opened this preview. Review the latest changes before applying."
   },
   "workspace": {
     "problems": "Problem files",

@@ -38,7 +38,8 @@ export function diskApi(project: ContractProject | undefined, locator: ApiLocato
 }
 
 export function isRefreshableFailure(failure: LocalWorkspaceFailure): boolean {
-  return failure.reason === "revision-conflict" || failure.reason === "busy" || failure.reason === "unstable";
+  return failure.reason === "revision-conflict" || failure.reason === "busy" || failure.reason === "unstable"
+    || failure.reason === "asset-changed" || failure.reason === "asset-missing" || failure.reason === "dependency-changed";
 }
 
 /** A view requested before refresh may arrive after the new disk version was

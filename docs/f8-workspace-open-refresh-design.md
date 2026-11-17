@@ -47,7 +47,7 @@ IPC 区分版本过期、写入暂忙、只读/恢复问题和一般错误。版
 
 ## 4. 后续方案：本地多开保存与跨项目提示
 
-**状态**　用户确认归档，实施排期另定。当前两批实施计划继续覆盖启动复用、同目录去重、显式磁盘刷新与冲突时保留草稿。本节记录后续自动保存和更新提示的行为。[当前实施计划](f8-workspace-open-refresh-plan.md) · [在线协作保存与更新设计](f8-online-collaboration-save-design.md)
+**状态**　启动复用、同目录去重、显式磁盘刷新与冲突草稿保护已交付。本节对应协作保存接续的本地批。[基础实施计划](f8-workspace-open-refresh-plan.md) · [协作保存实施与验收计划](f8-collaboration-save-plan.md) · [在线协作保存与更新设计](f8-online-collaboration-save-design.md)
 
 | 场景 | 确认的行为 |
 | --- | --- |

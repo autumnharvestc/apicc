@@ -7,6 +7,7 @@ import type { WorkspaceRefreshResult } from "../../../shared/types.js";
 import { diskProject, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
 import type { LocalWorkspaceFailure } from "../../../shared/workspace-refresh.js";
 import { projectSessionKey } from "./localIdentity.js";
+import { workspaceEnvironmentDependencies } from "../../../shared/workspace-api-dependencies.js";
 
 export type FailureStep = "globals" | "variables" | "baseUrls" | "interrupted";
 export interface VarRow { id: string; key: string; value: string }
@@ -105,12 +106,16 @@ export function reconcileEnvironmentDrafts(store: ReturnType<typeof useEnvsStore
       const disk = project?.environments.find((entry) => entry.id === id);
       const old = previous?.environments.find((entry) => entry.id === id);
       const variablesDirty = !sameDiskValue(variablePayload(draftEnv.rows), normalizedVariables(draftEnv.confirmedVariables));
-      const urlsDirty = !sameDiskValue(baseUrlPayload(draftEnv.baseUrls), baseUrlPayload(draftEnv.confirmedBaseUrls));
-      const missingUrlTargets = Object.keys(baseUrlPayload(draftEnv.baseUrls)).some((key) =>
-        previous?.collections.some((collection) => collection.id === key) && !project?.collections.some((collection) => collection.id === key));
+      const editedUrls = baseUrlPayload(draftEnv.baseUrls);
+      const urlsDirty = !sameDiskValue(editedUrls, baseUrlPayload(draftEnv.confirmedBaseUrls));
+      const linkedChanged = (urls?: Record<string, string>) => !sameDiskValue(
+        workspaceEnvironmentDependencies(receipt.previousWorkspace, draft.locator, id, urls),
+        workspaceEnvironmentDependencies(receipt.workspace, draft.locator, id, urls),
+      );
       const variablesConflict = variablesDirty && (draftEnv.conflictFields?.variables || !disk || old?.extends !== disk.extends
+        || linkedChanged()
         || !sameDiskValue(normalizedVariables(draftEnv.confirmedVariables), normalizedVariables(disk.variables)));
-      const urlsConflict = urlsDirty && (draftEnv.conflictFields?.baseUrls || !disk || missingUrlTargets
+      const urlsConflict = urlsDirty && (draftEnv.conflictFields?.baseUrls || !disk || old?.extends !== disk.extends || linkedChanged(editedUrls)
         || !sameDiskValue(baseUrlPayload(draftEnv.confirmedBaseUrls), baseUrlPayload(disk.baseUrls ?? {})));
       if (!disk && !variablesDirty && !urlsDirty) { draft.environments.delete(id); continue; }
       const restore = () => {

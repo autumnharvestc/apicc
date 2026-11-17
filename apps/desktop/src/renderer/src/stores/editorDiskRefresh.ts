@@ -3,6 +3,7 @@ import type { ApiAsset, ApiTestCase, ContractProject } from "@apicc/core";
 import type { ApiDetail, WorkspaceRefreshResult } from "../../../shared/types.js";
 import type { EditorSession } from "./editor.js";
 import { diskProject, jsonCopy, sameDiskValue, type DiskDraftReason } from "./diskDrafts.js";
+import { workspaceCaseDependencies, workspaceRequestDependencies } from "../../../shared/workspace-api-dependencies.js";
 
 export interface EditorDiskConflict {
   reason: DiskDraftReason;
@@ -63,7 +64,8 @@ export function reconcileEditorSession(
   const baseline = jsonCopy(incoming);
   const dirtyAsset = extraDraft.asset || extraDraft.request || !!extraDraft.cases?.length || !sameDiskValue(local, base);
   const changed = (): EditorDiskConflict => ({ reason: "changed", disk });
-  if (dirtyAsset && (!sameDiskValue(base, incoming) || !sameDiskValue(dependencies(before, local), dependencies(after, local)))) {
+  if (dirtyAsset && (!sameDiskValue(base, incoming) || !sameDiskValue(dependencies(before, local), dependencies(after, local))
+      || !sameDiskValue(dependencies(before, base), dependencies(after, base)))) {
     conflicts.asset = changed();
   }
   if (!sameDiskValue(documentPart(local), documentPart(base))) {
@@ -75,28 +77,38 @@ export function reconcileEditorSession(
   if (extraDraft.request || !sameDiskValue(base.contract.request, local.contract.request)) {
     next.contract.request = jsonCopy(local.contract.request);
     const source = narrowAsset(local, []);
+    const originalSource = narrowAsset(base, []);
     const overrideProtocols = (asset: ApiAsset) => asset.cases.flatMap((item) => item.requestOverride
       ? [[item.id, item.scope, item.requestOverride.protocol]] : []);
+    const inheriting = (asset: ApiAsset) => asset.cases.filter(item => !item.requestOverride);
+    const protocolChanged = base.contract.request.protocol !== local.contract.request.protocol;
     if (!sameDiskValue(base.contract.request, incoming.contract.request)
-      || !sameDiskValue(overrideProtocols(base), overrideProtocols(incoming))
+      || protocolChanged && !sameDiskValue(overrideProtocols(base), overrideProtocols(incoming))
+      || !sameDiskValue(inheriting(base), inheriting(incoming))
+      || !sameDiskValue(workspaceRequestDependencies(receipt.previousWorkspace, session.locator), workspaceRequestDependencies(receipt.workspace, session.locator))
+      || !sameDiskValue(dependencies(before, originalSource), dependencies(after, originalSource))
       || !sameDiskValue(dependencies(before, source), dependencies(after, source))) {
+      conflicts.asset = changed();
       conflicts.request = changed();
       baseline.contract.request = jsonCopy(base.contract.request);
     }
   }
   const baseCases = byCase(base.cases), localCases = byCase(local.cases), diskCases = byCase(incoming.cases);
   const reconciledCases = new Map(diskCases), confirmedCases = new Map(diskCases);
-  const scope = (project: ContractProject | undefined, testCase: ApiTestCase) => project?.environments.find((env) => env.name === testCase.scope);
   for (const key of new Set([...baseCases.keys(), ...localCases.keys()])) {
     const original = baseCases.get(key), draft = localCases.get(key), persisted = diskCases.get(key);
     if (sameDiskValue(original, draft) && !extraDraft.cases?.includes(key)) continue;
     if (draft) reconciledCases.set(key, draft); else reconciledCases.delete(key);
     const target = draft ?? original!;
     const definition = narrowAsset(local, [target]);
-    if (!sameDiskValue(original, persisted) || !sameDiskValue(base.contract.request, incoming.contract.request)
-      || !sameDiskValue(scope(before, target), scope(after, target))
+    const inputs = [session.locator, base.contract.request, original ?? null, target] as const;
+    const inherits = !target.requestOverride || original && !original.requestOverride;
+    if (!sameDiskValue(original, persisted) || base.contract.request.protocol !== incoming.contract.request.protocol
+      || inherits && !sameDiskValue(base.contract.request, incoming.contract.request)
+      || !sameDiskValue(workspaceCaseDependencies(receipt.previousWorkspace, ...inputs), workspaceCaseDependencies(receipt.workspace, ...inputs))
       || !sameDiskValue(dependencies(before, definition), dependencies(after, definition))) {
       conflicts[key] = { reason: original && !persisted ? "deleted" : "changed", disk };
+      conflicts.asset = changed();
       if (original) confirmedCases.set(key, original); else confirmedCases.delete(key);
     }
   }

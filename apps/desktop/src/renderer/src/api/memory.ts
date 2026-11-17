@@ -46,7 +46,7 @@ import {
   type NetworkConfiguration,
 } from "@apicc/core";
 import { ContractProjectSchema, emptyNetworkConfiguration, NetworkConfigurationSchema, SavedStressPlanSchema } from "@apicc/core/schema";
-import { localWorkspaceError, type WorkspaceRefreshInput } from "../../../shared/workspace-refresh.js";
+import { localWorkspaceError, type WorkspaceObservationInput, type WorkspaceRefreshInput } from "../../../shared/workspace-refresh.js";
 import { z } from "zod";
 import { StressPlanSaveInputSchema, StressCompareInputSchema, StressExportInputSchema, StressReportFileSchema } from "../../../shared/types.js";
 import { createSession } from "../../../main/session.js";
@@ -533,6 +533,14 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       }
       const view = await session.refreshFromDisk({ ...input, root: session.root }, () => stressActive !== null);
       return { ...view, root: input.root, tree: toTreeNode(view.workspace) };
+    },
+    async wsObserve(input: WorkspaceObservationInput) {
+      await ensureReady();
+      if (input.root !== openedRoot || !session.root) {
+        throw localWorkspaceError("context-changed", "The active workspace changed.", input.root);
+      }
+      const result = await session.observeDisk({ ...input, root: session.root }, () => stressActive !== null);
+      return { ...result, root: input.root };
     },
 
     async wsCreate(rootPath: string, name: string): Promise<OpenResult> {

@@ -67,7 +67,7 @@ import {
   OAuthProfilesGetInputSchema,
 } from "./oauth.js";
 import { IpcChannel, type IpcChannelName } from "./channels.js";
-import { WorkspaceRefreshInputSchema, localWorkspaceFailureMethodsByChannel, type LocalWorkspaceFailure, type LocalWorkspaceFailureChannel } from "./workspace-refresh.js";
+import { WorkspaceObservationInputSchema, WorkspaceRefreshInputSchema, localWorkspaceFailureMethodsByChannel, type LocalWorkspaceFailure, type LocalWorkspaceFailureChannel } from "./workspace-refresh.js";
 import { AiSettingsWriteSchema, AiCatalogImportSchema, AiPrepareSchema, AiStartSchema, AiCancelSchema, AiProbeSchema, AiDiscoverSchema, AiChoicesInputSchema, AiChoicesPageInputSchema } from "./ai/contract.js";
 import { DesignExportInputSchema, DesignPreviewInputSchema } from "./design.js";
 import {
@@ -238,6 +238,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.WsOpen]: z.tuple([z.string(), ProjectLocatorSchema.optional()]),
   [IpcChannel.WsResolveRoot]: z.tuple([z.string()]),
   [IpcChannel.WsRefresh]: z.tuple([WorkspaceRefreshInputSchema]),
+  [IpcChannel.WsObserve]: z.tuple([WorkspaceObservationInputSchema]),
   [IpcChannel.WsCreate]: z.tuple([z.string(), z.string()]),
   [IpcChannel.WsPickDirectory]: z.tuple([]),
   [IpcChannel.WsValidate]: z.tuple([]),

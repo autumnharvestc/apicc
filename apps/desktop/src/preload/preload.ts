@@ -42,6 +42,7 @@ const api: ApiccBridge = {
     : invoke(IpcChannel.WsOpen, rootPath),
   wsResolveRoot: (rootPath) => invoke(IpcChannel.WsResolveRoot, rootPath),
   wsRefresh: (input) => invoke(IpcChannel.WsRefresh, input),
+  wsObserve: (input) => invoke(IpcChannel.WsObserve, input),
   wsCreate: (rootPath, name) => invoke(IpcChannel.WsCreate, rootPath, name),
   wsPickDirectory: () => invoke(IpcChannel.WsPickDirectory),
   wsValidate: () => invoke(IpcChannel.WsValidate),

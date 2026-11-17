@@ -10,6 +10,9 @@ import { IDS, makeWorkspace, projectOne, uuid } from "../../main/helpers/contrac
 import { useCasesStore } from "../../../src/renderer/src/stores/cases.js";
 import { useDesignStore } from "../../../src/renderer/src/stores/design.js";
 import { useEditorStore } from "../../../src/renderer/src/stores/editor.js";
+import { useEnvsStore } from "../../../src/renderer/src/stores/envs.js";
+import { environmentDraftsFor, reconcileEnvironmentDrafts, type SaveFeedback } from "../../../src/renderer/src/stores/environmentDrafts.js";
+import { projectSessionKey } from "../../../src/renderer/src/stores/localIdentity.js";
 import { caseUnit } from "../../../src/renderer/src/stores/editorDiskRefresh.js";
 import { createTestingStore } from "../../../src/renderer/src/stores/testing.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
@@ -76,6 +79,46 @@ describe("draft recovery after explicit disk refresh", () => {
     expect(editor.restoreDiskUnit(key, "request")).toBe(true);
     expect(editor.api?.contract.request.path).toBe(asset(after).contract.request.path);
     expect(editor.api?.documentation).toBe("retained documentation draft");
+  });
+
+  it("keeps a request draft protected when explicit refresh observes a shared dependency update", async () => {
+    const { editor, before, apiSave, refresh } = editorFixture();
+    await editor.load(locator);
+    editor.api!.contract.request.path = "/kept-after-refresh";
+    const after = copy(before);
+    after.variables.tenant = "external value";
+    await refresh(after);
+    expect(editor.sessions[editor.activeKey!]!.diskConflicts?.request?.reason).toBe("changed");
+    expect(editor.api?.contract.request.path).toBe("/kept-after-refresh");
+    await expect(editor.save()).rejects.toThrow("disk-draft-blocked");
+    expect(apiSave).not.toHaveBeenCalled();
+  });
+
+  it("keeps an environment draft protected when explicit refresh changes its parent", () => {
+    const before = makeWorkspace();
+    const parentId = uuid(501), childId = uuid(502);
+    projectOne(before).environments.push(
+      { id: parentId, name: "parent", variables: { tenant: "original" }, baseUrls: {} },
+      { id: childId, name: "child", extends: "parent", variables: { editable: "original" }, baseUrls: {} },
+    );
+    const after = copy(before);
+    projectOne(after).environments.find(item => item.id === parentId)!.variables.tenant = "externally updated";
+    const store = useEnvsStore({} as ApiccApi, localContext);
+    const drafts = environmentDraftsFor(store);
+    const feedback = (): SaveFeedback => ({ pending: false, saved: false, error: null });
+    const globals = { ...projectOne(before).globals, variables: projectOne(before).variables };
+    const key = projectSessionKey(root, project);
+    drafts.set(key, { root, locator: project, globals, latestGlobals: globals, queryRows: [], headerRows: [], variableRows: [],
+      variableFeedback: feedback(), parameterFeedback: feedback(), environments: new Map([[childId, {
+        name: "child", baseUrls: {}, confirmedBaseUrls: {}, confirmedVariables: { editable: "original" },
+        rows: [{ id: "draft-row", key: "editable", value: "unsaved" }], feedback: feedback(),
+      }]]) });
+    reconcileEnvironmentDrafts(store, receipt(before, after));
+    const draft = drafts.get(key)!.environments.get(childId)!;
+    expect(draft.feedback.conflict?.reason).toBe("changed");
+    expect(draft.rows[0]?.value).toBe("unsaved");
+    draft.feedback.conflict?.restore?.();
+    expect(draft.rows[0]?.value).toBe("original");
   });
 
   it("keeps the conflicting pending deletion and saves the safe scope of the same logical case", async () => {

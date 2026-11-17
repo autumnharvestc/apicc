@@ -129,5 +129,6 @@ export * from "./workflow/prepared.js";
 export * from "./stress/workflowSession.js";
 export { encodeContractProjectFiles, decodeContractProjectFiles, type ContractProjectLoadState } from "./storage/contractFiles.js";
 export { readStableContractWorkspace } from "./storage/contractFiles.js";
+export { encodeContractWorkspace } from "./storage/contractFiles.js";
 export { WorkspaceStorageError } from "./storage/workspaceErrors.js";
 export { apiCaseFilePath, collectionMetadataFilePath, folderMetadataFilePath, projectDirectoryPath } from "./storage/paths.js";

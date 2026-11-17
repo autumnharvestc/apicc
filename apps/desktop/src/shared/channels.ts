@@ -15,6 +15,7 @@ export const IpcChannel = {
   WsOpen: "ws:open",
   WsResolveRoot: "ws:resolve-root",
   WsRefresh: "ws:refresh",
+  WsObserve: "ws:observe",
   WsCreate: "ws:create",
   WsPickDirectory: "ws:pickDirectory",
   WsValidate: "ws:validate",

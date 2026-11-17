@@ -62,8 +62,14 @@ import {
   type WorkflowStatus,
 } from "@apicc/core";
 import { ApiRequestSchema, MockProjectConfigSchema } from "@apicc/core/schema";
+import { commitWritePlan } from "@apicc/core/sync";
+import { sameProjectSaveValue } from "@apicc/core/collaboration/project-save";
 import { resolveWorkspaceDirectory, sameWorkspaceDirectory, type WorkspaceDirectory } from "./workspaceDirectory.js";
-import { localWorkspaceError, type WorkspaceRefreshInput } from "../shared/workspace-refresh.js";
+import { localWorkspaceError, type WorkspaceObservationInput, type WorkspaceObservationResult, type WorkspaceRefreshInput } from "../shared/workspace-refresh.js";
+import { assertIndependentWorkspaceSave, observedProjectChanges,
+  workspaceDefinitionDelta, type WorkspaceWriteUnit } from "./workspaceConcurrentSave.js";
+import { workspaceEnvironmentDependencies } from "../shared/workspace-api-dependencies.js";
+import { localTestingDependencies } from "../shared/workspace-testing-dependencies.js";
 import { DatasetSaveInputSchema, SuiteSaveInputSchema, TestingContextSchema, TestingDeleteInputSchema, type DatasetSaveInput, type SuiteSaveInput, type TestingContext, type TestingDeleteInput } from "../shared/testing.js";
 import {
   ApiLocatorSchema,
@@ -161,7 +167,7 @@ type WorkspaceTransition = <T>(commit: () => T, verifyTarget: () => Promise<void
 /** Main-process-only snapshot used to bind async draft credential checks to their queued write. */
 export interface DraftWriteContext { readonly root: string; readonly revision: string; readonly generation: number }
 
-interface ActiveSession extends SessionView { directory: WorkspaceDirectory }
+interface ActiveSession extends SessionView { directory: WorkspaceDirectory; partial?: true }
 interface MutationResult<T> { value: T; deletions?: string[]; noCommit?: true }
 export interface ImportMutationReceipt<T> {
   value: T;
@@ -642,7 +648,8 @@ export function createSession(options: SessionOptions = {}) {
   let acknowledgedGeneration = 0;
   let queue: Promise<unknown> = Promise.resolve();
   let pendingWrites = 0;
-  let diskRefresh: { generation: number; promise: Promise<WorkspaceRefreshView> } | null = null;
+  let diskRefresh: { generation: number; expected?: string; promise: Promise<WorkspaceRefreshView> } | null = null;
+  let diskObservation: { generation: number; promise: Promise<WorkspaceObservationResult> } | null = null;
 
   function enqueue<T>(action: () => Promise<T> | T, kind: "write" | "read" | "open" = "write"): Promise<T> {
     if (kind === "write") {
@@ -692,6 +699,58 @@ export function createSession(options: SessionOptions = {}) {
     }
   }
 
+  async function workspaceSaveOptions(current: ActiveSession, deletions: readonly string[]) {
+    let expectedRevision = current.revision;
+    if (current.partial) {
+      const disk = await stableWorkspace(current);
+      if (!sameProjectSaveValue(current.workspace, disk.workspace)) {
+        throw new WorkspaceStorageError("revision-conflict", "Review the disk changes before replacing the complete workspace.");
+      }
+      expectedRevision = disk.revision;
+    }
+    return { expectedRevision, deletions, assertDirectory: () => verifyWorkspaceDirectory(current.directory) };
+  }
+
+  async function stableWorkspace(current: ActiveSession) {
+    const assertDirectory = () => verifyWorkspaceDirectory(current.directory);
+    await assertDirectory();
+    const state = await (options.readStable ?? readStableContractWorkspace)(current.root, assertDirectory).catch(async (error: unknown) => {
+      await assertDirectory();
+      throw error;
+    });
+    await assertDirectory();
+    if (state.readOnly) throw new WorkspaceStorageError("read-only", "Workspace recovery needs attention.");
+    if (state.workspace.id !== current.workspace.id) {
+      throw localWorkspaceError("workspace-replaced", "The workspace on disk has a different identity.", current.root);
+    }
+    return state;
+  }
+
+  function requireObservationContext(input: WorkspaceObservationInput, generation: number): ActiveSession {
+    const current = requireActive();
+    if (current.root !== input.root || current.workspace.id !== input.workspaceId || activeContextGeneration !== generation) {
+      throw localWorkspaceError("context-changed", "The active workspace changed.", input.root);
+    }
+    return current;
+  }
+
+  async function observeDisk(input: WorkspaceObservationInput, hasActivity: () => boolean = () => false): Promise<WorkspaceObservationResult> {
+    const generation = activeContextGeneration;
+    requireObservationContext(input, generation);
+    if (diskObservation?.generation === generation) return diskObservation.promise;
+    if (diskRefresh || pendingWrites || hasActivity()) throw new WorkspaceStorageError("busy", "This workspace has an ongoing operation.");
+    const promise = enqueue(async () => {
+      const current = requireObservationContext(input, generation);
+      if (diskRefresh || pendingWrites || hasActivity()) throw new WorkspaceStorageError("busy", "This workspace has an ongoing operation.");
+      const state = await stableWorkspace(current);
+      requireObservationContext(input, generation);
+      if (diskRefresh || hasActivity()) throw new WorkspaceStorageError("busy", "This workspace has an ongoing operation.");
+      return { ...input, revision: state.revision, changes: observedProjectChanges(current.workspace, state.workspace) };
+    }, "read").finally(() => { if (diskObservation?.promise === promise) diskObservation = null; });
+    diskObservation = { generation, promise };
+    return promise;
+  }
+
   function writeWorkspaceSidecar<T>(write: (root: string) => T): Promise<T> {
     return enqueue(async () => {
       const current = requireActive();
@@ -707,43 +766,33 @@ export function createSession(options: SessionOptions = {}) {
   }
 
   async function refreshFromDisk(input: WorkspaceRefreshInput, hasActivity: () => boolean = () => false): Promise<WorkspaceRefreshView> {
-    const current = requireActive();
     const generation = activeContextGeneration;
-    const assertContext = () => {
-      const latest = requireActive();
-      if (latest.root !== input.root || latest.workspace.id !== input.workspaceId || activeContextGeneration !== generation) {
-        throw localWorkspaceError("context-changed", "The active workspace changed.", input.root);
-      }
-      return latest;
-    };
+    const assertContext = () => requireObservationContext(input, generation);
     const assertIdle = () => {
       if (pendingWrites || hasActivity()) throw new WorkspaceStorageError("busy", "This workspace has an ongoing operation.");
     };
     assertContext();
-    if (diskRefresh?.generation === generation) return diskRefresh.promise;
+    if (diskRefresh?.generation === generation) {
+      if (diskRefresh.expected === input.observedRevision) return diskRefresh.promise;
+      throw new WorkspaceStorageError("busy", "A different workspace refresh is already in progress.");
+    }
     assertIdle();
     const promise = enqueue(async () => {
+      const current = assertContext();
+      assertIdle();
+      const state = await stableWorkspace(current);
       assertContext();
       assertIdle();
-      await verifyWorkspaceDirectory(current.directory);
-      const state = await (options.readStable ?? readStableContractWorkspace)(current.root).catch(async (error: unknown) => {
-        await verifyWorkspaceDirectory(current.directory);
-        throw error;
-      });
-      await verifyWorkspaceDirectory(current.directory);
-      assertContext();
-      assertIdle();
-      if (state.readOnly) throw new WorkspaceStorageError("read-only", "Workspace recovery needs attention.");
-      if (state.workspace.id !== input.workspaceId) {
-        throw localWorkspaceError("workspace-replaced", "The workspace on disk has a different identity.", input.root);
+      if (input.observedRevision && input.observedRevision !== state.revision) {
+        throw new WorkspaceStorageError("revision-conflict", "The reviewed workspace version changed on disk.");
       }
       const workspace = ContractWorkspaceSchema.parse(state.workspace);
       const previousWorkspace = clone(current.workspace);
-      const next = { ...current, workspace, revision: state.revision, problems: state.problems, readOnly: state.readOnly };
+      const next = { root: current.root, directory: current.directory, workspace, revision: state.revision, problems: state.problems, readOnly: state.readOnly };
       active = next;
       return { ...publicView(next), previousWorkspace };
     }, "read").finally(() => { if (diskRefresh?.promise === promise) diskRefresh = null; });
-    diskRefresh = { generation, promise };
+    diskRefresh = { generation, expected: input.observedRevision, promise };
     return promise;
   }
 
@@ -758,11 +807,12 @@ export function createSession(options: SessionOptions = {}) {
     return enqueue(async () => {
       const current = requireActive();
       if (current.root !== context.root || activeContextGeneration !== context.generation) throw new Error("SYNC_CONTEXT_CHANGED");
+      if (current.partial) await workspaceSaveOptions(current, []);
       await verifyWorkspaceDirectory(current.directory);
       const result = await operation(publicView(current));
       await verifyWorkspaceDirectory(current.directory);
       const loaded = await storage.load(current.root);
-      active = { ...current, workspace: ContractWorkspaceSchema.parse(loaded.workspace), revision: loaded.revision, problems: clone(loaded.problems), readOnly: loaded.readOnly };
+      active = { ...current, partial: undefined, workspace: ContractWorkspaceSchema.parse(loaded.workspace), revision: loaded.revision, problems: clone(loaded.problems), readOnly: loaded.readOnly };
       return result;
     });
   }
@@ -781,7 +831,7 @@ export function createSession(options: SessionOptions = {}) {
     if (workspace.id !== workspaceId) throw new Error(`Workspace mismatch: expected ${workspace.id}, received ${workspaceId}`);
   }
 
-  function mutate<T>(operation: (candidate: ContractWorkspace, current: ActiveSession) => MutationResult<T>): Promise<T> {
+  function mutate<T>(operation: (candidate: ContractWorkspace, current: ActiveSession, replaying?: true) => MutationResult<T>, unit?: WorkspaceWriteUnit): Promise<T> {
     return enqueue(async () => {
       const current = requireActive();
       if (current.readOnly) throw new WorkspaceStorageError("read-only", "工作区处于只读模式，不能写入");
@@ -789,12 +839,30 @@ export function createSession(options: SessionOptions = {}) {
       const result = operation(candidate, current);
       if (result.noCommit) return clone(result.value);
       const parsed = ContractWorkspaceSchema.parse(candidate);
+      if (unit && storage === fileStorage) {
+        const disk = await stableWorkspace(current);
+        let proposed = parsed;
+        let deletions = result.deletions ?? [];
+        if (!sameProjectSaveValue(disk.workspace, current.workspace)) {
+          assertIndependentWorkspaceSave(current.root, current.workspace, parsed, disk.workspace, unit);
+          const rebased = clone(disk.workspace);
+          const replayed = operation(rebased, current, true);
+          proposed = ContractWorkspaceSchema.parse(rebased);
+          deletions = replayed.deletions ?? [];
+        }
+        const delta = workspaceDefinitionDelta(disk.workspace, proposed, deletions);
+        const saved = delta.files.size || delta.deletions.length
+          ? await commitWritePlan(current.root, { files: delta.files }, { expectedRevision: disk.revision,
+            deletions: delta.deletions, assertDirectory: () => verifyWorkspaceDirectory(current.directory) })
+          : { revision: disk.revision };
+        await verifyWorkspaceDirectory(current.directory);
+        active = { root: current.root, directory: current.directory, workspace: parsed, revision: saved.revision,
+          problems: current.problems, readOnly: current.readOnly, ...(sameProjectSaveValue(parsed, proposed) ? {} : { partial: true as const }) };
+        return clone(result.value);
+      }
       await verifyWorkspaceDirectory(current.directory);
-      const saved = await storage.save(current.root, parsed, {
-        expectedRevision: current.revision,
-        deletions: result.deletions ?? [],
-      });
-      active = { ...current, workspace: parsed, revision: saved.revision };
+      const saved = await storage.save(current.root, parsed, await workspaceSaveOptions(current, result.deletions ?? []));
+      active = { ...current, partial: undefined, workspace: parsed, revision: saved.revision };
       return clone(result.value);
     });
   }
@@ -824,11 +892,8 @@ export function createSession(options: SessionOptions = {}) {
       const afterFiles = listContractWorkspaceDefinitionFiles(parsed);
       const addedDefinitionFiles = afterFiles.filter((file) => !beforeFiles.has(file));
       await verifyWorkspaceDirectory(current.directory);
-      const saved = await storage.save(current.root, parsed, {
-        expectedRevision: current.revision,
-        deletions: result.deletions ?? [],
-      });
-      active = { ...current, workspace: parsed, revision: saved.revision };
+      const saved = await storage.save(current.root, parsed, await workspaceSaveOptions(current, result.deletions ?? []));
+      active = { ...current, partial: undefined, workspace: parsed, revision: saved.revision };
       return {
         value: clone(result.value), committed: true, beforeWorkspace,
         context: { root: current.root, revision: saved.revision, generation: activeContextGeneration },
@@ -846,11 +911,8 @@ export function createSession(options: SessionOptions = {}) {
       }
       const workspace = ContractWorkspaceSchema.parse(clone(workspaceValue));
       await verifyWorkspaceDirectory(current.directory);
-      const saved = await storage.save(current.root, workspace, {
-        expectedRevision: current.revision,
-        deletions: [...new Set(addedDefinitionFiles)],
-      });
-      active = { ...current, workspace, revision: saved.revision };
+      const saved = await storage.save(current.root, workspace, await workspaceSaveOptions(current, [...new Set(addedDefinitionFiles)]));
+      active = { ...current, partial: undefined, workspace, revision: saved.revision };
     });
   }
 
@@ -859,7 +921,7 @@ export function createSession(options: SessionOptions = {}) {
   }
 
   function publicView(current: ActiveSession): SessionView {
-    const { directory: _directory, ...view } = current;
+    const { directory: _directory, partial: _partial, ...view } = current;
     return { ...view, workspace: clone(current.workspace), problems: clone(current.problems) };
   }
 
@@ -997,7 +1059,8 @@ function setContainerOperations(
         variables: {},
         groups: [{ id: newId("group"), name: "默认分组", default: true, projects: [] }],
       });
-      const saved = await storage.save(root, workspace, { expectedRevision: "empty", deletions: [] });
+      const saveOptions = { expectedRevision: "empty", deletions: [], assertDirectory: () => verifyWorkspaceDirectory(directory) };
+      const saved = await storage.save(root, workspace, saveOptions);
       const commit = (): SessionView => {
         const next: ActiveSession = { root, directory, workspace, problems: [], readOnly: false, revision: saved.revision };
         active = next;
@@ -1024,8 +1087,8 @@ function setContainerOperations(
       candidate.groups.unshift(group);
       const parsed = ContractWorkspaceSchema.parse(candidate);
       await verifyWorkspaceDirectory(current.directory);
-      const saved = await storage.save(current.root, parsed, { expectedRevision: current.revision, deletions: [] });
-      active = { ...current, workspace: parsed, revision: saved.revision };
+      const saved = await storage.save(current.root, parsed, await workspaceSaveOptions(current, []));
+      active = { ...current, partial: undefined, workspace: parsed, revision: saved.revision };
       return clone(group);
     });
   }
@@ -1360,7 +1423,7 @@ function setContainerOperations(
         },
         deletions: removedCaseFiles,
       };
-    });
+    }, { kind: "api", locator });
   }
 
   async function saveCase(
@@ -1374,7 +1437,7 @@ function setContainerOperations(
     const locator = parseLocator(CaseLocatorSchema, locatorValue, "case");
     const input = ApiTestCaseSchema.parse(clone(inputValue));
     if (!expectedSourceApiRevision) throw new Error("API source revision is required to save a case");
-    return mutate((candidate, current) => {
+    return mutate((candidate, current, replaying) => {
       if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
       if (input.id !== locator.caseId || input.scope !== locator.scope) throw new Error("Case id and scope must match its locator");
       if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存用例。");
@@ -1390,14 +1453,14 @@ function setContainerOperations(
         apiId: locator.apiId,
       });
       const actualRevision = getSourceApiRevision(located.api);
-      if (actualRevision !== expectedSourceApiRevision) {
+      if (!replaying && actualRevision !== expectedSourceApiRevision) {
         throw new WorkspaceStorageError("revision-conflict", `API source revision conflict at ${JSON.stringify(locator)}: expected ${expectedSourceApiRevision}, received ${actualRevision}`);
       }
       const index = located.api.cases.findIndex((testCase) => testCase.id === locator.caseId && testCase.scope === locator.scope);
       if (index < 0) located.api.cases.push(input);
       else located.api.cases[index] = input;
       return { value: { testCase: input, sourceApiRevision: getSourceApiRevision(located.api) } };
-    });
+    }, { kind: "case", locator, case: { id: locator.caseId, scope: locator.scope } });
   }
 
   async function saveRequestDraft(
@@ -1441,7 +1504,7 @@ function setContainerOperations(
       if (index < 0) throw new Error(`API not found at complete locator: ${JSON.stringify(locator)}`);
       container.apis[index] = updated;
       return { value: { request: updated.contract.request, sourceApiRevision: getSourceApiRevision(updated) } };
-    });
+    }, { kind: "api", locator });
   }
 
   async function saveDraftCase(
@@ -1461,12 +1524,12 @@ function setContainerOperations(
       throw new TypeError("Invalid physical case deletion list.");
     }
     if (!expectedSourceApiRevision) throw new Error("API source revision is required to save a case draft");
-    return mutate((candidate, current) => {
+    return mutate((candidate, current, replaying) => {
       if (draftWriteContext) assertDraftWriteContext(draftWriteContext, current);
       if (input.id !== locator.caseId || input.scope !== locator.scope) throw new Error("Case id and scope must match its locator");
       const located = locateApiInCandidate(candidate, locator);
       const actualRevision = getSourceApiRevision(located.api);
-      if (actualRevision !== expectedSourceApiRevision) {
+      if (!replaying && actualRevision !== expectedSourceApiRevision) {
         throw new WorkspaceStorageError("revision-conflict", `API source revision conflict at ${JSON.stringify(locator)}: expected ${expectedSourceApiRevision}, received ${actualRevision}`);
       }
       if (fields.some((field) => field.needsInput)) throw new Error("请先补齐调试恢复字段，再保存用例草稿。");
@@ -1505,7 +1568,7 @@ function setContainerOperations(
       container.apis[index] = updated;
       const deletions = removalTargets.flatMap((target) => knownExactFile(current.workspace, casePath(locator, target)));
       return { value: { testCase: input, sourceApiRevision: getSourceApiRevision(updated) }, ...(deletions.length ? { deletions } : {}) };
-    });
+    }, { kind: "case", locator, case: { id: locator.caseId, scope: locator.scope }, deletes: deletedCases });
   }
 
   async function deleteCase(locatorValue: CaseLocator): Promise<void> {
@@ -1620,7 +1683,8 @@ function setContainerOperations(
       if (!environment) throw new Error(`Environment not found: ${locator.environmentId}`);
       environment.variables = variables;
       return { value: environment };
-    });
+    }, { kind: "project-asset", locator, selected: project => project.environments.find(item => item.id === locator.environmentId),
+      dependencies: workspace => workspaceEnvironmentDependencies(workspace, locator, locator.environmentId) });
   }
 
   async function setEnvironmentBaseUrls(locatorValue: EnvironmentLocator, baseUrlsValue: Record<string, string>): Promise<Environment> {
@@ -1633,7 +1697,8 @@ function setContainerOperations(
       if (!environment) throw new Error(`Environment not found: ${locator.environmentId}`);
       environment.baseUrls = baseUrls;
       return { value: environment };
-    });
+    }, { kind: "project-asset", locator, selected: project => project.environments.find(item => item.id === locator.environmentId),
+      dependencies: workspace => workspaceEnvironmentDependencies(workspace, locator, locator.environmentId, baseUrls) });
   }
 
   async function setProjectGlobals(locatorValue: ProjectLocator, inputValue: ProjectGlobalSettings): Promise<ProjectGlobalSettings> {
@@ -1727,7 +1792,7 @@ function setContainerOperations(
       if (input.create ? index >= 0 : index < 0) throw new Error("Dataset create/update identity conflict");
       if (input.create) assets.push(input.asset); else assets[index] = input.asset;
       return { value: input.asset };
-    });
+    }, { kind: "project-asset", locator: input.locator, selected: project => project.datasets?.find(item => item.id === input.locator.datasetId) });
   }
 
   function saveSuite(value: SuiteSaveInput): Promise<import("@apicc/core").SuiteAsset> {
@@ -1743,7 +1808,8 @@ function setContainerOperations(
       const diagnostics = projectAssetImportDiagnostics(project);
       if (diagnostics.length) throw new Error(diagnostics.map((item) => item.message).join("; "));
       return { value: input.asset };
-    });
+    }, { kind: "project-asset", locator: input.locator, selected: project => project.suites?.find(item => item.id === input.locator.suiteId),
+      dependencies: (workspace, project) => localTestingDependencies(workspace, project, input.locator, undefined, input.asset) });
   }
 
   function deleteTestingAsset(value: TestingDeleteInput): Promise<void> {
@@ -1773,7 +1839,8 @@ function setContainerOperations(
       input.status = found.project.workflows[index].status;
       found.project.workflows[index] = input;
       return { value: input };
-    });
+    }, { kind: "project-asset", locator, selected: project => project.workflows.find(item => item.id === locator.workflowId),
+      dependencies: (workspace, project) => localTestingDependencies(workspace, project, locator, input) });
   }
 
   async function setWorkflowStatus(locatorValue: WorkflowLocator, status: WorkflowStatus): Promise<{ workflow: Workflow; errors: string[]; warnings: string[] }> {
@@ -2022,8 +2089,8 @@ function setContainerOperations(
       const parsed = ContractWorkspaceSchema.parse(candidate);
       const deletions = knownFilesWithPrefix(workspace, projectPrefix(source.group.id, source.project.id));
       await verifyWorkspaceDirectory(current.directory);
-      const saved = await storage.save(current.root, parsed, { expectedRevision: current.revision, deletions });
-      active = { ...current, workspace: parsed, revision: saved.revision };
+      const saved = await storage.save(current.root, parsed, await workspaceSaveOptions(current, deletions));
+      active = { ...current, partial: undefined, workspace: parsed, revision: saved.revision };
     });
   }
 
@@ -2194,6 +2261,7 @@ function setContainerOperations(
     assertDraftWriteContext,
     resolveRoot,
     open,
+    observeDisk,
     refreshFromDisk,
     create,
     ensureDefaultGroup,

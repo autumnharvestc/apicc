@@ -1115,6 +1115,7 @@ async function loadGroups(
 
 export interface DecodeContractWorkspaceOptions {
   faultInjector?: LoadFaultInjector;
+  assertDirectory?: () => Promise<void>;
 }
 
 async function assembleWorkspace(
@@ -1150,13 +1151,13 @@ async function assembleWorkspace(
 }
 
 export async function validateProspectiveContractFiles(
-  files: ReadonlyMap<string, string>,
+  files: ReadonlyMap<string, string | Uint8Array>,
 ): Promise<{ problems: LoadProblem[]; readOnly: boolean }> {
   const snapshot = new Map<string, { size: number; content: Buffer }>();
   for (const [path, content] of files) {
     const safePath = validateRelativeFilePath(path);
     if (safePath !== path) throw new TypeError("Prospective contract file path is not canonical");
-    const bytes = Buffer.from(content, "utf8");
+    const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
     snapshot.set(safePath, { size: bytes.byteLength, content: bytes });
   }
   const state = await assembleWorkspace(".", [], "prospective", snapshot);
@@ -1167,7 +1168,7 @@ export async function decodeContractWorkspace(
   root: string,
   options: DecodeContractWorkspaceOptions = {},
 ): Promise<WorkspaceLoadState<ContractWorkspace>> {
-  const problems = await recoverPendingWriteJournal(root, options.faultInjector);
+  const problems = await recoverPendingWriteJournal(root, options.faultInjector, options.assertDirectory);
   let revision = "empty";
   try {
     revision = await calculateWorkspaceRevision(root);
@@ -1179,7 +1180,7 @@ export async function decodeContractWorkspace(
 
 /** Assemble the returned revision and model from the same bytes. A second disk
  * revision detects writers outside the journal protocol as well. */
-export async function readStableContractWorkspace(root: string): Promise<WorkspaceLoadState<ContractWorkspace>> {
+export async function readStableContractWorkspace(root: string, assertDirectory?: () => Promise<void>): Promise<WorkspaceLoadState<ContractWorkspace>> {
   return withWorkspaceSnapshotLock(root, async (assertLease) => {
     const snapshot = await captureWorkspaceDefinition(root, (path) => {
       if (path.endsWith(".json")) return false; // Synchronization content needs only its captured size.
@@ -1193,7 +1194,7 @@ export async function readStableContractWorkspace(root: string): Promise<Workspa
     await verifyWorkspaceDefinition(root, snapshot);
     if (state.readOnly) throw new WorkspaceStorageError("read-only", "Workspace has unresolved load or recovery problems and is read-only");
     return state;
-  });
+  }, assertDirectory);
 }
 
 function isApiFilePath(path: string, finalSegments: readonly string[]): boolean {

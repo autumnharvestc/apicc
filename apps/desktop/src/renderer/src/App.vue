@@ -5,7 +5,7 @@
 // M8 布局层级改造：九平铺视图收敛为「图标导航栏（ModuleRail）→ 树面板（带模块标题
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
+import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
 import { EllipsisOutlined } from "@ant-design/icons-vue";
 import { useI18n } from "vue-i18n";
 import {
@@ -29,7 +29,8 @@ import type { ApiRequest, DebugFieldState } from "@apicc/core";
 import type { OnlineTreeNodeDTO, TreeNodeDTO } from "../../shared/tree-dto.js";
 import type { LocalTreeNodeDTO } from "../../shared/tree-dto.js";
 import type { NodeCreatedDTO } from "../../shared/types.js";
-import { LocalWorkspaceError, LocalWorkspaceFailureSchema, localWorkspaceError, type LocalWorkspaceFailure } from "../../shared/workspace-refresh.js";
+import { LocalWorkspaceError, LocalWorkspaceFailureSchema, localWorkspaceError, type LocalWorkspaceFailure,
+  type LocalWorkspaceFailureReason, type WorkspaceObservationResult } from "../../shared/workspace-refresh.js";
 import { guardLocalDiskWrites } from "./diskRefreshPresentation.js";
 import { diskApi, diskProject, isRefreshableFailure, type DiskDraftConflict } from "./stores/diskDrafts.js";
 import { caseUnit, type EditorUnit } from "./stores/editorDiskRefresh.js";
@@ -48,6 +49,7 @@ import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
 import OnlineApiEditor from "./components/OnlineApiEditor.vue";
 import OnlineProjectAssets from "./components/online/OnlineProjectAssets.vue";
 import OnlineProjectUpdates from "./components/online/OnlineProjectUpdates.vue";
+import WorkspaceDiskUpdates from "./components/WorkspaceDiskUpdates.vue";
 import CollaborationPanel from './components/online/CollaborationPanel.vue';
 import { createCollaborationStore } from './stores/collaboration.js';
 import type { CollaborationLocalSource } from '../../shared/online/collaboration.js';
@@ -165,7 +167,7 @@ const antdThemeConfig = computed(() => ({
 
 const { t } = useI18n();
 const workspace = useWorkspaceStore(apicc);
-const diskSubmission = guardLocalDiskWrites(apicc, () => workspace.hasPendingDiskRefresh());
+const diskSubmission = guardLocalDiskWrites(apicc, () => workspace.hasPendingDiskRefresh(), () => workspace.observeAfterWrite());
 const localApi = diskSubmission.api;
 const tree = useTreeStore(localApi, workspace);
 const projectTransitionCount = ref(0);
@@ -696,12 +698,16 @@ const onlineProjectAccessLost = computed(() => !!onlineDirectoryContext.value &&
 function checkActiveOnlineProject() {
   if (onlineDirectoryContext.value) void online.execution.checkForUpdates().catch(reportError);
 }
+function checkForegroundUpdates() {
+  checkActiveOnlineProject();
+  if (isHome.value || !onlineMode.value) void workspace.observeDisk();
+}
 onMounted(() => {
-  window.addEventListener("focus", checkActiveOnlineProject);
+  window.addEventListener("focus", checkForegroundUpdates);
   window.addEventListener("online", checkActiveOnlineProject);
 });
 onBeforeUnmount(() => {
-  window.removeEventListener("focus", checkActiveOnlineProject);
+  window.removeEventListener("focus", checkForegroundUpdates);
   window.removeEventListener("online", checkActiveOnlineProject);
 });
 watch(() => online.execution.appliedUpdate, () => online.refreshAppliedProjectTree());
@@ -846,6 +852,49 @@ const errorMessage = ref("");
 const diskError = ref<LocalWorkspaceFailure | null>(null);
 const diskNotice = ref("");
 const diskRefreshEpoch = ref(0);
+const diskUpdatePreview = shallowRef<WorkspaceObservationResult | null>(null);
+const diskUpdatePreviewStale = ref(false);
+const diskUpdateApplying = ref(false);
+const diskUpdateApplyIssue = ref<LocalWorkspaceFailureReason | null>(null);
+const showLocalDiskUpdates = computed(() => workspace.opened && (isHome.value || !onlineMode.value));
+watch([() => workspace.root, () => workspace.workspace?.id, showLocalDiskUpdates], () => {
+  diskUpdatePreview.value = null;
+  diskUpdatePreviewStale.value = false;
+});
+watch(() => workspace.diskObservationIssue, (issue) => {
+  if (issue === "directory-changed" || issue === "directory-unavailable" || issue === "workspace-replaced") diskUpdatePreview.value = null;
+});
+
+function openDiskUpdatePreview() {
+  diskUpdateApplyIssue.value = null;
+  diskUpdatePreviewStale.value = false;
+  diskUpdatePreview.value = workspace.diskObservation;
+}
+
+async function applyDiskUpdatePreview() {
+  const pending = diskUpdatePreview.value;
+  if (!pending || diskUpdateApplying.value || pending.root !== workspace.root || pending.workspaceId !== workspace.workspace?.id) return;
+  diskUpdateApplyIssue.value = null;
+  diskUpdateApplying.value = true;
+  try {
+    await loadLocalWorkspaceFromDisk(pending.revision);
+  } catch (error) {
+    if (pending !== diskUpdatePreview.value) return;
+    if (error instanceof LocalWorkspaceError && error.failure.reason === "revision-conflict") {
+      const observation = await workspace.observeDisk();
+      if (pending !== diskUpdatePreview.value) return;
+      if (observation) {
+        dismissError();
+        diskUpdatePreview.value = observation;
+        diskUpdatePreviewStale.value = true;
+        return;
+      }
+    }
+    diskUpdateApplyIssue.value = error instanceof LocalWorkspaceError ? error.failure.reason : "failed";
+  } finally {
+    diskUpdateApplying.value = false;
+  }
+}
 const resolvingDiskConflict = ref<DiskDraftConflict | null>(null);
 let diskConflictTrigger: HTMLElement | null = null;
 const presentedError = computed(() => {
@@ -873,56 +922,59 @@ function dismissError() {
 
 async function refreshLocalWorkspaceFromDisk(): Promise<void> {
   const root = workspace.root;
+  try { await loadLocalWorkspaceFromDisk(); }
+  catch (error) { if (workspace.root === root) reportError(error); }
+}
+
+async function loadLocalWorkspaceFromDisk(observedRevision?: string): Promise<void> {
+  const root = workspace.root;
   if (workspace.hasPendingDiskRefresh()) return;
   diskNotice.value = "";
-  try {
-    if (diskSubmission.writing) throw localWorkspaceError("busy", "A workspace write is in progress.", root);
-    const result = await workspace.refreshFromDisk(async (receipt, isCurrent) => {
-      reconcileEnvironmentDrafts(envs, receipt);
-      workflowDesign.reconcileDiskRefresh(receipt);
-      const currentEnvironmentProject = envs.requestedProject(root);
-      await Promise.all([
-        editor.reconcileDiskRefresh(receipt, isCurrent, (entry, key) => ({
-          request: design.hasControlDrafts(entry, "contract.request"),
-          asset: design.hasDocumentDraft(key) || design.hasControlDrafts(entry),
-          cases: cases.diskDraftUnits(key, entry.generation),
-        })).then(() => { if (isCurrent()) design.reconcileDiskDrafts(root); }),
-        testing.reconcileDiskRefresh(receipt, isCurrent),
-        currentEnvironmentProject && findProjectNode(receipt.tree, currentEnvironmentProject) ? envs.load(currentEnvironmentProject) : undefined,
-      ]);
-      if (!isCurrent()) return;
-      const removedRequests = Object.values(requestTabs.tabs).filter((tab) =>
-        tab.source.kind === "asset" && tab.root === root
-        && !diskApi(diskProject(receipt.workspace, tab.project), tab.source.locator)
-        && !requestHasDrafts(tab.tabId) && !debug.requestTabs[tab.tabId]?.result
-        && !Object.values(debug.caseRuns).some((run) => run.tabId === tab.tabId && (run.result || run.error)));
-      if (removedRequests.length) {
-        const previousActive = requestTabs.activeId;
-        await requestTabs.closeMany(removedRequests.map((tab) => tab.tabId), true);
-        if (!isHome.value && !onlineMode.value && previousActive !== requestTabs.activeId && requestTabs.activeId) {
-          await activateRequestTab(requestTabs.activeId, true, isCurrent);
-        }
+  if (diskSubmission.writing) throw localWorkspaceError("busy", "A workspace write is in progress.", root);
+  const result = await workspace.refreshFromDisk(async (receipt, isCurrent) => {
+    reconcileEnvironmentDrafts(envs, receipt);
+    workflowDesign.reconcileDiskRefresh(receipt);
+    const currentEnvironmentProject = envs.requestedProject(root);
+    await Promise.all([
+      editor.reconcileDiskRefresh(receipt, isCurrent, (entry, key) => ({
+        request: design.hasControlDrafts(entry, "contract.request"),
+        asset: design.hasDocumentDraft(key) || design.hasControlDrafts(entry),
+        cases: cases.diskDraftUnits(key, entry.generation),
+      })).then(() => { if (isCurrent()) design.reconcileDiskDrafts(root); }),
+      testing.reconcileDiskRefresh(receipt, isCurrent),
+      currentEnvironmentProject && findProjectNode(receipt.tree, currentEnvironmentProject) ? envs.load(currentEnvironmentProject) : undefined,
+    ]);
+    if (!isCurrent()) return;
+    const removedRequests = Object.values(requestTabs.tabs).filter((tab) =>
+      tab.source.kind === "asset" && tab.root === root
+      && !diskApi(diskProject(receipt.workspace, tab.project), tab.source.locator)
+      && !requestHasDrafts(tab.tabId) && !debug.requestTabs[tab.tabId]?.result
+      && !Object.values(debug.caseRuns).some((run) => run.tabId === tab.tabId && (run.result || run.error)));
+    if (removedRequests.length) {
+      const previousActive = requestTabs.activeId;
+      await requestTabs.closeMany(removedRequests.map((tab) => tab.tabId), true);
+      if (!isHome.value && !onlineMode.value && previousActive !== requestTabs.activeId && requestTabs.activeId) {
+        await activateRequestTab(requestTabs.activeId, true, isCurrent);
       }
-      const active = tabs.activeTab;
-      for (const tab of tabs.tabs) {
-        if ("projectLocator" in tab && tab.workspaceRef.dir === root && !findProjectNode(receipt.tree, tab.projectLocator)) {
-          tabs.markOffline(tab.tabId, "project-missing");
-          if (active?.tabId === tab.tabId && !tabs.projectHasDrafts(tab.tabId)) tabs.activateHome();
-        }
+    }
+    const active = tabs.activeTab;
+    for (const tab of tabs.tabs) {
+      if ("projectLocator" in tab && tab.workspaceRef.dir === root && !findProjectNode(receipt.tree, tab.projectLocator)) {
+        tabs.markOffline(tab.tabId, "project-missing");
+        if (active?.tabId === tab.tabId && !tabs.projectHasDrafts(tab.tabId)) tabs.activateHome();
       }
-      if (tree.selected && !findLocalNodeByKey(tree.selected.key)) {
-        const context = selectedProjectContext.value;
-        const fallback = context?.root === root ? findProjectNode(receipt.tree, context.locator) : null;
-        if (fallback) tree.select(fallback); else tree.selected = null;
-      }
-    });
-    if (!result || workspace.root !== root) return;
-    dismissError();
-    diskNotice.value = root;
-    diskRefreshEpoch.value++;
-  } catch (e) {
-    if (workspace.root === root) reportError(e);
-  }
+    }
+    if (tree.selected && !findLocalNodeByKey(tree.selected.key)) {
+      const context = selectedProjectContext.value;
+      const fallback = context?.root === root ? findProjectNode(receipt.tree, context.locator) : null;
+      if (fallback) tree.select(fallback); else tree.selected = null;
+    }
+  }, observedRevision);
+  if (!result || workspace.root !== root) return;
+  dismissError();
+  diskNotice.value = root;
+  diskRefreshEpoch.value++;
+  diskUpdatePreview.value = null;
 }
 
 function requestDiskConflictResolution(conflict: DiskDraftConflict, event: Event) {
@@ -2182,6 +2234,9 @@ function focusDebugSection(section: HTMLElement | undefined) {
   <ConfigProvider :locale="antdLocale" :theme="antdThemeConfig">
     <a-layout class="app" data-testid="app-root">
       <TopBar :workspace="workspace" :api="apicc" :online="online" :plugins="plugins" :tabs="tabs" :ai="ai" :report-error="reportError" />
+      <WorkspaceDiskUpdates v-if="showLocalDiskUpdates" :observation="workspace.diskObservation" :preview="diskUpdatePreview"
+        :issue="workspace.diskObservationIssue" :apply-issue="diskUpdateApplyIssue" :applying="diskUpdateApplying" :preview-stale="diskUpdatePreviewStale"
+        @review="openDiskUpdatePreview" @apply="applyDiskUpdatePreview" @close="diskUpdatePreview = null" />
       <a-alert v-if="errorMessage" class="app-error" type="error" show-icon data-testid="app-error" @close="dismissError">
         <template #message>{{ t("app.error") }}: {{ presentedError }}</template>
         <template v-if="diskError && (!diskError.root || diskError.root === workspace.root) && isRefreshableFailure(diskError)" #action>

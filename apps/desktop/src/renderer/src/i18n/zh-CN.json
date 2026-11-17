@@ -364,10 +364,23 @@
       "directory-unavailable": "选中的工作区目录无法访问。",
       "workspace-unreadable": "选中的目录没有可读取的工作区元数据。",
       "project-missing": "工作区中已找不到选中的项目。",
+      "asset-changed": "磁盘上的资产已变化。草稿已保留，请查看磁盘版本后再保存。",
+      "asset-missing": "磁盘上的资产已删除。草稿已保留。",
+      "dependency-changed": "此编辑依赖的内容已在磁盘上变化。草稿已保留，请查看磁盘版本后再保存。",
       "context-changed": "当前工作区已切换。请打开目标工作区后重试。",
       "workspace-replaced": "该目录现已包含另一个工作区。请打开该工作区后继续。",
       "failed": "无法从磁盘刷新工作区。"
     }
+  },
+  "diskUpdate": {
+    "singleProject": "{name} 项目有磁盘更新。",
+    "singleGroupedProject": "{group}中的「{name}」有磁盘更新。",
+    "multipleProjects": "有 {count} 个项目在磁盘上更新。",
+    "workspace": "工作区有磁盘更新。",
+    "title": "工作区磁盘变更",
+    "apply": "应用磁盘更新",
+    "noChanges": "磁盘内容与当前工作区视图一致。",
+    "previewStale": "打开预览后磁盘又有变化，请核对最新变更后再应用。"
   },
   "workspace": {
     "problems": "问题文件",

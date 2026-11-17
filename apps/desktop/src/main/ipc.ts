@@ -15,7 +15,7 @@ import { IpcChannel, IpcEvent, type IpcChannelName } from "../shared/channels.js
 import { StressRunResultSchema, type ApiDetail, type ContainerSaveInput, type ContainerTarget, type CreateApiFromRequestDraftInput, type DebugInput, type DebugOutput, type DebugHistoryReplayResult, type DebugHistoryRestoreResult, type DebugFileReference, type EnvCreateInput, type ImportApplyInput, type ImportApplyResult, type ImportExchangeDiagnostic, type ImportPlanInput, type ImportPlanResult, type ImportPreviewInput, type ImportPreviewResult, type ImportUndoInput, type NodeCreateInput, type NodeCreatedDTO, type OpenResult, type RunCollectionInput, type RunSummaryDTO, type StressRunInput, type StressRunOutput, type StressRunResult, type StressRunSummaryDTO, type WfCreateInput, type WfImpactInput, type WfRunInput, type ProjectGlobalSettings, type WorkflowSummary } from "../shared/types.js";
 import { parseIpcArgs, type IpcArgsMap, type IpcResultMap, type IpcTransportResultMap } from "../shared/ipc-contract.js";
 import { ProjectLocatorSchema } from "../shared/locations.js";
-import { LocalWorkspaceError, localWorkspaceFailureChannels, type LocalWorkspaceFailure, type WorkspaceRefreshInput } from "../shared/workspace-refresh.js";
+import { LocalWorkspaceError, localWorkspaceFailureChannels, type LocalWorkspaceFailure, type WorkspaceObservationInput, type WorkspaceRefreshInput } from "../shared/workspace-refresh.js";
 import type { ApiLocator, ApiParentLocator, CaseLocator, CollectionLocator, ComponentLocator, EnvironmentLocator, FolderLocator, GroupLocator, ModelLocator, ProjectLocator, WorkflowLocator, WorkspaceLocator } from "../shared/locations.js";
 import { localTreeNodeKey } from "../shared/tree-dto.js";
 import type { OnlineFilesBatchInput, OnlineProjectMappingInput, OnlineWorkspaceOpenInput } from "../shared/online/types.js";
@@ -481,6 +481,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const input = a[0] as WorkspaceRefreshInput;
         const refreshed = await session.refreshFromDisk(input, () => localActivities.has(input.root));
         return { ...refreshed, tree: toTreeNode(refreshed.workspace) } satisfies IpcResultMap[typeof IpcChannel.WsRefresh];
+      }
+      case IpcChannel.WsObserve: {
+        const input = a[0] as WorkspaceObservationInput;
+        return session.observeDisk(input, () => localActivities.has(input.root)) satisfies Promise<IpcResultMap[typeof IpcChannel.WsObserve]>;
       }
       case IpcChannel.WsOpen: {
         const opened = await session.open(a[0] as string, (commit, verifyTarget) => switchWorkspace(owner, commit, verifyTarget), a[1] as ProjectLocator | undefined);
@@ -1355,7 +1359,7 @@ export function createIpcDeps(options: IpcDepsOptions) {
     catch (error) {
       if (!workspaceFailureChannels.has(channel)) throw error;
       const reason = error instanceof LocalWorkspaceError ? error.failure.reason : error instanceof WorkspaceStorageError
-        ? error.reason : channel === IpcChannel.WsRefresh ? "failed" : undefined;
+        ? error.reason : channel === IpcChannel.WsRefresh || channel === IpcChannel.WsObserve ? "failed" : undefined;
       if (!reason) throw error;
       const candidate = channel === IpcChannel.WsOpen ? args[1] : argument;
       const raw = candidate && typeof candidate === "object"

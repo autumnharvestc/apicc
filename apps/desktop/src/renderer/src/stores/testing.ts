@@ -1,25 +1,11 @@
 import { reactive } from "vue";
-import type { ContractProject, DatasetAsset, EvidenceIdentity, SuiteAsset, SuitePreview, SuiteRunOverrides } from "@apicc/core";
+import type { DatasetAsset, EvidenceIdentity, SuiteAsset, SuitePreview, SuiteRunOverrides } from "@apicc/core";
 import type { ApiccApi, WorkspaceRefreshResult } from "../../../shared/types.js";
 import type { ProjectLocator } from "../../../shared/locations.js";
 import type { AssertionOperatorDTO, EvidenceInvocation, SuiteInvocation, SuiteOutput, TestingAssets } from "../../../shared/testing.js";
 import { LocalWorkspaceError, type LocalWorkspaceFailure } from "../../../shared/workspace-refresh.js";
-import { currentDiskRead, diskApi, diskProject, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
-
-function suiteDependencies(project: ContractProject | undefined, locator: ProjectLocator, suite: SuiteAsset): unknown {
-  if (!project) return null;
-  return {
-    dataset: project.datasets?.find((item) => item.id === suite.datasetId),
-    environment: project.environments.find((item) => item.id === suite.environmentId),
-    selection: suite.selection.kind === "query"
-      ? suite.selection.collectionIds?.map((id) => project.collections.some((item) => item.id === id))
-      : suite.selection.entries.map((entry) => {
-        if (entry.kind === "workflow") return project.workflows.find((item) => item.id === entry.workflowId);
-        const api = diskApi(project, { ...locator, ...entry });
-        return api && { request: api.contract.request, cases: api.cases.filter((item) => item.id === entry.caseId) };
-      }),
-  };
-}
+import { currentDiskRead, diskProject, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
+import { localTestingDependencies } from "../../../shared/workspace-testing-dependencies.js";
 
 export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () => boolean; getActive?: () => { root: string; project: ProjectLocator; readOnly: boolean } | null }) {
   let generation = 0;
@@ -221,7 +207,8 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       const incoming = isDataset ? after?.datasets?.find((item) => item.id === current.id) : after?.suites?.find((item) => item.id === current.id);
       const draftChanged = store.creating ? !!incoming : !sameDiskValue(JSON.parse(store.snapshot), incoming);
       const dependenciesChanged = store.suite
-        ? !sameDiskValue(suiteDependencies(before, context.project, store.suite), suiteDependencies(after, context.project, store.suite))
+        ? !sameDiskValue(localTestingDependencies(receipt.previousWorkspace, before, context.project, undefined, store.suite),
+          localTestingDependencies(receipt.workspace, after, context.project, undefined, store.suite))
         : false;
       const epoch = diskEpoch, token = generation;
       const restore = () => {

@@ -3,9 +3,50 @@
 import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import type { ApiccApi } from "../../../src/shared/types.js";
+import type { WorkspaceObservationResult } from "../../../src/shared/workspace-refresh.js";
 import { contractAssetFixture } from "../helpers/contract-assets.js";
 
 describe("workspace store", () => {
+  it("observes a changed project without applying it, and passes the approved revision to refresh", async () => {
+    const { api, root, projectLocator } = await contractAssetFixture();
+    const store = useWorkspaceStore(api);
+    await store.open(root);
+    const original = store.tree;
+    const observed = { root, workspaceId: projectLocator.workspaceId, revision: store.revision, changes: [
+      { project: projectLocator, name: "Other project", kind: "modified", changes: [] },
+    ] } satisfies WorkspaceObservationResult;
+    const read = vi.spyOn(api, "wsObserve").mockResolvedValueOnce(observed);
+    const refresh = vi.spyOn(api, "wsRefresh");
+    await Promise.all([store.observeDisk(), store.observeDisk()]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(store.diskObservation?.changes[0]?.name).toBe("Other project");
+    expect(store.tree).toBe(original);
+    expect(refresh).not.toHaveBeenCalled();
+    await store.refreshFromDisk(async () => undefined, observed.revision);
+    expect(refresh).toHaveBeenCalledWith({ root, workspaceId: projectLocator.workspaceId, observedRevision: observed.revision });
+    expect(store.diskObservation).toBeNull();
+  });
+
+  it("ignores a late disk observation after opening another root with the same workspace ID", async () => {
+    const { api, root, projectLocator } = await contractAssetFixture();
+    const store = useWorkspaceStore(api);
+    const realOpen = api.wsOpen.bind(api);
+    const another = `${root}-copy`;
+    vi.spyOn(api, "wsOpen").mockImplementation(async (path) => ({ ...await realOpen(root), root: path }));
+    await store.open(root);
+    let complete!: (result: WorkspaceObservationResult) => void;
+    vi.spyOn(api, "wsObserve").mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const checking = store.observeDisk();
+    await Promise.resolve();
+    await store.open(another);
+    complete({ root, workspaceId: projectLocator.workspaceId, revision: "2".repeat(64), changes: [
+      { project: projectLocator, name: "Old root only", kind: "added", changes: [] },
+    ] });
+    await checking;
+    expect(store.root).toBe(another);
+    expect(store.diskObservation).toBeNull();
+  });
+
   it("keeps the existing renderer tree and metadata on a canonical reuse receipt", async () => {
     const { api, root } = await contractAssetFixture();
     const store = useWorkspaceStore(api);
