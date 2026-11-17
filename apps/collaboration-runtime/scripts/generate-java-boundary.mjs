@@ -29,7 +29,9 @@ function wireBoundary(root) {
   }
   return convert(root, "root");
 }
-const document = { formatVersion: 1, coreBuildIdentity: await coreBuildIdentity() };
+// Prevent a Windows worktree's stale CRLF sources from producing a boundary
+// that only matches its own compiled Core. Deployed runtimes still hash raw bytes.
+const document = { formatVersion: 1, coreBuildIdentity: await coreBuildIdentity({ requireLf: true }) };
 for (const [name, schema] of Object.entries({ request: RequestSchema, response: ResponseSchema, error: ErrorSchema })) document[name] = z.toJSONSchema(wireBoundary(schema), { target: "draft-2020-12", io: "input", reused: "ref" });
 function requireLocalRefs(value) {
   if (!value || typeof value !== "object") return;

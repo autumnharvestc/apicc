@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 /** Bind the actual installed Core JS build, not a protocol/version constant.
  * Only a fixed package resolution is used; no request-selected paths/modules.
  */
-export async function coreBuildIdentity(): Promise<string> {
+export async function coreBuildIdentity({ requireLf = false } = {}): Promise<string> {
   const root = dirname(dirname(fileURLToPath(import.meta.resolve("@apicc/core/collaboration"))));
   const files: string[] = [];
   async function collect(directory: string): Promise<void> {
@@ -17,6 +17,13 @@ export async function coreBuildIdentity(): Promise<string> {
   }
   await collect(root);
   const hash = createHash("sha256");
-  for (const path of files.sort()) { const name = relative(root, path).replaceAll("\\", "/"); const content = await readFile(path); hash.update(name); hash.update("\0"); hash.update(String(content.length)); hash.update("\0"); hash.update(content); }
+  for (const path of files.sort()) {
+    const name = relative(root, path).replaceAll("\\", "/");
+    const content = await readFile(path);
+    if (requireLf && content.includes("\r\n")) {
+      throw new Error(`CRLF in compiled Core file ${name}; rebuild Core from LF sources before generating or checking the Java boundary.`);
+    }
+    hash.update(name).update("\0").update(String(content.length)).update("\0").update(content);
+  }
   return hash.digest("hex");
 }

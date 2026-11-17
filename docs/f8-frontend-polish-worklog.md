@@ -499,3 +499,19 @@ Windows 定向验证 309 项通过，包含主进程 157 项、store 与组件 6
 最终包的类型检查、构建、渲染产物隔离和启动冒烟通过。重新生成的执行及协作服务产物通过边界一致性检查。在线执行、在线项目和相邻 AI 入口共 173 项定向回归通过。两个真实 Windows 实例从同一目录开始，A 保持前台时 B 在后台保存，A 一次保存后两笔均在盘，B 提示仍在且树未变化。B 再次改动后，A 的旧预览不能直接应用，提示重新核对。显式应用后目录更新，原请求仍在。另一实例与 A 改同一请求时，英文 720 像素窄窗仍能看到冲突与草稿，磁盘值保留了先保存的一方。最终包也重验同配置复用、独立配置并存、真实目录联接和物理替换。
 
 最终包、源码哈希和各项日志位于 `local/f8-collaboration-save/windows-final/`。提交前删除了一行无内容的文件末尾空行，重编译验证字节相同，记录为 `eof-emission.json`。本地双实例的原始记录与截图位于 `local/f8-collaboration-save/local-native-1GOZcB/`，打包后对真实 HTTPS 的在线预览日志位于 `local/f8-collaboration-save/service-qqC4n9/`，同候选的四会话提交与断回执复验位于 `local/f8-collaboration-save/service-hXn6vd/`。本轮执行定向验证，远端 CI 按用户安排留到收口时处理。
+
+#### CI110　协作边界指纹修复
+
+CI110 的品牌任务通过。Java、Linux 包测试和 Windows 打包三条日志均在生成边界的校验步骤报错，部署任务因依赖失败未启动。用 `c0e6fa13` 的 Git 归档另建 Windows 和 Linux 构建，从干净产物复现同一失败。
+
+上轮工作树有四个 Core 源文件与 Git 中的内容仅差行尾。TypeScript 把其中部分 CRLF 保留在编译产物内，本地生成及复验因此引用了同一份不一致的产物。已恢复工作树中的 LF、重新生成指纹，并使生成与检查命令在 Core 产物含 CRLF 时拒绝继续，报告具体文件。线上 Core 仍按实际字节计算身份，既有请求、响应和错误协议逐项相同。新增反例与 Windows 实际产物均验证了拒绝行为。
+
+| CI 项 | 本地快速核对 |
+| --- | --- |
+| 品牌中立门禁 | 实际 CI 入口通过，含未跟踪源码扫描。 |
+| Linux 包构建与测试 | 干净 Linux 产物生成的协作边界与干净 Windows 产物逐字节一致，两份 Java schema 校验和脚本兼容校验通过。协作协议与真实 RPC、Core 存储、桌面并发保存和渲染隔离共 107 项通过，桌面类型检查及 CLI 构建和类型检查通过。带 Git 和 Docker 的宿主另跑 CI 入口与部署配置测试 19 项通过。 |
+| 服务端测试 | Java 定向 76 项通过。新 JAR 与真实 Node runtime 联验，四会话提交、同值收束、字段冲突和丢回执核对均通过。 |
+| Windows 打包冒烟 | 干净源码使用同版本 Electron 缓存，CI 入口的 20 条命令全部通过，实际目录包启动及 source-host 后代收束通过。 |
+| Linux 部署冒烟 | 重新构建服务端和协作 runtime 镜像，真实 Compose 验证 Java 单独部署、Java 到 Node 投影、断连及密钥恢复、拒绝不匹配的运行时。 |
+
+原始日志和复验位于 `local/ci110-repair/`，容器回执位于 `local/f7f-acceptance/containers-4JgaHb/`。Linux 检查初次把 CLI 配置文件写成 `tsconfig.build.json`，随后按 CI 使用 `tsconfig.json`。有 Git 和 Docker 前提的脚本测试改在具备这些工具的宿主重跑。本轮未运行工作区或 Java 全量，部署验证集中在受影响的协作链路。
