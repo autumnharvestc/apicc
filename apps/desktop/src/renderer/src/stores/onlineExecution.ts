@@ -1,7 +1,7 @@
 import { reactive, shallowReactive, ref } from "vue";
 import { ClientConfigSchema, ProjectExecutionAgentsSchema, StressRunConfigSchema, type ProjectExecutionAgents, type TaskTarget, type AssetDelta } from "@apicc/execution/contract";
 import type { ContractProject } from "@apicc/core";
-import { findProjectApi } from "@apicc/core/workflow/references";
+import { debugTargetFacts } from "../execution/recordFacts.js";
 import type { ApiLocator } from "../../../shared/locations.js";
 import { applyProjectSave, projectSaveDependencies, sameProjectSaveValue, type ProjectSaveConflict, type ProjectSaveIntent } from "@apicc/core/collaboration/project-save";
 import type { PluginsListResult } from "../../../shared/plugins/contract.js";
@@ -494,9 +494,8 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const runId = crypto.randomUUID(); const location = plain(store.location); const sessionKey = JSON.stringify([context, location]);
       const suite = target.kind === 'suite' ? store.project?.suites?.find(item => item.id === target.suiteId) : undefined;
       const invocation = target.kind === 'debug' ? target.invocation : null;
-      const apiAsset = invocation && invocation.mode !== 'free' && store.project ? findProjectApi(store.project, invocation.locator.apiId)?.api : undefined;
-      const targetName = invocation?.mode === 'case' ? apiAsset?.cases.find(item => item.id === invocation.case.caseId && item.scope === invocation.case.scope)?.name
-        : invocation?.mode === 'request' ? apiAsset?.contract.metadata.name : target.kind === 'workflow' ? store.project?.workflows.find(item => item.id === target.workflowId)?.name
+      const targetName = invocation ? debugTargetFacts(invocation, context.scope, store.view.project ?? undefined).name
+        : target.kind === 'workflow' ? store.project?.workflows.find(item => item.id === target.workflowId)?.name
         : target.kind === 'stress' ? savedPlan?.name : suite?.name;
       const environmentId = target.kind === 'stress' ? target.plan.environmentId ?? store.environmentId : store.environmentId ?? suite?.environmentId;
       const locationName = location.kind === 'agent' ? store.agents?.agents.find(agent => agent.id === location.agentId)?.name : undefined;
