@@ -19,6 +19,7 @@ const props = defineProps<{ execution: OnlineExecutionStore; reportOnly?: boolea
 const emit = defineEmits<{ collaboration: [value: { context: import('../../../../shared/online/execution.js').OnlineExecutionContext; source: { kind: 'online-local'; runId: string } }] }>();
 const { t, te, locale } = useI18n();
 const msg = useRecordMessages();
+const duration = (value: number) => value.toLocaleString(locale.value, { maximumFractionDigits: 2 });
 const selected = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection ? selection.job : props.execution.jobs.find(job => job.jobId === props.execution.selectedJobId); });
 const fullSelected = computed(() => selected.value && isFullOnlineJob(selected.value) ? selected.value : undefined);
 const local = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' ? null : selection?.kind === 'local' && selection.runId !== props.execution.localResult?.runId ? null : props.execution.localResult; });
@@ -26,9 +27,18 @@ const report = computed(() => { const selection = props.execution.resultSelectio
 const output = computed(() => report.value?.output ?? local.value?.output);
 const stressReport=computed(()=>output.value?.kind==='stress'?output.value.result:undefined);
 const stressSummary=computed(()=>summarizeStressExecution({report:stressReport.value,agent:!local.value && props.execution.resultSelection?.kind!=='local'?fullSelected.value?.stressMetadata:undefined,local:local.value?.localStress}));
-const baseline=ref<{report:StressReportV2;execution?:StressExecutionSummary}|null>(null);
+type JobIdentity = Pick<OnlineJob, 'agentId' | 'jobId' | 'executionId'>;
+const baseline=ref<{report:StressReportV2;execution?:StressExecutionSummary;job?:JobIdentity}|null>(null);
 watch(()=>JSON.stringify(props.execution.context),()=>{baseline.value=null;},{flush:'sync'});
-function pinBaseline() {if(stressReport.value)baseline.value=JSON.parse(JSON.stringify({report:stressReport.value,execution:stressSummary.value}));}
+watch(()=>props.execution.historyRestriction, restriction=>{
+  const pinned = baseline.value?.job, denied = restriction?.job;
+  if (restriction && pinned && (!denied || pinned.agentId === denied.agentId && pinned.jobId === denied.jobId && pinned.executionId === denied.executionId)) baseline.value=null;
+},{flush:'sync'});
+function pinBaseline() {
+  if (!stressReport.value) return;
+  const job = report.value && selected.value;
+  baseline.value=JSON.parse(JSON.stringify({report:stressReport.value,execution:stressSummary.value,job:job ? {agentId:job.agentId,jobId:job.jobId,executionId:job.executionId} : undefined}));
+}
 function exportStressHtml() {
   const safeReport=stressReport.value;if(!safeReport)return;
   const html=renderStressHtml(safeReport,comparison.value?.core,{execution:stressSummary.value,comparison:comparison.value});
@@ -110,6 +120,7 @@ const recordedEnvironment = computed(() => {
   const value = output.value;
   const proven = value?.kind === 'suite' ? value.result.suite?.environmentId : value?.kind === 'debug' || value?.kind === 'stress' ? value.result.environmentId : undefined;
   const id = proven ?? (task?.target.kind === 'stress' ? task.target.plan.environmentId : undefined) ?? task?.environmentId ?? receipt.value?.environmentId;
+  if (value?.kind === 'suite' && value.result.envName) return value.result.envName;
   if (id) return receipt.value?.environmentId === id && receipt.value.environmentName ? receipt.value.environmentName : id;
   if (task?.target.kind === 'suite' && !receipt.value && value?.kind !== 'suite') return msg('notRecorded');
   if (task || selection?.kind === 'local') return t('onlineExecution.baseEnvironment');
@@ -207,7 +218,7 @@ const recordedEnvironment = computed(() => {
           <p>{{ t('onlineExecution.requestTotals', { started: output.result.requestFacts?.requestStarted ?? '—', completed: output.result.requestFacts?.requestCompleted ?? '—', exchanges: output.result.requestFacts?.httpExchanges ?? '—' }) }}</p>
           <ul><li v-for="(unit, index) in units!.invocations" :key="`invocation-${index}`">{{ unit.workflowId }} · {{ label(unit.verdict) }} <span v-if="unit.error">{{ unit.error }}</span></li>
             <li v-for="(entry, index) in units!.diagnostics" :key="`diagnostic-${index}`">{{ entry.entryId }} · {{ label(entry.status) }} <span v-if="entry.error">{{ entry.error }}</span></li></ul>
-          <ul><li v-for="(row, index) in output.result.cases" :key="index">{{ row.apiName }} / {{ row.caseName }} · {{ label(row.passed ? 'passed' : 'failed') }} · {{ row.durationMs }} ms <span v-if="row.error">{{ row.error }}</span><CaseEvidencePanel v-if="row.evidence" :evidence="row.evidence" /></li></ul>
+          <ul><li v-for="(row, index) in output.result.cases" :key="index">{{ row.apiName }} / {{ row.caseName }} · {{ label(row.passed ? 'passed' : 'failed') }} · {{ duration(row.durationMs) }} ms <span v-if="row.error">{{ row.error }}</span><CaseEvidencePanel v-if="row.evidence" :evidence="row.evidence" /></li></ul>
         </template>
       </template>
       <button v-if="stressReport" data-testid="online-stress-baseline-pin" @click="pinBaseline">{{t('stressPresentation.pin')}}</button>

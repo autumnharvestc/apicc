@@ -17,6 +17,7 @@ import { defaultExecutionCacheStorage, readExecutionCachePreferences, OnlineExec
   type ExecutionCacheStorage, type OnlineExecutionCachePreferences } from './onlineExecutionCachePreferences.js';
 type ResultSelection = { kind: 'local'; runId: string; environmentId?: string } | { kind: 'agent'; runId: string } | { kind: 'agent'; job: OnlineJob };
 type JobRef = Pick<OnlineJob,'agentId'|'jobId'|'executionId'>;
+function jobReference({ agentId, jobId, executionId }: JobRef): JobRef { return { agentId, jobId, executionId }; }
 export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; agentRef?: JobRef; error: string };
 type CachedContext = { context: OnlineExecutionContext; lastUsed: number; payloadBytes?: number; debugKeys: Set<string>;
   pending: Set<string>; uncertain: Set<string>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
@@ -202,6 +203,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     agents: null as ProjectExecutionAgents | null, project: null as ContractProject | null, saved: "", directoryDraftConflict: false, busy: false, running: false,
     localResult: null as OnlineLocalResult | null, report: null as OnlineReport | null, selectedJobId: "",
     resultSelection: null as ResultSelection | null, submissions: [] as RunRecord[],
+    historyRestriction: null as { job?: JobRef } | null,
     localPlugins: null as PluginsListResult | null, activeLocalRunId: "",
     cachePreferences: Object.freeze(initialPreferences), cachePreferenceDiagnostic: initial.diagnostic as string | null,
     cacheUsage: { currentContexts: 0, protectedContexts: 0, inactiveContexts: 0, inactivePayloadBytes: 0, overLimit: false },
@@ -488,7 +490,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       try {
         const raw = await api.onlineExecution({ operation: "run", context, runId, location, target: plain(target), expectedVersion: store.view.assets.version, environmentId: store.environmentId, ...(target.kind === 'debug' && debugSessions.has(sessionKey) ? { debugSessionId: debugSessions.get(sessionKey) } : {}), runConfig: stress ? { stress } : {}, materials: { projectId: context.scope.projectId, ...plain(store.materials) }, localOnlyRefIds: [...store.localOnlyRefIds] });
         if (location.kind === 'local') { const result = OnlineLocalResultSchema.parse(raw); if (result.runId !== runId) throw new Error('fixed-input-mismatch'); run.result = result; if (result.debugSessionId) { debugSessions.set(sessionKey, result.debugSessionId); cached.debugKeys.add(sessionKey); } }
-        else { run.job = OnlineJobSchema.parse(raw); run.agentRef = { jobId:run.job.jobId, executionId:run.job.executionId, agentId:run.job.agentId }; observeJob(context, run.job); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) { debugSessions.set(sessionKey, run.job.task.debugSessionId); cached.debugKeys.add(sessionKey); } }
+        else { run.job = OnlineJobSchema.parse(raw); run.agentRef = jobReference(run.job); observeJob(context, run.job); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) { debugSessions.set(sessionKey, run.job.task.debugSessionId); cached.debugKeys.add(sessionKey); } }
       } catch (error) { const failure = error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('output')) ? new Error('invalid-core-output') : error; run.error = failure instanceof Error ? failure.message : String(failure);
         if (/version_conflict/.test(run.error) && key(context) === key(store.context)) void store.checkForUpdates();
         throw failure;
@@ -546,6 +548,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
   function clearDeniedHistory(error: unknown, ref?: JobRef) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/\b(?:forbidden|unauthorized|job_not_found)\b|HTTP (?:401|403|404)\b/.test(message)) return;
+    store.historyRestriction = { job: ref && jobReference(ref) };
     const affected = (job: JobRef) => !ref || ref.jobId === job.jobId && ref.executionId === job.executionId && ref.agentId === job.agentId;
     store.jobs = store.jobs.filter(job => !affected(job));
     for (const receipt of store.submissions) if (receipt.job && affected(receipt.job)) receipt.job = undefined;
@@ -556,6 +559,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     }
   }
   function updateJob(job: OnlineJob, replaceList = true) {
+    if (!isFullOnlineJob(job)) store.historyRestriction = { job: jobReference(job) };
     if (store.context) observeJob(store.context, job);
     const index = store.jobs.findIndex(row => row.jobId === job.jobId);
     if (replaceList && index >= 0) store.jobs = store.jobs.map((existing, i) => i === index ? job : existing);
