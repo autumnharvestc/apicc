@@ -10,7 +10,7 @@ const messages = {
     submitting: "Submitting", uncertain: "Submission outcome unknown", back: "Back to list", technical: "Technical details",
     plan: "View schedule", run: "View this run", noRun: "This notification has no linked run.",
     unavailable: "The linked record is unavailable or you no longer have access.", returnNotifications: "Back to the notification",
-    returnSchedule: "Back to the schedule", recordId: "Run ID", requests: "Request execution",
+    returnSchedule: "Back to the schedule", recordId: "Run ID", jobId: "Job number", requests: "Request execution",
     awaiting: "Awaiting result", sessionReport: "Desktop session", time: "Execution time", submitted: "Submitted at",
     confirmRerun: "Run the selected evidence target again?", rerun: "Run again", cancel: "Cancel", report: "Report",
     trace: "Workflow trace", target: "Target", position: "Execution location", selection: "Selected task"
@@ -24,7 +24,7 @@ const messages = {
     submitting: "提交中", uncertain: "提交结果未确定", back: "返回列表", technical: "技术详情",
     plan: "查看计划", run: "查看本次运行", noRun: "此通知没有关联运行。",
     unavailable: "关联记录已不可用，或当前成员无权查看。", returnNotifications: "返回原通知",
-    returnSchedule: "返回原计划", recordId: "执行标识", requests: "请求执行情况",
+    returnSchedule: "返回原计划", recordId: "执行标识", jobId: "任务编号", requests: "请求执行情况",
     awaiting: "等待结果", sessionReport: "本次桌面会话", time: "执行时间", submitted: "提交时间",
     confirmRerun: "再次执行所选证据关联的目标？", rerun: "确认重跑", cancel: "取消", report: "报告",
     trace: "工作流轨迹", target: "目标", position: "执行位置", selection: "所选任务"

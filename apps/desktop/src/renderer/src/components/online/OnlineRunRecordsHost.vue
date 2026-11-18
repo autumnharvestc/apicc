@@ -10,6 +10,7 @@ import type { NotificationPosition, OnlineRunPane } from "../../stores/onlineSch
 import type { RunRecord } from "../../stores/onlineExecution.js";
 import type { AiStore } from "../../stores/ai.js";
 import { recordTime, useRecordMessages } from "../../execution/recordMessages.js";
+import { jobRecordFacts, shortRecordId } from "../../execution/recordFacts.js";
 import OnlineRunLaunch from "./OnlineRunLaunch.vue";
 import OnlineExecutionPanel from "./OnlineExecutionPanel.vue";
 import OnlineSchedulesPanel from "./OnlineSchedulesPanel.vue";
@@ -44,22 +45,26 @@ watch(() => schedules.value.paneRequest, request => {
   if (request && props.active && scopesMatch(e.value.context, request.context)) { hideDetail.value = false; emit("update:pane", request.pane); }
 }, { immediate: true, flush: "post" });
 onBeforeUnmount(() => { intent++; });
-type Row = { key: string; job?: OnlineJob; run?: RunRecord; name: string; kind?: string; time?: string; state: string; verdict?: string };
+type Row = { key: string; job?: OnlineJob; run?: RunRecord; name: string; targetId?: string; agentName?: string; kind?: string; time?: string | number; started?: boolean; state: string; verdict?: string };
 const rows = computed(() => {
   const result: Row[] = [], seen = new Set<string>();
   function addJob(job: OnlineJob, receipt?: RunRecord) {
     const key = jobKey(job); if (seen.has(key)) return; seen.add(key);
     const full = isFullOnlineJob(job) ? job : undefined;
     const target = full?.task.target;
-    const identity = target?.kind === "workflow" ? target.workflowId : target?.kind === "suite" ? target.suiteId : target?.kind === "debug" && target.invocation.mode !== "free" ? target.invocation.locator.apiId : undefined;
-    result.push({ key, job, run: receipt, name: full ? receipt?.targetName ?? identity ?? "#" + job.jobId : "#" + job.jobId, kind: target?.kind,
-      time: full ? receipt?.submittedAt : undefined, state: code(job.state), verdict: full && typeof full.summary?.verdict === "string" ? code(full.summary.verdict) : undefined });
+    const report = selectedKey.value === key && full?.reportState === "archived" && e.value.report?.executionId === job.executionId ? e.value.report : undefined;
+    const facts = full && jobRecordFacts(full, e.value.view, report);
+    const number = "#" + shortRecordId(job.jobId);
+    result.push({ key, job, run: receipt, name: full ? facts?.targetName || receipt?.targetName || code(full.task.target.kind) + " " + number : number,
+      targetId: facts?.targetId, agentName: full ? facts?.agentName || receipt?.locationName : undefined, kind: target?.kind,
+      time: facts?.startedAt ?? (full ? receipt?.submittedAt : undefined), started: facts?.startedAt !== undefined,
+      state: code(job.state), verdict: report ? code(report.verdict) : full && typeof full.summary?.verdict === "string" ? code(full.summary.verdict) : undefined });
   }
   for (const receipt of e.value.submissions) {
     if (receipt.agentRef && !receipt.job) continue;
     if (receipt.job) { const job = e.value.jobs.find(j => jobKey(j) === jobKey(receipt.job!)); if (job) addJob(job, receipt); continue; }
     const local = receipt.result?.output;
-    result.push({key:receipt.runId,run:receipt,name:receipt.targetName ?? receipt.runId,kind:receipt.target.kind,time:receipt.submittedAt,
+    result.push({key:receipt.runId,run:receipt,name:receipt.targetName || code(receipt.target.kind) + " #" + shortRecordId(receipt.runId),kind:receipt.target.kind,time:receipt.submittedAt,
       state:local || receipt.localReport ? code("ended") : receipt.pending ? msg("awaiting") : msg("uncertain"),
       verdict:local?.kind === "failure" || local?.kind === "stress-failure" ? code("failed") : local?.kind === "stress" ? code(local.result.verdict.status) :
         local?.kind === "debug" ? code(local.result.error || local.result.failureKind || local.result.run.failed ? "failed" : "passed") :
@@ -161,11 +166,13 @@ const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing
       <h3>{{ msg("records") }}</h3><p>{{ msg("recent") }}</p><p>{{ msg("session") }}</p>
       <div class="record-actions"><button @click="e.refresh()">{{ t("onlineExecution.refreshNow") }}</button><details><summary>{{ msg("settings") }}</summary><label>{{ t("onlineExecution.refresh") }} <input type="number" min="1" max="2147483647" :value="e.statusRefreshMs" @change="event => { try {e.setRefreshMs(Number((event.target as HTMLInputElement).value))} catch(err){reportError(err)} }" /> ms</label></details></div>
       <p v-if="!rows.length">{{ msg("noRecords") }}</p><button v-if="!rows.length" @click="changePane('launch')">{{ msg("launch") }}</button>
-      <button v-for="row in rows" :key="row.key" class="record-row" :aria-current="row.key===selectedKey" :data-record="row.key" @click="choose(row)"><strong :title="row.name">{{ row.name }}</strong>
-        <small>{{ row.job || row.run?.location.kind==='agent' ? t("onlineExecution.agent") : t("onlineExecution.local") }} · {{ row.kind ? code(row.kind) : t("onlineExecution.statusOnly") }}</small>
-        <small>{{ row.state }}<template v-if="row.verdict"> · {{ row.verdict }}</template></small><small :title="row.time">{{ recordTime(row.time,locale) ?? msg("notRecorded") }}</small></button>
+      <button v-for="row in rows" :key="row.key" class="record-row" :aria-current="row.key===selectedKey" :data-record="row.key" @click="choose(row)"><strong :title="[row.name,row.job?.jobId ?? row.run?.runId,row.targetId].filter(Boolean).join(' · ')">{{ row.name }}</strong>
+        <small>{{ row.job || row.run?.location.kind==='agent' ? t("onlineExecution.agent") : t("onlineExecution.local") }}<template v-if="row.agentName"> · {{ row.agentName }}</template> · {{ row.kind ? code(row.kind) : t("onlineExecution.statusOnly") }}</small>
+        <small>{{ row.state }}<template v-if="row.verdict"> · {{ row.verdict }}</template></small><small :title="row.time!==undefined ? String(row.time) : undefined">{{ recordTime(row.time,locale) ?? msg("notRecorded") }}</small></button>
     </aside><article class="record-detail"><button v-if="selected && !hideDetail" @click="returnList">{{ msg("back") }}</button>
-      <template v-if="selectedRow && !hideDetail"><h3>{{ selectedRow.name }}</h3><p v-if="selectedRow.time">{{ msg("submitted") }} · <time :title="selectedRow.time">{{ recordTime(selectedRow.time,locale) }}</time></p></template>
+      <template v-if="selectedRow && !hideDetail"><h3 :title="selectedRow.targetId">{{ selectedRow.name }}</h3>
+        <p v-if="selectedRow.time!==undefined">{{ selectedRow.started ? t("onlineExecution.startedAt") : msg("submitted") }} · <time :title="String(selectedRow.time)">{{ recordTime(selectedRow.time,locale) }}</time></p>
+        <p v-else>{{ msg("time") }} · {{ msg("notRecorded") }}</p></template>
       <p v-if="hideDetail || !selected">{{ msg("pick") }}</p><OnlineExecutionPanel v-show="!hideDetail && (selected || e.error)" :execution="e" report-only :ai="ai" @collaboration="emit('collaboration',$event)" />
     </article></div>
     <OnlineSchedulesPanel v-if="pane==='schedules'" :execution="e" :schedules="schedules" :draft-dirty="dirty" @report="scheduleReport" />

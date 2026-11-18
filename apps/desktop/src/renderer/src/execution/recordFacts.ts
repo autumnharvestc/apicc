@@ -1,0 +1,64 @@
+import { findProjectApi } from "@apicc/core/workflow/references";
+import type { ContractProject } from "@apicc/core";
+import type { FullOnlineJob, OnlineLocalResult, OnlineProjectView, OnlineReport } from "../../../shared/online/execution.js";
+
+type Output = OnlineLocalResult["output"];
+type Target = FullOnlineJob["task"]["target"];
+
+export function shortRecordId(value: string) {
+  return value.length > 14 ? value.slice(0, 6) + "…" + value.slice(-4) : value;
+}
+
+function targetFacts(target: Target, project?: ContractProject, output?: Output) {
+  if (target.kind === "workflow") {
+    const name = output?.kind === "workflow" && output.result.workflowId === target.workflowId ? output.result.workflowName : undefined;
+    return { id: target.workflowId, name: name || project?.workflows.find(w => w.id === target.workflowId)?.name };
+  }
+  if (target.kind === "suite") {
+    const name = output?.kind === "suite" && output.result.collectionId === target.suiteId ? output.result.collectionName : undefined;
+    return { id: target.suiteId, name: name || project?.suites?.find(s => s.id === target.suiteId)?.name };
+  }
+  if (target.kind === "stress") {
+    const plans = project?.stressPlans?.filter(item => JSON.stringify(item.plan) === JSON.stringify(target.plan));
+    return { name: plans?.length === 1 ? plans[0]?.name : undefined };
+  }
+  const invocation = target.invocation;
+  if (invocation.mode === "free") return {};
+  const locator = invocation.locator;
+  const entry = project && findProjectApi(project, locator.apiId);
+  const api = entry?.collection.id === locator.collectionId ? entry.api : undefined;
+  const outcome = output?.kind === "debug" ? output.result.outcomes.find(item => item.apiId === locator.apiId && (invocation.mode !== "case" || item.caseId === invocation.case.caseId)) : undefined;
+  return invocation.mode === "case"
+    ? { id: invocation.case.caseId, name: outcome?.caseName || api?.cases.find(item => item.id === invocation.case.caseId && item.scope === invocation.case.scope)?.name }
+    : { id: locator.apiId, name: outcome?.apiName || api?.contract.metadata.name };
+}
+
+export function outputEnvironment(output?: Output) {
+  if (output?.kind === "debug") return { id: output.result.environmentId, name: output.result.run.envName };
+  if (output?.kind === "stress") return { id: output.result.environmentId ?? undefined };
+  const report = output?.kind === "workflow" ? output.result.report : output?.kind === "suite" || output?.kind === "failure" ? output.result : undefined;
+  return { id: report?.suite?.environmentId ?? report?.executionIdentity?.environmentId, name: report?.envName };
+}
+
+function matchesTarget(target: Target, output: Output) {
+  if (output.kind === "failure") return output.targetKind === target.kind;
+  if (output.kind === "stress-failure") return target.kind === "stress";
+  if (output.kind === "workflow") return target.kind === "workflow" && output.result.workflowId === target.workflowId;
+  if (output.kind === "suite") return target.kind === "suite" && output.result.collectionId === target.suiteId;
+  return target.kind === output.kind;
+}
+
+export function jobRecordFacts(job: FullOnlineJob, view: OnlineProjectView | null, report?: OnlineReport | null) {
+  const { task } = job, assets = view?.assets;
+  const project = assets?.manifestHash === task.manifestHash && assets.contractProjectId === task.contractProjectId
+    && assets.workspaceId === task.scope.workspaceId && assets.groupId === task.scope.groupId && assets.projectId === task.scope.projectId
+    && view?.project?.id === task.contractProjectId ? view.project : undefined;
+  const archived = report?.executionId === job.executionId && job.reportState === "archived" ? report.output : undefined;
+  const output = archived && matchesTarget(task.target,archived) ? archived : undefined;
+  const target = targetFacts(task.target, project, output);
+  const environment = outputEnvironment(output);
+  const environmentId = environment.id ?? (task.target.kind === "stress" ? task.target.plan.environmentId : undefined) ?? task.environmentId;
+  return { targetId: target.id, targetName: target.name, environmentId, environmentName: environment.name || project?.environments.find(e => e.id === environmentId)?.name,
+    agentName: job.stressMetadata?.executor.id === job.agentId ? job.stressMetadata.executor.name : undefined,
+    startedAt: output && output.kind !== "stress-failure" ? output.result.startedAt : undefined };
+}

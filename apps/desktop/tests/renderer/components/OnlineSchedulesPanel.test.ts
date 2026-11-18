@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { ContractWorkspaceSchema } from '@apicc/core/schema';
 import { workspaceFixture } from '../../../../../packages/core/tests/helpers/contractFixtures.js';
@@ -531,6 +531,49 @@ it('opens the same original job report from schedule history repeatedly without 
     expect(f.executionCalls.map(input => [input.operation, input.runId])).toEqual([['status', '78'], ['report', '78'], ['status', '78'], ['report', '78']]);
     expect(f.calls.filter(input => input.operation === 'prepare' || input.operation === 'save')).toEqual([]);
   } finally { f.execution.setVisible(false); }
+});
+
+it('shows the original workflow, environment and start time only from its authorized snapshot or selected report', async () => {
+  vi.stubGlobal('matchMedia', (media: string) => ({media,matches:false,addListener() {},removeListener() {}}));
+  const f = projectFixture(true, false, 'history', 'job-history');
+  try {
+    await inspectSaved(f); await f.view.get('[data-testid="schedule-history-open"]').trigger('click'); await flushPromises();
+    await f.view.get('[data-testid="schedule-original-report"]').trigger('click'); await flushPromises();
+    const selected = f.execution.resultSelection;
+    if (selected?.kind !== 'agent' || !('job' in selected) || !('task' in selected.job)) throw Error('expected original archived job');
+    const job=selected.job, recordedId=job.task.target.kind==='workflow'?job.task.target.workflowId:'';
+    const originalView=f.execution.view!;
+    f.execution.view={...originalView, assets:{...originalView.assets,manifestHash:'c'.repeat(64)}};
+    const row=()=>f.view.get('[data-record="5/78/79"]'), title=()=>f.view.get('.record-detail h3');
+    await flushPromises();
+    expect(row().get('strong').text()).toBe('工作流 #78'); expect(title().attributes('title')).toBe(recordedId);
+    expect(row().text()).toContain('未记录');
+    const recordedProject={...f.project,id:job.task.contractProjectId,workflows:[{...f.project.workflows[0]!,id:recordedId,name:'Version-pinned workflow'}]};
+    f.execution.view={...originalView,project:recordedProject, assets:{...originalView.assets,contractProjectId:job.task.contractProjectId,manifestHash:job.task.manifestHash}};
+    await flushPromises(); expect(row().get('strong').text()).toBe('Version-pinned workflow');
+    f.execution.view={...originalView,assets:{...originalView.assets,manifestHash:'b'.repeat(64)}};
+    const startedAt='2035-01-02T03:04:05.678Z', finishedAt='2035-01-02T03:04:06.789Z';
+    const output={kind:'workflow' as const,result:{workflowId:recordedId,workflowName:'06 V2 预期失败与报告',status:'enabled' as const,
+      startedAt,finishedAt,total:1,passed:0,failed:1,skipped:0,warnings:[],nodeResults:[],
+      report:{collectionId:recordedId,collectionName:'Recorded run',envName:'原执行环境',startedAt,finishedAt,total:1,passed:0,failed:1,cases:[]}}};
+    f.execution.report={executionId:'other',verdict:'failed',output}; await flushPromises();
+    expect(row().get('strong').text()).toBe('工作流 #78');
+    f.execution.report={executionId:'79',verdict:'failed',output:{...output,result:{...output.result,workflowId:'other-workflow'}}}; await flushPromises();
+    expect(row().get('strong').text()).toBe('工作流 #78'); expect(row().text()).toContain('未记录');
+    expect(f.view.get('[data-testid="online-selected-run"]').text()).not.toContain('原执行环境');
+    f.execution.report={executionId:'79',verdict:'failed',output}; await flushPromises();
+    expect(row().get('strong').text()).toBe('06 V2 预期失败与报告'); expect(title().text()).toBe('06 V2 预期失败与报告');
+    expect(row().text()).toContain('03:04:05.678 UTC');
+    expect(f.view.get('.record-detail time').attributes('title')).toBe(startedAt);
+    expect(f.view.get('[data-testid="online-selected-run"]').text()).toContain('原执行环境');
+    const minimal=OnlineJobSchema.parse({jobId:'78',executionId:'79',agentId:'5',view:'active-status',scope:f.context.scope,state:'running',cancelState:'none',executionReleased:false,canCancel:false});
+    await f.execution.inspect(minimal); f.execution.report={executionId:'79',verdict:'failed',output}; await flushPromises();
+    expect(row().get('strong').text()).toBe('#78'); expect(f.view.find('[data-testid="online-execution-report"]').exists()).toBe(false);
+    f.execution.jobs=[OnlineJobSchema.parse({...minimal,jobId:'9007199254740993000'})]; await flushPromises();
+    const longId=f.view.get('[data-record="5/9007199254740993000/79"] strong');
+    expect(longId.text()).toBe('#900719…3000'); expect(longId.attributes('title')).toContain('9007199254740993000');
+    expect(f.executionCalls.map(call=>call.operation)).toEqual(['status','report']);
+  } finally { f.execution.setVisible(false); vi.unstubAllGlobals(); }
 });
 
 it('does not open a different original job returned for the occurrence', async () => {

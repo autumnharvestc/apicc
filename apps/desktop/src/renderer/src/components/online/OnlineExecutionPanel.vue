@@ -7,6 +7,7 @@ import { isFullOnlineJob } from '../../../../shared/online/execution.js';
 import { reportingUnits } from "@apicc/core/report/units";
 import { onlineSessionErrorKey } from '../../i18n/index.js';
 import { useRecordMessages } from '../../execution/recordMessages.js';
+import { jobRecordFacts, outputEnvironment, shortRecordId } from '../../execution/recordFacts.js';
 import ResponseViewer from "../ResponseViewer.vue";
 import WfResultDrawer from "../WfResultDrawer.vue";
 import CaseEvidencePanel from "../CaseEvidencePanel.vue";
@@ -26,6 +27,7 @@ const local = computed(() => { const selection = props.execution.resultSelection
 const report = computed(() => {
   const selection = props.execution.resultSelection, retained = props.execution.report;
   if (selection?.kind === 'local') return retained?.executionId === selection.runId ? retained : null;
+  if (selected.value && (!isFullOnlineJob(selected.value) || selected.value.reportState !== 'archived')) return null;
   return selection?.kind === 'agent' && !('job' in selection) || selected.value && selected.value.executionId !== retained?.executionId ? null : retained;
 });
 const output = computed(() => report.value?.output ?? local.value?.output);
@@ -100,8 +102,9 @@ const reason = computed(() => {
 function verdict(job: OnlineJob) { return isFullOnlineJob(job) ? label(typeof job.summary?.verdict === 'string' ? job.summary.verdict : undefined) : '—'; }
 const receipt = computed(() => {
   const selection = props.execution.resultSelection;
-  return props.execution.submissions?.find(item => selection && ('runId' in selection ? selection.runId === item.runId : item.job?.jobId === selection.job.jobId && item.job.executionId === selection.job.executionId));
+  return props.execution.submissions?.find(item => selection && ('runId' in selection ? selection.runId === item.runId : item.job?.jobId === selection.job.jobId && item.job.executionId === selection.job.executionId && item.job.agentId === selection.job.agentId));
 });
+const jobFacts = computed(() => fullSelected.value ? jobRecordFacts(fullSelected.value,props.execution.view,report.value) : undefined);
 const requestFact = computed(() => {
   if (report.value?.executionFact) return label(report.value.executionFact);
   const value = output.value;
@@ -121,13 +124,14 @@ const failureText = computed(() => {
   if (value.kind === "workflow") return value.result.nodeResults.find(row => row.error)?.error;
   return "";
 });
+const environmentFacts = computed(() => jobFacts.value
+  ? { id:jobFacts.value.environmentId, name:jobFacts.value.environmentName } : outputEnvironment(output.value));
 const recordedEnvironment = computed(() => {
   const selection = props.execution.resultSelection, task = fullSelected.value?.task;
   const value = output.value;
-  const proven = value?.kind === 'suite' ? value.result.suite?.environmentId : value?.kind === 'debug' || value?.kind === 'stress' ? value.result.environmentId : undefined;
-  const id = proven ?? (task?.target.kind === 'stress' ? task.target.plan.environmentId : undefined) ?? task?.environmentId ?? receipt.value?.environmentId;
-  if (value?.kind === 'suite' && value.result.envName) return value.result.envName;
-  if (id) return receipt.value?.environmentId === id && receipt.value.environmentName ? receipt.value.environmentName : id;
+  const id = environmentFacts.value.id ?? receipt.value?.environmentId, name = environmentFacts.value.name;
+  if (name) return name;
+  if (id) return receipt.value?.environmentId === id && receipt.value.environmentName ? receipt.value.environmentName : shortRecordId(id);
   if (task?.target.kind === 'suite' && !receipt.value && value?.kind !== 'suite') return msg('notRecorded');
   if (task || selection?.kind === 'local') return t('onlineExecution.baseEnvironment');
   return msg('notRecorded');
@@ -192,10 +196,12 @@ const recordedEnvironment = computed(() => {
       <p v-if="stressSelected && !stressSummary">{{t('stressPresentation.metadataNotCollected')}}</p>
       <StressExecutionSummaryView v-if="stressSelected && stressSummary && !report && !local" :execution="stressSummary" />
       <dl v-if="!selected || fullSelected" class="summary">
-        <div><dt>{{ t('onlineExecution.location') }}</dt><dd>{{ selected ? t('onlineExecution.agent') + ' · ' + (receipt?.locationName ?? selected.agentId) : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
-        <div><dt>{{ t('onlineExecution.environment') }}</dt><dd>{{ recordedEnvironment }}</dd></div>
+        <div><dt>{{ t('onlineExecution.location') }}</dt><dd :title="selected?.agentId">{{ selected ? t('onlineExecution.agent') + ' · ' + (jobFacts?.agentName || receipt?.locationName || '#' + shortRecordId(selected.agentId)) : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
+        <div><dt>{{ t('onlineExecution.environment') }}</dt><dd :title="environmentFacts.id ?? receipt?.environmentId">{{ recordedEnvironment }}</dd></div>
       </dl>
       <details v-if="!selected || fullSelected" :key="selected?.executionId ?? receipt?.runId"><summary>{{ msg("technical") }}</summary><dl class="summary">
+        <div v-if="fullSelected"><dt>{{ msg('jobId') }}</dt><dd>{{ fullSelected.jobId }}</dd></div>
+        <div v-if="jobFacts?.targetId"><dt>{{ msg('target') }}</dt><dd>{{ jobFacts.targetId }}</dd></div>
         <div><dt>{{ t('onlineExecution.snapshot') }}</dt><dd :title="fullSelected?.task.manifestHash ?? local?.manifestHash">{{ fullSelected?.task.snapshotId ?? local?.snapshotId ?? t('onlineExecution.notPrepared') }} · {{ (fullSelected?.task.manifestHash ?? local?.manifestHash)?.slice(0, 12) }}</dd></div>
         <div><dt>{{ t('onlineExecution.dispatch') }}</dt><dd>{{ label(fullSelected?.task.dispatchKind) }}</dd></div>
         <div><dt>{{ t('onlineExecution.scriptTimeout') }}</dt><dd>{{ recordedScriptTimeout ? recordedScriptTimeout + ' ms' : t('onlineExecution.notCollected') }}</dd></div>
