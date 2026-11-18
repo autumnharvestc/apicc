@@ -26,6 +26,7 @@ const pane = ref<"launch" | "records">("launch"), file = ref(""), recordsVisited
 watch(pane, value => { if (value === "records") recordsVisited.value = true; else file.value = ""; });
 const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
 const previewModule = ref<string | null>("");
+const matchingResultEnvironment = computed(() => (props.run.resultEnvironmentId ?? null) === props.environmentId);
 const selectedCollectionLocator = computed(() => props.run.target && projectSessionKey(props.run.targetRoot ?? "", props.run.target) === projectKey.value ? props.run.target : null);
 const collectionValue = (locator: CollectionLocator | null) => locator ? JSON.stringify(locator) : "";
 function projectOfCollection(locator: CollectionLocator): ProjectLocator {
@@ -110,7 +111,7 @@ async function selectObservation(record: Record<string, any>) {
         @selection="(kind, id) => { previewModule = kind === 'module' ? id : null; }" />
       <LocalRunRecords v-if="recordsVisited && props.projectLocator" v-show="pane === 'records'" :run="run" :workspace="workspace" :project="props.projectLocator" :file="file"
         :ai="ai" :report-error="reportError" @launch="pane = 'launch'" @locate-evidence="emit('locate-evidence', $event)" @collaboration="emit('collaboration', $event)" />
-      <template v-if="pane === 'launch' && selectedCollectionLocator && previewModule !== null && (!previewModule || previewModule === selectedCollectionLocator.collectionId)">
+      <template v-if="pane === 'launch' && matchingResultEnvironment && selectedCollectionLocator && previewModule !== null && (!previewModule || previewModule === selectedCollectionLocator.collectionId)">
       <div v-if="run.result" class="summary" data-testid="run-summary">
         <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
         <a-button v-if="selectedCollectionLocator" data-testid="collaboration-publish-current" @click="shareReport">{{ t('collaboration.publishToProject') }}</a-button>

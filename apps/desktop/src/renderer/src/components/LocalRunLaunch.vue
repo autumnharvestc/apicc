@@ -60,8 +60,10 @@ watch([scope, () => props.selectedCollectionLocator], () => {
 }, { immediate: true });
 watch(kind, () => { selected.value = ""; }, { flush: "sync" });
 watch([kind, selected], ([type, id]) => emit("selection", type, id), { immediate: true, flush: "sync" });
-watch([kind, selected], () => { selectionEpoch++; archive.value = ""; debugHistoryId.value = ""; inputs.value = undefined; inputsValid.value = false; allowDraft.value = false; notice.value = ""; lastPreview = undefined; resetConfirmation(); }, { flush: "sync" });
-watch(() => props.environmentId, () => { notice.value = ""; resetConfirmation(); }, { flush: "sync" });
+watch([kind, selected], () => { inputs.value = undefined; inputsValid.value = false; allowDraft.value = false; lastPreview = undefined; }, { flush: "sync" });
+watch([scope, kind, selected, () => props.environmentId, actualEnvId], () => {
+  selectionEpoch++; archive.value = ""; debugHistoryId.value = ""; notice.value = ""; resetConfirmation();
+}, { flush: "sync" });
 
 watch([scope, () => props.workspace.tree, refresh], async () => {
   const read = ++catalogueRead;

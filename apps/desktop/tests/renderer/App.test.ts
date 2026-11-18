@@ -1610,7 +1610,8 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       const currentTab = requestEditor.props("requestTab") as RequestTab;
       const freeEnvironment = editor.activeFreeSession!.envs.find((item) => item.name === "free-oauth-env");
       if (!freeEnvironment) throw new Error("Free request context did not load its project environment");
-      debug.requestTabState(currentTab).selectedEnvironmentId = freeEnvironment.id;
+      await wrapper.get('[data-testid="project-environment"]').trigger("click");
+      await expectBody(`project-env-option-${freeEnvironment.id}`).trigger("click");
       await flushPromises();
       const oauthManager = requestEditor.findComponent(OAuthManager);
       expect(oauthManager.exists()).toBe(true);
@@ -1670,7 +1671,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       } finally {
         failingApi.debugStart = originalDebugStart;
       }
-      expect(captured).toMatchObject({ mode: "free", request: { query: [
+      expect(captured).toMatchObject({ mode: "free", environmentId: freeEnvironment.id, request: { query: [
         { name: "x", value: "updated value" }, { name: "x", value: "two words" }, { name: "encoded", value: "/" },
       ] } });
       const tabState = Object.values(debug.requestTabs).find((state) => state.result?.mode === "free");
@@ -1762,7 +1763,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       } finally {
         failingApi.debugStart = previousDebugStart;
       }
-      expect(formalSend).toMatchObject({ mode: "request", locator: editor.locator, request: { query: [
+      expect(formalSend).toMatchObject({ mode: "request", environmentId: freeEnvironment.id, locator: editor.locator, request: { query: [
         { name: "x", value: "updated value" }, { name: "x", value: "two words" }, { name: "encoded", value: "/" },
       ] } });
       const convertedRequestTab = convertedRequestEditor.props("requestTab") as { tabId: string; generation: number; source: { kind: string } };

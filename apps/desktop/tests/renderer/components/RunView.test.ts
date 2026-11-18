@@ -295,6 +295,23 @@ describe("RunView", () => {
     expect(wrapper.text()).not.toContain("通过 1 条");
   });
 
+  it("keeps a finished module's archive under records when the project environment changes", async () => {
+    const { wrapper, api, workspace, project, collectionNode, run } = await mountRunView();
+    const added = await api.envCreate({locator:project.locator,name:"Linux"});
+    await workspace.refresh(); await flushPromises();
+    const submit = vi.spyOn(api,"runCollection");
+    await chooseModule(wrapper,collectionNode.id); await flushPromises();
+    await wrapper.get('[data-testid="run-btn"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="launch-open-record"]').exists()).toBe(true));
+    expect(wrapper.find('[data-testid="run-summary"]').exists()).toBe(true);
+    await wrapper.setProps({environmentId:added.id}); await flushPromises();
+    expect(wrapper.find('[data-testid="launch-open-record"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="run-summary"]').exists()).toBe(false);
+    expect(submit).toHaveBeenCalledTimes(1);
+    await wrapper.get('[data-testid="runs-history-btn"]').trigger("click"); await flushPromises();
+    expect(wrapper.find('.record-row').exists()).toBe(true); expect(run.result).toBeTruthy();
+  });
+
   it("previews single cases without loading an editor, fences old scope and captures exactly one explicit start", async () => {
     const { wrapper, api, workspace, project, collectionNode } = await mountRunView();
     const editor = wrapper.props("editor"), before = editor.activeKey;

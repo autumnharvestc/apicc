@@ -127,7 +127,11 @@ const blocked = computed(() => {
 const reason = computed(() => blocked.value || (plan.value && !props.execution.isStressConfirmed(plan.value) ? t("onlineStress.confirmationRequired") : ""));
 watch(scopeKey, () => { kind.value = "case"; selected.value = ""; launched.value = ""; busy.value = false; notice.value = ""; }, { flush: "sync" });
 watch(kind, () => { selected.value = ""; }, { flush: "sync" });
-watch([kind, selected], () => { selectionEpoch++; launched.value = ""; inputs.value = undefined; validInputs.value = false; allowDraft.value = false; origins.value = ""; notice.value = ""; }, { flush: "sync" });
+watch([kind, selected], () => { inputs.value = undefined; validInputs.value = false; allowDraft.value = false; origins.value = ""; }, { flush: "sync" });
+watch([scopeKey, kind, selected, () => props.execution.environmentId, environmentId, () => props.execution.location.kind,
+  () => props.execution.location.kind === "agent" ? props.execution.location.agentId : undefined], () => {
+  selectionEpoch++; launched.value = ""; notice.value = "";
+}, { flush: "sync" });
 watch(version, (next, previous) => {
   if (selected.value && previous && next !== previous) notice.value = label("preview-changed");
 });
@@ -179,9 +183,9 @@ async function start() {
   } finally { if (sameProject()) busy.value = false; }
 }
 async function cancel() {
-  const scope = scopeKey.value;
+  const epoch = selectionEpoch;
   try { await props.execution.cancelLocal(); }
-  catch (error) { if (mounted && scope === scopeKey.value) notice.value = failure(error); }
+  catch (error) { if (mounted && selectionEpoch === epoch) notice.value = failure(error); }
 }
 </script>
 

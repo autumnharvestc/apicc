@@ -31,6 +31,7 @@ export function useRunStore(api: ApiccApi) {
       caseOwner: null as { root: string; project: ProjectLocator } | null,
       caseRunId: null as string | null,
       result: null as RunResult | null,
+      resultEnvironmentId: undefined as string | null | undefined,
       summaries: [] as Array<RunSummaryDTO | StressRunSummaryDTO>,
       historyOpen: false,
       stressReport: null as StressReportDTO | null,
@@ -47,6 +48,7 @@ export function useRunStore(api: ApiccApi) {
         this.targetRoot = root;
         this.target = next;
         this.result = null;
+        this.resultEnvironmentId = undefined;
         this.running = activeEvidence !== null || collectionInFlight;
         return stopped;
       },
@@ -60,7 +62,10 @@ export function useRunStore(api: ApiccApi) {
         try {
           await cleanup; if (generation !== this.generation) return;
           const result = await api.runCollection({ locator: target, envName, ...(preview ? { preview } : {}) });
-          if (generation === this.generation) this.result = result;
+          if (generation === this.generation) {
+            this.result = result;
+            this.resultEnvironmentId = preview ? preview.environmentId ?? null : result.executionIdentity?.environmentId;
+          }
           return result;
         } finally {
           collectionInFlight = false;
@@ -107,7 +112,7 @@ export function useRunStore(api: ApiccApi) {
         const owner = run.kind === "stress" ? run.report.projectId : run.projectId ?? run.suite?.projectId;
         if (owner && owner !== projectId) throw new Error("历史记录不属于当前项目");
         if (run.kind === "stress") this.stressReport = run;
-        else this.result = run;
+        else { this.result = run; this.resultEnvironmentId = run.executionIdentity?.environmentId; }
         return run;
       },
       readArchiveList() { return api.runsList(); },
@@ -136,7 +141,7 @@ export function useRunStore(api: ApiccApi) {
             if (!current()) return;
             execution.input = { context: view.context, identity: capturedIdentity, invocationId: crypto.randomUUID() };
             const value = await api.rerunEvidence(execution.input);
-            if (current() && !archive) this.result = value;
+            if (current() && !archive) { this.result = value; this.resultEnvironmentId = value.executionIdentity?.environmentId; }
           } finally { if (activeEvidence === execution) { activeEvidence = null; this.running = false; } }
         })();
         return execution.completion;

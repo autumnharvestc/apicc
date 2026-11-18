@@ -30,9 +30,15 @@ it("keeps online selection read-only, preserves the exact dispatched case and on
   const requests: Array<Extract<OnlineExecutionInput, {operation:"run"}>> = [];
   let settle!: () => void;
   const gate = new Promise<void>(resolve => { settle = resolve; });
+  let finishWorkflow: (() => void) | undefined;
   const execution = createOnlineExecutionStore({ onlineExecution: async input => {
     if (input.operation !== "run") return [];
     requests.push(input);
+    if (input.target.kind === "workflow") {
+      await new Promise<void>(resolve => { finishWorkflow = resolve; });
+      return { location:{kind:"local"}, runId:input.runId, snapshotId:"66", manifestHash:"a".repeat(64), runtimeCompatibilityId:"local", scriptTimeoutMs:3000,
+        output:{kind:"failure",targetKind:"workflow",error:"fixture workflow",result:{collectionId:"",collectionName:"workflow",startedAt:"2026-10-26T16:00:00.000Z",finishedAt:"2026-10-26T16:00:00.001Z",total:0,passed:0,failed:1,cases:[]}} };
+    }
     await gate;
     throw new Error("submission-uncertain");
   }});
@@ -41,6 +47,8 @@ it("keeps online selection read-only, preserves the exact dispatched case and on
   execution.setVisible(true);
   const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
   const asset = project.collections[0]!.apis[0]!;
+  const linuxId = "00000000-0000-4000-8000-000000000055";
+  project.environments = [{id:linuxId,name:"Linux",variables:{},baseUrls:{}}];
   asset.cases = ["First", "Second"].map((name, index) => ({id:"case-"+index,name,scope:"base",parameters:{},assertions:[],preOperations:[],postOperations:[]}));
   project.workflows = [{ id: "00000000-0000-4000-8000-000000000091", name: "Enabled", status: "enabled", nodes: [{id:"noop",kind:"noop"}], edges: [] }];
   project.stressPlans = [{ formatVersion: 1, id:"saved", name:"Saved plan", updatedAt:0, plan: StressPlanSchema.parse({
@@ -87,5 +95,14 @@ it("keeps online selection read-only, preserves the exact dispatched case and on
     expect(button.attributes("disabled")).toBeUndefined();
     await origins.setValue("http://127.0.0.1:8124");
     expect(button.attributes("disabled")).toBeDefined(); expect(requests).toHaveLength(1);
-  } finally { settle(); adapter.stop(); execution.setVisible(false); }
+    await kind.setValue("workflow"); await panel.get('[data-testid="launch-target"]').setValue(true); await flushPromises();
+    await button.trigger("click"); finishWorkflow!(); await flushPromises();
+    expect(panel.text()).toContain("查看本次运行"); expect(panel.text()).toContain("运行已结束");
+    execution.environmentId = linuxId; await flushPromises();
+    expect(panel.text()).not.toContain("查看本次运行"); expect(panel.text()).not.toContain("运行已结束"); expect(requests).toHaveLength(2);
+    await button.trigger("click");
+    execution.selectLocation({kind:"agent",agentId:"11"}); finishWorkflow!(); await flushPromises();
+    expect(panel.text()).not.toContain("查看本次运行"); expect(panel.text()).not.toContain("运行已结束"); expect(requests).toHaveLength(3);
+    expect(execution.submissions[0]).toMatchObject({environmentId:linuxId,location:{kind:"local"},runId:requests[2]!.runId});
+  } finally { settle(); finishWorkflow?.(); adapter.stop(); execution.setVisible(false); }
 });

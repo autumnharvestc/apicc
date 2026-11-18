@@ -279,7 +279,8 @@ export function useDebugStore(
           responseScrollByPanel: {},
         };
         value.draftSnapshot = requestTabDraftSnapshot(value);
-        this.requestTabs[tab.tabId] = value;
+        // A component may read its previous tab while Vue is unmounting it.
+        if (!requestTabs || requestTabs.isCurrent(tab.tabId, tab.generation, tab.root)) this.requestTabs[tab.tabId] = value;
         return value;
       },
       applyFreeHistoryRestore(
@@ -346,16 +347,15 @@ export function useDebugStore(
         const state = this.requestTabs[tabId];
         if (!state || state.root !== tab.root || state.generation !== expectedGeneration
           || tab.tabId !== tabId || tab.source.kind !== "asset" || !requestTabs?.isCurrent(tabId, tab.generation, tab.root)) return false;
-        this.commitRequestTabConversion(tab, editorGeneration);
+        this.commitRequestTabConversion(tab, editorGeneration, state);
         return true;
       },
       /** Commit after canConvertRequestTab passed before any store in the conversion changes. */
-      commitRequestTabConversion(tab: RequestTab, editorGeneration: number): void {
-        const state = this.requestTabs[tab.tabId]!;
-        state.generation = tab.generation;
-        state.restoreEditorGeneration = editorGeneration;
-        state.selectedCase = null;
-        state.draftSnapshot = requestTabDraftSnapshot(state);
+      commitRequestTabConversion(tab: RequestTab, editorGeneration: number, source: RequestTabDebugState): void {
+        // Sync watchers can initialize the asset tab as soon as its generation changes.
+        const converted = { ...source, generation: tab.generation, restoreEditorGeneration: editorGeneration, selectedCase: null };
+        converted.draftSnapshot = requestTabDraftSnapshot(converted);
+        this.requestTabs[tab.tabId] = converted;
       },
       isRequestTabDirty(tabId: string): boolean {
         const value = this.requestTabs[tabId];

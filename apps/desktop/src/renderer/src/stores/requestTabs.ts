@@ -173,7 +173,7 @@ export function createRequestTabsStore(deps: RequestTabsDeps) {
 
       isCurrent(tabId: string, generation: number, root: string): boolean {
         const tab = this.tabs[tabId];
-        return !!tab && tab.root === root && tab.generation === generation;
+        return !!tab && !closing.has(tabId) && tab.root === root && tab.generation === generation;
       },
 
       canConvertFreeToAsset(

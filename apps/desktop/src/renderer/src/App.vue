@@ -1799,10 +1799,11 @@ async function saveFreeRequestAsApi(
   }
   // All fallible guards run before the first mutation. Keep these three store commits
   // in one synchronous turn: no async callback can invalidate the preflight between them.
+  const sourceDebugState = debug.requestTabs[tab.tabId]!;
   const adopted = editor.adoptCreatedApiForFreeTab(current, freeGeneration, submitted, created.detail, submittedUrlDraft);
   if (!adopted) throw new Error("接口已创建，但请求签状态未能安全转换；请从项目树打开新接口。");
   const converted = requestTabs.commitFreeToAsset(tab.tabId, created.locator);
-  debug.commitRequestTabConversion(converted, adopted.generation);
+  debug.commitRequestTabConversion(converted, adopted.generation, sourceDebugState);
 
   let refreshFailed = false;
   try {
