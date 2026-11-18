@@ -57,6 +57,7 @@ import CollaborationPanel from './components/online/CollaborationPanel.vue';
 import { createCollaborationStore } from './stores/collaboration.js';
 import type { CollaborationLocalSource } from '../../shared/online/collaboration.js';
 import type { OnlineExecutionContext } from '../../shared/online/execution.js';
+import { useLaunchMessages } from "./execution/launchMessages.js";
 import { createOnlineProjectAdapter } from "./stores/onlineProjectAdapter.js";
 import OnlineConflictDialog from "./components/OnlineConflictDialog.vue";
 import OnlineMigrateDialog from "./components/OnlineMigrateDialog.vue";
@@ -252,7 +253,8 @@ const stress = createStressStore({
 // —— 在线 store（M3-B 任务 2 装配）：同一组合根一次性创建；挂载后对上次激活的服务器
 // 尝试恢复登录态（裁定 A resume 链路，init 全程不抛）。对话框本体在组合根渲染，
 // 连接管理和服务器行共用在线 store 的账户入口。 ——
-const online = createOnlineStore({ api: apicc });
+const launchLabel = useLaunchMessages();
+const online = createOnlineStore({ api: apicc, confirmNewSubmission: id => window.confirm(launchLabel("confirmAnother", { id })) });
 const homeView = ref<InstanceType<typeof HomeView> | null>(null);
 async function manageConnections() {
   online.dialogOpen = false;
@@ -1989,16 +1991,27 @@ async function openRelatedOnlineProject(workspaceId: string, projectId: string):
   if (!source || session?.workspace.id !== source.scope.workspaceId || !project || project.myRole === "NONE") return false;
   const expected = online.executionContext(projectId);
   if (!expected || expected.serverId !== source.serverId || expected.ownerId !== source.ownerId) return false;
-  relatedRunTarget = expected;
+  const originTab = activeOnlineProjectTab.value?.tabId;
+  const intent = online.schedules.navigationIntent;
+  let target = expected;
+  relatedRunTarget = target;
   try {
     await tabs.openProjectTab({ kind: "online", workspaceId, name: session.workspace.name, baseUrl: session.baseUrl }, { id: projectId, name: project.name });
     await nextTick();
     await activeOnlineLoad;
-    return relatedRunTarget === expected && view.value === "run"
-      && JSON.stringify(onlineDirectoryContext.value) === JSON.stringify(expected)
-      && !!online.execution.project && !online.execution.projectAccessLost;
+    if (relatedRunTarget !== target || intent !== online.schedules.navigationIntent
+        || JSON.stringify(onlineDirectoryContext.value) !== JSON.stringify(expected)) return false;
+    if (online.execution.project && !online.execution.projectAccessLost) return true;
+    if (originTab) {
+      target = source;
+      relatedRunTarget = target;
+      await tabs.activateTab(originTab);
+      await nextTick();
+      await activeOnlineLoad;
+    }
+    return false;
   } finally {
-    if (relatedRunTarget === expected) {
+    if (relatedRunTarget === target) {
       relatedRunTarget = null;
       if (railGate.value.onlineActive && isViewDisabled(view.value, railGate.value)) view.value = "api";
     }

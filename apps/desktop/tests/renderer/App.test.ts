@@ -868,9 +868,9 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       }
     } finally { wrapper.unmount(); initI18n().setLocale('zh-CN'); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
   });
-  it.each(['return', 'leave'] as const)('C06 follows a notification across real project tabs during a delayed load and honors %s', async action => {
+  it.each(['return', 'leave', 'revoked', 'job-deleted', 'other-tab'] as const)('C06 follows a notification across real project tabs during a delayed load and honors %s', async action => {
     const asset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
-    const projects = ['33', '44'].map(id => ({ id, groupId: '22', name: 'Project ' + id, myRole: 'EDITOR' as const }));
+    const projects = ['33', '44', '55'].map(id => ({ id, groupId: '22', name: 'Project ' + id, myRole: 'EDITOR' as const }));
     const view = { workspaceId: '11', name: 'Notification workspace', myRole: 'OWNER' as const, projects,
       tree: onlineTreeToDto({workspaceId: '11', rootVersion: 1, files: [], projects}, 'Notification workspace') };
     const fixture = NotificationPageSchema.parse(JSON.parse(readFileSync(resolve('../../server/src/test/resources/notifications/center.json'), 'utf8')));
@@ -890,7 +890,10 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       const scope = input.context.scope;
       operations.push(input.operation + '/' + scope.projectId);
       if (input.operation === 'assets') {
-        if (scope.projectId === '44') await loading;
+        if (scope.projectId === '44') {
+          await loading;
+          if (action === 'revoked' || action === 'other-tab') throw new Error('forbidden');
+        }
         return { project: asset, problems: [], assets: { ...scope, format: 'contract-files-v1', contractProjectId: asset.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
       }
       if (input.operation === 'agents') return { defaultAgentId: null, canManageScripts: false, policy: structuredClone(defaultPolicyConfig), policyVersion: '1', agents: [] };
@@ -904,6 +907,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       if (input.operation === 'notifications') return { items: [event], nextBeforeId: null };
       if (input.operation === 'originalJob') {
         expect([input.context.scope.projectId, input.jobId, input.executionId]).toEqual(['44', '701', '702']);
+        if (action === 'job-deleted') throw new Error('job_not_found');
         return { jobId: input.jobId, executionId: input.executionId, agentId: '5' };
       }
       throw new Error(input.operation);
@@ -918,22 +922,29 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       await wrapper.get('[data-testid="rail-run"]').trigger('click');
       await wrapper.get('[data-testid="run-pane-notifications"]').trigger('click');
       await vi.waitFor(() => expect(wrapper.find('[data-testid="notification-run"]').exists()).toBe(true));
+      (wrapper.get('.event-scroll').element as HTMLElement).scrollTop = 27;
       await wrapper.get('[data-testid="notification-run"]').trigger('click');
       await vi.waitFor(() => expect(operations).toContain('assets/44'));
       expect(wrapper.get('[data-testid="rail-run"]').attributes('aria-current')).toBe('page');
       if (action === 'leave') await wrapper.get('[data-testid="rail-api"]').trigger('click');
+      if (action === 'other-tab') await wrapper.findComponent(ProjectTabs).props('tabs').openProjectTab({kind:'online', workspaceId:'11', name:view.name}, projects[2]!);
       finishLoad(); await flushPromises();
-      if (action === 'leave') {
+      if (action === 'leave' || action === 'other-tab') {
         expect(wrapper.get('[data-testid="rail-api"]').attributes('aria-current')).toBe('page');
+        expect(online.execution.context?.scope.projectId).toBe(action === 'leave' ? '44' : '55');
         expect(operations).not.toContain('originalJob/44');
         expect(online.execution.resultSelection).toBeNull();
       } else {
-        await vi.waitFor(() => expect(online.execution.resultSelection).toMatchObject({kind:'agent', job:{ jobId:'701', executionId:'702', view:'active-status' }}));
-        expect(wrapper.get('[data-testid="run-pane-records"]').attributes('aria-current')).toBe('true');
-        await wrapper.get('[data-testid="return-notification"]').trigger('click');
+        if (action === 'return') {
+          await vi.waitFor(() => expect(online.execution.resultSelection).toMatchObject({kind:'agent', job:{ jobId:'701', executionId:'702', view:'active-status' }}));
+          expect(wrapper.get('[data-testid="run-pane-records"]').attributes('aria-current')).toBe('true');
+          await wrapper.get('[data-testid="return-notification"]').trigger('click');
+        }
         await vi.waitFor(() => expect(wrapper.get('.notifications article[aria-current="true"]').text()).toContain('Original notification'));
         expect(online.execution.context?.scope.projectId).toBe('33');
         expect(wrapper.get('.notifications article[aria-current="true"]').text()).toContain('站内未读');
+        expect((wrapper.get('.event-scroll').element as HTMLElement).scrollTop).toBe(27);
+        if (action !== 'return') expect(wrapper.get('.notifications [role="alert"]').text()).toContain('关联记录已不可用');
       }
       expect(operations.some(op => /^(run|report|markNotificationRead)\//.test(op))).toBe(false);
     } finally {

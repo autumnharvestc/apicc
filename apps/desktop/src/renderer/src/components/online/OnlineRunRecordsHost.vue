@@ -117,9 +117,22 @@ async function notification(event: NotificationEvent, dest: "schedules"|"records
     }
     store.paneRequest={ context:target,pane:dest }; await nextTick(); await nextTick();
     if (!live()) return;
-    if (dest==="schedules") { await store.inspect(event.scheduleId); if (live() && !store.selected && !store.error) store.error=msg("unavailable"); }
+    if (dest==="schedules") { await store.inspect(event.scheduleId); if (live() && !store.selected) throw new Error(msg("unavailable")); }
     else if (event.jobId && event.executionId) await original(target,event.jobId,event.executionId,live);
-  } catch(err) { if (n===store.navigationIntent) { store.error="linked-record-unavailable"; e.value.error=err instanceof Error ? err.message : msg("unavailable"); } }
+  } catch(err) {
+    if (n!==store.navigationIntent) return;
+    if (e.value.context?.scope.projectId === event.projectId && !scopesMatch(ctx,e.value.context)) {
+      try { await switchProject(ctx,ctx.scope.projectId); } catch { /* Show the issue in the remaining accessible project. */ }
+    }
+    if (n!==store.navigationIntent) return;
+    store.error="linked-record-unavailable";
+    e.value.error=err instanceof Error ? err.message : msg("unavailable");
+    if (scopesMatch(ctx,e.value.context) && e.value.visible) {
+      store.restorePosition={ ...pos, unavailable:true };
+      store.paneRequest={context:ctx,pane:"notifications"};
+      store.returnTo=null;
+    }
+  }
 }
 const canReturn = computed(() => { const ref=schedules.value.returnTo, ctx=e.value.context; return ref && sameMember(ref.context,ctx) && (ctx?.scope.projectId===ref.targetProjectId || scopesMatch(ref.context,ctx)) && props.pane!=="notifications"; });
 async function backToNotification() {

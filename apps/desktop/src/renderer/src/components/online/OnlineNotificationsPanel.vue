@@ -18,10 +18,10 @@ const { t, te, locale } = useI18n();
 const label = (code: string | null) => !code ? t('onlineExecution.notCollected') : te('scheduleDelivery.' + code) ? t('scheduleDelivery.' + code) : te('scheduleCodes.' + code) ? t('scheduleCodes.' + code) : te('onlineExecution.states.' + code) ? t('onlineExecution.states.' + code) : code;
 const reason = (value: string) => { if (value === 'linked-record-unavailable') return msg('unavailable'); const safe = value.match(/(?:^|Error: )([a-z][a-z0-9_-]{0,95})$/)?.[1]; if (!safe) return t('scheduleEditor.requestFailed'); for (const namespace of ['scheduleCodes', 'onlineExecution.reasons', 'startRejectionLabels']) if (te(namespace + '.' + safe)) return t(namespace + '.' + safe); return safe; };
 const time = (value: string | null) => value ? new Intl.DateTimeFormat(locale.value, { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hourCycle: 'h23' }).format(new Date(value)) + ' UTC' : t('onlineExecution.notCollected');
-watch(() => [props.schedules.context, props.schedules.visible] as const, async ([context, visible], _, cleanup) => {
+watch(() => [props.schedules.context, props.schedules.visible, props.schedules.restorePosition] as const, async ([context, visible, restore], previous, cleanup) => {
   if (!context || !visible) return;
+  if (!restore && previous?.[2] && previous[0]===context && previous[1]===visible) return;
   let live = true; cleanup(() => { live = false; });
-  const restore = props.schedules.restorePosition;
   await props.schedules.loadNotifications();
   if (!restore || !live) return;
   const seen = new Set<string>();
@@ -35,6 +35,7 @@ watch(() => [props.schedules.context, props.schedules.visible] as const, async (
   if (live && scroll.value) {
     scroll.value.scrollTop = restore.scrollTop;
     scroll.value.querySelector<HTMLElement>('[aria-current="true"] button')?.focus({ preventScroll: true });
+    if (restore.unavailable) props.schedules.error='linked-record-unavailable';
     props.schedules.restorePosition = null;
   }
 }, { immediate: true });

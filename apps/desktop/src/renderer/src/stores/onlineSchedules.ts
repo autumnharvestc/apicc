@@ -9,7 +9,7 @@ import { ScheduleMaterialOptionsSchema } from '@apicc/execution/contract';
 import type { OnlineSchedulePreparation } from '../../../shared/online/scheduling.js';
 import { OnlineOriginalJobIdentitySchema } from '../../../shared/online/scheduling.js';
 export type OnlineRunPane = 'launch' | 'records' | 'schedules' | 'notifications';
-export type NotificationPosition = { eventId: string; scrollTop: number; pages: number };
+export type NotificationPosition = { eventId: string; scrollTop: number; pages: number; unavailable?: boolean };
 
 export function createOnlineSchedulesStore(api: OnlineSchedulingPort) {
   let generation = 0;
