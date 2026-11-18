@@ -274,22 +274,24 @@ async function publish() { const item = props.localProjects.find(item => item.pr
         <template v-else>
           <OnlineApiEditor :online="online" :title-path="titlePath" class="api-editor">
             <template #send>
-              <a-button type="primary" :disabled="!!businessRunIssue || !selectedEntry" data-testid="online-debug-run" @click="action(debugRequest)">{{ t('editor.send') }}</a-button>
+              <button type="button" class="debug-send" :disabled="!!businessRunIssue || !selectedEntry" data-testid="online-debug-run" @click="action(debugRequest)">{{ t('editor.send') }}</button>
+            </template>
+            <template #more>
               <ActionMenu :label="t('requestWorkbench.more')" test-id="online-debug-more" :disabled="!selectedEntry || readOnly || execution.running"
                 :items="[{ key: 'session', label: t('onlineExecution.newSession') }]" @select="execution.newDebugSession()">⋯</ActionMenu>
             </template>
+            <template #feedback><p v-if="online.editorApi && (businessRunIssue || !selectedEntry)" class="feedback" role="status">{{ businessRunIssue || t('projectWorkbench.savedTargetRequired') }}</p></template>
             <template #auth><section class="auth"><p>{{ t('onlineExecution.authInProject') }}</p><p v-if="!auth">{{ t('onlineExecution.pickApi') }}</p><template v-else><select :value="auth.kind" :disabled="readOnly" @change="authKind(($event.target as HTMLSelectElement).value)"><option value="none">{{ t('online.authNone') }}</option><option value="bearer">Bearer</option><option value="basic">Basic</option><option value="apikey">API Key</option><option v-if="auth.kind === 'componentRef'" value="componentRef">{{ t('online.authComponent') }}</option></select><label v-if="credentialRef">{{ t('onlineExecution.refId') }}<input v-model="credentialRef.id" :disabled="readOnly" /></label><label v-if="auth.kind === 'basic'">{{ t('onlineExecution.username') }}<input v-model="auth.username" :disabled="readOnly" /></label><template v-if="auth.kind === 'apikey'"><label>{{ t('onlineExecution.keyName') }}<input v-model="auth.name" :disabled="readOnly" /></label><select v-model="auth.placement" :disabled="readOnly"><option value="header">Header</option><option value="query">Query</option></select></template><button :disabled="readOnly" @click="action(() => online.saveApi())">{{ t('onlineExecution.saveAuth') }}</button><label v-if="credentialRef"><input type="checkbox" :checked="execution.localOnlyRefIds.includes(credentialRef.id)" :disabled="readOnly" @change="localOnly(($event.target as HTMLInputElement).checked)" />{{ t('onlineExecution.localOnly') }}</label><CredentialEditor v-if="credentialRef" :api="adapter.bridge" :locator="adapter.locator()" :auth="auth" :context-key="JSON.stringify([execution.context, execution.localOnlyRefIds])" managed-state="unmanaged" :read-only="readOnly" /></template></section></template>
           </OnlineApiEditor>
-          <p v-if="online.editorApi && (businessRunIssue || !selectedEntry)" class="feedback" role="status">{{ businessRunIssue || t('projectWorkbench.savedTargetRequired') }}</p>
-          <section v-if="selectedEntry" class="api-response" data-testid="online-debug-response">
-            <header><strong>{{ t("projectWorkbench.response") }}</strong>
-              <button v-if="canCancelDebug" @click="action(cancelDebug)">{{ t("onlineExecution.cancel") }}</button>
-              <button v-if="debugSelection" @click="action(showDebugRecord)">{{ t("projectWorkbench.viewRun") }}</button>
-              <button :aria-expanded="responseOpen" @click="responseOpen = !responseOpen">{{ t(responseOpen ? "responseWorkbench.collapse" : "responseWorkbench.expand") }}</button>
-            </header>
-            <p v-if="debugError" class="feedback" role="alert">{{ issueText(debugError) }}</p>
-            <p v-if="debugJob" role="status">{{ t('onlineExecution.state') }} · {{ t('onlineExecution.states.' + debugJob.state) }}</p>
-            <ResponseViewer v-if="responseOpen" :sending="debugPending" :result="debugOutput" />
+          <section v-if="selectedEntry" class="api-response" :class="{ expanded: responseOpen }" data-testid="online-debug-response">
+            <ResponseViewer :expanded="responseOpen" :sending="debugPending" :result="debugOutput" :error="debugError ? issueText(debugError) : null">
+              <template #actions>
+                <button v-if="canCancelDebug" @click="action(cancelDebug)">{{ t("onlineExecution.cancel") }}</button>
+                <button v-if="debugSelection" @click="action(showDebugRecord)">{{ t("projectWorkbench.viewRun") }}</button>
+                <button :aria-expanded="responseOpen" @click="responseOpen = !responseOpen">{{ t(responseOpen ? "responseWorkbench.collapse" : "responseWorkbench.expand") }}</button>
+              </template>
+            </ResponseViewer>
+            <p v-if="debugJob" class="job-state" role="status">{{ t('onlineExecution.state') }} · {{ t('onlineExecution.states.' + debugJob.state) }}</p>
           </section>
         </template>
       </section>
@@ -347,12 +349,24 @@ async function publish() { const item = props.localProjects.find(item => item.pr
 <style scoped>
 .online-project, .api-workbench { display:flex;flex-direction:column;flex:1;min-width:0;min-height:0;overflow:hidden; }
 .asset-scroll, .legacy, .api-editor { flex:1;min-height:0;overflow:auto; }
+.api-workbench { container-type: inline-size; gap: 8px; padding: 8px; background: var(--workbench-background); }
+.api-editor, .api-response { border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+.debug-send { min-width: 6em; border-color: transparent; background: #1557d8; color: #fff; font-weight: 600; }
+.debug-send:hover:not(:disabled) { background: #164bb2; border-color: transparent; color: #fff; }
+.api-editor .feedback { padding: 0; }
 .guide, .legacy, .toolbar, .tabs, .feedback { padding:8px 12px; }
-.toolbar,.tabs,.api-response header { display:flex;gap:8px;align-items:center;flex-wrap:wrap; }
+.toolbar,.tabs { display:flex;gap:8px;align-items:center;flex-wrap:wrap; }
 .tabs { border-bottom:1px solid var(--border); }
 .tabs button[aria-current] { color:var(--accent);border-color:var(--accent);background:var(--active-weak); }
-.api-response { flex:none;max-height:45%;overflow:auto;border-top:1px solid var(--border); }
-.api-response header { padding:5px 12px; } .api-response header strong { margin-inline-end:auto; }
+.api-response { display: flex; flex: none; flex-direction: column; min-width: 0; max-height: 45%; overflow: auto; }
+.api-response.expanded { height: 45%; }
+.api-response > .viewer { height: auto; flex: 1; }
+.api-response button { min-height: 26px; padding: 0 7px; font-size: 12px; }
+.job-state { margin: 0; padding: 2px 12px; color: var(--text-muted); font-size: 12px; }
+@container (max-width: 420px) {
+  .api-response :deep(.response-summary-row) { flex-wrap: wrap; }
+  .api-response :deep(.response-actions) { flex-wrap: wrap; }
+}
 .feedback { margin:0;overflow-wrap:anywhere;color:var(--text-muted); }
 .materials,.auth { min-width:0;overflow:auto;max-height:65vh; }
 .materials label,.auth label { display:flex;gap:8px;margin:8px 0;align-items:center;flex-wrap:wrap; }

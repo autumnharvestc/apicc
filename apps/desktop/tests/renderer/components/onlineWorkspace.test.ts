@@ -410,6 +410,11 @@ describe('online execution readable projection', () => {
       expect(online.editorDirty).toBe(true);
       await wrapper.setProps({ view: 'envs' });
       await wrapper.setProps({ view: 'api' });
+      const response = wrapper.get('[data-testid="online-debug-response"]');
+      expect(response.get('[data-testid="response-compact-status"]').text()).toBe(i18n.global.t('responseWorkbench.noResult'));
+      await response.get('button[aria-expanded="false"]').trigger('click');
+      expect(response.get('[data-testid="response-empty"]').isVisible()).toBe(true);
+      await response.get('button[aria-expanded="true"]').trigger('click');
       const path = '/unsaved-snapshot';
       online.editorApi!.contract.request.path = path;
       const submit = vi.spyOn(api, 'onlineExecution').mockImplementation(async input => {
@@ -420,6 +425,9 @@ describe('online execution readable projection', () => {
       await flushPromises();
       expect(submit.mock.calls.map(([input]) => input.operation)).toEqual(['run']);
       expect(submit.mock.calls[0]![0]).toMatchObject({ target: { kind: 'debug', invocation: { mode: 'request', locator: { collectionId: collection.id, apiId: first.contract.id }, request: { path } } } });
+      expect(response.get('[role="alert"]').text()).toContain('Safe failure: missing declared material');
+      await response.get('button[aria-expanded="true"]').trigger('click');
+      expect(response.get('[data-testid="response-compact-status"]').text()).toContain('Safe failure: missing declared material');
       expect(online.editorDirty).toBe(true);
       expect(read).not.toHaveBeenCalled();
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }

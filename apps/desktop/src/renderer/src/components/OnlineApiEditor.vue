@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { FolderOutlined } from "@ant-design/icons-vue";
 import { Alert as AAlert, Button as AButton, Input as AInput, Select as ASelect, Tabs as ATabs, Checkbox as ACheckbox, Tag as ATag, Typography as ATypography } from "ant-design-vue";
 import type { ApiRequest, HttpMethod, ParameterBinding, RequestBody } from "@apicc/core";
 import type { createOnlineStore } from "../stores/online.js";
@@ -48,6 +49,7 @@ const apiName = computed({
 });
 const targetKey = computed(() => props.draft?.target ? JSON.stringify(props.draft.target) : undefined);
 const activeTarget = computed(() => props.targets?.find(row => JSON.stringify(row.target) === targetKey.value));
+const displayPath = computed(() => props.draft ? activeTarget.value?.label ?? t("projectDirectory.noSavePosition") : props.titlePath || props.online.editorPath);
 function selectTarget(key: unknown) {
   if (!props.draft || !writable.value) return;
   props.draft.target = props.targets?.find(row => JSON.stringify(row.target) === key)?.target ?? null;
@@ -174,48 +176,61 @@ function authDescription(request_: ApiRequest | null): string {
     </template>
 
     <template v-else-if="(draft || api) && request">
-      <p v-if="draft" class="path-line">{{ activeTarget?.label ?? t("projectDirectory.noSavePosition") }}</p>
-      <div class="name-row">
-        <a-input
-          v-model:value="apiName"
-          class="name-input"
-          data-testid="online-editor-name"
-          :aria-label="t('debugLoop.freeSaveName')"
-          :placeholder="t('debugLoop.freeSaveName')"
-          :disabled="!writable"
-        />
-        <span v-if="!draft && online.editorDirty" class="dirty" :title="t('wf.unsaved')">●</span>
-        <a-tag v-if="draft ? !draftWritable : !writable" data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
-        <span v-if="savedTip" class="saved-tip" data-testid="online-saved-tip">{{ t("online.savedTip") }}</span>
-      </div>
+      <header class="request-heading">
+        <div class="path-line" :title="displayPath ?? undefined" :data-testid="draft ? undefined : 'online-editor-path'">
+          <FolderOutlined aria-hidden="true" /><span>{{ displayPath }}</span>
+        </div>
+        <div class="name-row">
+          <a-input
+            v-model:value="apiName"
+            class="name-input"
+            :title="apiName"
+            data-testid="online-editor-name"
+            :aria-label="t('debugLoop.freeSaveName')"
+            :placeholder="t('debugLoop.freeSaveName')"
+            :disabled="!writable"
+          />
+          <span v-if="!draft && online.editorDirty" class="dirty" :title="t('wf.unsaved')">●</span>
+          <a-tag v-if="draft ? !draftWritable : !writable" data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
+          <span v-if="savedTip" class="saved-tip" data-testid="online-saved-tip">{{ t("online.savedTip") }}</span>
+        </div>
+      </header>
       <div class="top-row">
-        <a-tag data-testid="online-editor-protocol">{{ request.protocol }}</a-tag>
-        <a-select v-if="request.protocol !== 'websocket'" v-model:value="httpMethod" class="method-select" data-testid="online-editor-method" :options="METHOD_OPTIONS" :disabled="!writable || request.protocol === 'soap'" />
-        <a-input
-          v-model:value="baseUrl"
-          class="url"
-          data-testid="online-editor-base-url"
-          :placeholder="t('online.baseUrl')"
-          :disabled="!writable"
-        />
-        <a-input
-          v-model:value="requestPath"
-          class="url"
-          data-testid="online-editor-url"
-          :placeholder="t('online.path')"
-          :disabled="!writable"
-        />
-        <slot name="send" />
-        <a-button
-          v-if="writable"
-          type="primary"
-          data-testid="online-save-btn"
-          :disabled="online.saving || !!(draft && (!draft.name.trim() || !activeTarget || draft.needsTarget))"
-          @click="onSave"
-        >
-          {{ online.saving ? t("online.saving") : t("online.save") }}
-        </a-button>
+        <div class="request-address">
+          <a-tag class="protocol" data-testid="online-editor-protocol">{{ request.protocol }}</a-tag>
+          <a-select v-if="request.protocol !== 'websocket'" v-model:value="httpMethod" class="method-select" :data-method="httpMethod" data-testid="online-editor-method" :options="METHOD_OPTIONS" :disabled="!writable || request.protocol === 'soap'" />
+          <a-input
+            v-model:value="baseUrl"
+            class="url"
+            data-testid="online-editor-base-url"
+            :aria-label="t('online.baseUrl')"
+            :placeholder="t('online.baseUrl')"
+            :disabled="!writable"
+          />
+          <a-input
+            v-model:value="requestPath"
+            class="url url-path"
+            data-testid="online-editor-url"
+            :aria-label="t('online.path')"
+            :placeholder="t('online.path')"
+            :disabled="!writable"
+          />
+        </div>
+        <div class="request-actions">
+          <slot name="send" />
+          <a-button
+            v-if="writable"
+            :type="$slots.send ? 'default' : 'primary'"
+            data-testid="online-save-btn"
+            :disabled="online.saving || !!(draft && (!draft.name.trim() || !activeTarget || draft.needsTarget))"
+            @click="onSave"
+          >
+            {{ online.saving ? t("online.saving") : t("online.save") }}
+          </a-button>
+          <slot name="more" />
+        </div>
       </div>
+      <slot name="feedback" />
       <div v-if="draft" class="draft-target">
         <a-select :value="activeTarget ? targetKey : undefined" :disabled="!writable" data-testid="online-draft-target"
           :aria-label="t('debugLoop.freeSaveTarget')" :placeholder="t('debugLoop.freeSaveTarget')"
@@ -225,10 +240,6 @@ function authDescription(request_: ApiRequest | null): string {
         <p v-if="draft.error" role="alert">{{ t(`onlineDirectory.errors.${draft.error}`) }}</p>
         <p v-else-if="draft.needsTarget || (!!draft.target && !activeTarget)" role="status">{{ t('projectDirectory.targetMissing') }}</p>
       </div>
-      <a-typography-text v-else class="path-line" type="secondary" data-testid="online-editor-path">
-        {{ titlePath || online.editorPath }}
-      </a-typography-text>
-
       <a-tabs v-model:active-key="activeTab">
         <a-tab-pane key="params">
           <template #tab><span data-testid="online-tab-params">{{ t("editor.params") }}</span></template>
@@ -338,11 +349,16 @@ function authDescription(request_: ApiRequest | null): string {
 
 <style scoped>
 .editor {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 12px;
+  padding: 12px 14px;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
   box-sizing: border-box;
 }
 .guide-wrap {
@@ -358,24 +374,48 @@ function authDescription(request_: ApiRequest | null): string {
   font-size: 12px;
   text-align: center;
 }
-.name-row { display: flex; align-items: center; gap: 6px; }
-.name-input { flex: 1; max-width: 420px; font-weight: 600; }
+.request-heading { display: grid; gap: 2px; }
+.path-line { display: flex; align-items: center; gap: 6px; min-width: 0; padding-inline: 4px; color: var(--text-muted); font-size: 12px; }
+.path-line span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.name-row .name-input { flex: 1; min-width: 0; padding: 2px 3px; border-color: transparent; background: transparent; box-shadow: none; color: var(--text); font-size: 20px; font-weight: 650; line-height: 1.35; text-overflow: ellipsis; }
+.name-row .name-input:enabled:hover { border-color: var(--border); }
+.name-row .name-input:focus { border-color: var(--accent); text-overflow: clip; }
 .dirty { color: var(--accent); }
 .saved-tip { color: var(--pass); font-size: 12px; }
-.top-row { display: flex; flex-wrap:wrap; gap: 8px; }
-.method-select { width: 96px; }
-.url { flex: 1 1 160px; min-width:0; }
-.path-line { font-size: 11px; }
+.top-row, .request-actions, .request-address { display: flex; align-items: center; min-width: 0; }
+.top-row { gap: 8px; }
+.request-actions { flex: none; flex-wrap: wrap; gap: 6px; }
+.request-actions :deep(.menu-trigger) { min-height: 32px; border-color: var(--border); }
+.request-address { flex: 1; border: 1px solid var(--border); border-radius: var(--control-radius); background: var(--bg); }
+.request-address .protocol { flex: none; display: grid; align-items: center; align-self: stretch; margin: 0; padding-inline: 8px; border: 0; border-radius: 5px 0 0 5px; background: var(--subtle); color: var(--text-muted); font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.request-address .method-select { flex: 0 0 88px; }
+.request-address :deep(.method-select .ant-select-selector) { height: 30px; border: 0; border-inline-start: 1px solid var(--border); border-radius: 0; background: var(--workbench-method-surface); color: var(--pass); font-weight: 600; }
+.request-address :deep(.method-select[data-method="POST"] .ant-select-selector) { background: var(--subtle); color: var(--workbench-method-post); }
+.request-address .url { flex: 1; min-width: 0; height: 30px; border: 0; border-inline-start: 1px solid var(--border); border-radius: 0; box-shadow: none; }
+.request-address .url-path { border-start-end-radius: 5px; border-end-end-radius: 5px; }
+.request-address .url:focus-visible { outline-offset: -2px; }
+.editor > :deep(.ant-tabs) { flex-shrink: 0; min-width: 0; }
+.editor :deep(.ant-tabs-nav) { margin-bottom: 10px; }
+.editor :deep(.ant-tabs-tab) { padding-block: 7px; }
 .draft-target { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
 .draft-target :deep(.ant-select) { flex: 1 1 230px; min-width: 160px; max-width: 100%; }
 .draft-target p { flex: 1 0 100%; margin: 0; }
 .panel { display: flex; flex-direction: column; gap: 6px; overflow: auto; }
 .kv-row { display: flex; gap: 6px; align-items: center; }
-.kv-row :deep(.ant-input) { flex: 1; }
+.kv-row :deep(.ant-input) { flex: 1; min-width: 0; }
 .field-row { display: flex; align-items: center; gap: 8px; }
 .field-row label { width: 80px; color: var(--text-muted); font-size: 12px; }
 .field-input { flex: 1; max-width: 320px; }
 button.add { align-self: flex-start; }
+@container (max-width: 700px) {
+  .top-row { flex-direction: column; align-items: stretch; }
+  .request-address { flex: auto; }
+}
+@container (max-width: 400px) {
+  .request-address { flex-wrap: wrap; }
+  .request-address .url-path { flex-basis: 100%; border: 0; border-top: 1px solid var(--border); border-radius: 0 0 5px 5px; }
+}
 .body-text { font-family: ui-monospace, monospace; resize: vertical; }
 .raw {
   flex: 1;
