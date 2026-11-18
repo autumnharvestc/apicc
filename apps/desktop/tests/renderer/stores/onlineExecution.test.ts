@@ -171,14 +171,55 @@ describe("F8 inactive execution cache", () => {
     } finally { store.setVisible(false); }
   });
   it("F8 retains an uncertain submitted RPC instead of treating its rejection as physical release", async () => {
-    let calls = 0;
-    const store = createOnlineExecutionStore({ onlineExecution: async () => { calls++; throw new Error('connection-lost-after-submit'); } },
-      { preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
+    const calls: string[] = [], searches: string[] = [], confirmations: string[] = [];
+    let confirmNew = false, recovered = false;
+    const original = {jobId:"700",executionId:"800",agentId:"5",state:"running",cancelState:"none",executionReleased:false,canCancel:true,view:"active-status",scope:at(1).scope};
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation === "findIntent") { searches.push(input.intentId); return recovered && input.intentId === calls[0] ? [original] : []; }
+      if (input.operation !== "run") throw new Error("Unexpected operation " + input.operation);
+      calls.push(input.runId); throw new Error('connection-lost-after-submit');
+    } }, { confirmNewSubmission: id => { confirmations.push(id); return confirmNew; },
+      preferences: { maxInactiveContexts: 0, inactiveTtlMinutes: 30, maxInactivePayloadMiB: 1 }, storage: null });
     try {
       activateAt(store, at(1)); store.selectLocation({ kind: 'agent', agentId: '5' });
       await expect(store.run({ kind: 'workflow', workflowId })).rejects.toThrow('connection-lost-after-submit');
-      store.activate(at(2)); store.activate(at(1)); expect(store.error).toBe('connection-lost-after-submit');
-      expect(store.location).toEqual({ kind: 'agent', agentId: '5' }); expect(calls).toBe(1);
+      store.activate(at(2)); activateAt(store, at(1)); expect(store.error).toBe('connection-lost-after-submit');
+      expect(store.location).toEqual({ kind: 'agent', agentId: '5' }); expect(calls).toHaveLength(1);
+      await store.run({ kind: "workflow", workflowId });
+      expect(calls).toHaveLength(1); expect(confirmations).toEqual([calls[0]]);
+      expect(store.resultSelection).toEqual({kind:"agent",runId:calls[0]});
+      await store.selectSubmission(calls[0]!); expect(searches).toEqual([calls[0]]);
+      confirmNew = true;
+      await expect(store.run({ kind:"workflow", workflowId })).rejects.toThrow("connection-lost-after-submit");
+      expect(new Set(calls).size).toBe(2); expect(confirmations).toEqual([calls[0],calls[0]]);
+      recovered = true;
+      await store.selectSubmission(calls[0]!);
+      expect(store.resultSelection).toMatchObject({kind:"agent",job:{jobId:"700",executionId:"800",view:"active-status"}});
+      expect(searches).toEqual([calls[0],calls[0]]); expect(calls).toHaveLength(2);
+    } finally { store.setVisible(false); }
+  });
+  it.each(["failed", "cancelled", "timed-out"])("recovers the local %s report and releases its guard only after the host establishes the execution fact", async verdict => {
+    const calls: string[] = [], confirmations: string[] = [];
+    let fact = "uncertain";
+    const store = createOnlineExecutionStore({ onlineExecution: async input => {
+      if (input.operation === "report") return {executionId:input.runId, verdict, executionFact:fact, reasonCode:"receipt-reason"};
+      if (input.operation !== "run") throw new Error("unexpected query");
+      calls.push(input.runId); throw new Error("connection-lost-after-submit");
+    } }, {confirmNewSubmission: id => { confirmations.push(id); return false; }});
+    try {
+      activateAt(store,at(1)); const target = {kind:"workflow" as const,workflowId};
+      await expect(store.run(target)).rejects.toThrow("connection-lost-after-submit");
+      const id = calls[0]!;
+      await store.selectSubmission(id);
+      expect(store.report).toMatchObject({executionId:id,verdict,executionFact:"uncertain"});
+      await store.run(target); expect(calls).toEqual([id]); expect(confirmations).toEqual([id]);
+      fact = verdict === "failed" ? "not-started" : "started";
+      await store.selectSubmission(id);
+      expect(store.report).toMatchObject({executionId:id,verdict,executionFact:fact,reasonCode:"receipt-reason"});
+      store.activate(at(2)); activateAt(store,at(1)); await store.selectSubmission(id);
+      expect(store.report?.verdict).toBe(verdict);
+      await expect(store.run(target)).rejects.toThrow("connection-lost-after-submit");
+      expect(new Set(calls).size).toBe(2); expect(confirmations).toEqual([id]);
     } finally { store.setVisible(false); }
   });
   it("F8 retains only the target kind after submission instead of an extra copy of debug request contents", async () => {

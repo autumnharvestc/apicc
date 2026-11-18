@@ -18,10 +18,20 @@ import { defaultExecutionCacheStorage, readExecutionCachePreferences, OnlineExec
 type ResultSelection = { kind: 'local'; runId: string; environmentId?: string } | { kind: 'agent'; runId: string } | { kind: 'agent'; job: OnlineJob };
 type JobRef = Pick<OnlineJob,'agentId'|'jobId'|'executionId'>;
 function jobReference({ agentId, jobId, executionId }: JobRef): JobRef { return { agentId, jobId, executionId }; }
-export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; agentRef?: JobRef; error: string };
+function submissionKey(target: TaskTarget, planId?: string): string {
+  if (target.kind === "workflow") return JSON.stringify(["workflow",target.workflowId]);
+  if (target.kind === "suite") return JSON.stringify(["suite",target.suiteId]);
+  if (target.kind === "stress") return JSON.stringify(["stress",planId]);
+  const invocation = target.invocation;
+  if (invocation.mode === "free") return JSON.stringify(["free",invocation.draftId]);
+  const { collectionId, folderIds, apiId } = invocation.locator;
+  return JSON.stringify([invocation.mode, collectionId, folderIds, apiId,
+    ...(invocation.mode === "case" ? [invocation.case.caseId, invocation.case.scope] : [])]);
+}
+export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; localReport?: OnlineReport; job?: OnlineJob; agentRef?: JobRef; error: string };
 type CachedContext = { context: OnlineExecutionContext; lastUsed: number; payloadBytes?: number; debugKeys: Set<string>;
-  pending: Set<string>; uncertain: Set<string>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
-export interface OnlineExecutionCacheOptions { storage?: ExecutionCacheStorage | null; now?: () => number; preferences?: OnlineExecutionCachePreferences }
+  pending: Set<string>; uncertain: Map<string, RunRecord>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
+export interface OnlineExecutionCacheOptions { storage?: ExecutionCacheStorage | null; now?: () => number; preferences?: OnlineExecutionCachePreferences; confirmNewSubmission?: (runId: string) => boolean }
 export type OnlineAssetSaveFeedback = { status: "saving" | OnlineAssetEditResult["status"]; target: string; conflict?: ProjectSaveConflict;
   reason?: OnlineAssetSaveRejection; disposition?: "written" | "converged" | "recovered";
   details?: { baseline?: unknown; submitted?: unknown; current?: unknown } };
@@ -457,18 +467,28 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       observeProject(context, result.view);
       return true;
     },
-    async run(target: TaskTarget) {
+    async run(target: TaskTarget, savedPlanId?: string) {
       const context = store.context && plain(store.context); if (!context || !store.view || !store.visible) throw new Error("online-project-unavailable");
       if (target.kind === 'stress' && store.location.kind === 'agent') {
         const agentId = store.location.agentId; const agent = store.agents?.agents.find(row => row.id === agentId);
         if (!agent || agent.availability !== 'available' || agent.configuration.status !== 'applied' || !agent.runtime?.capabilities.includes('task:stress') || !agent.runtime.capabilities.includes('stress:local-workers-v1')) throw new Error('stress-agent-unavailable');
       }
       if (target.kind !== "debug" && store.dirty) throw new Error("save-before-running");
-      if (target.kind === 'stress' && !store.project?.stressPlans?.some(saved => JSON.stringify(saved.plan) === JSON.stringify(target.plan))) throw new Error('save-before-running');
+      const savedPlan = target.kind === "stress" ? store.project?.stressPlans?.find(item =>
+        (savedPlanId === undefined || item.id === savedPlanId) && JSON.stringify(item.plan) === JSON.stringify(target.plan)) : undefined;
+      if (target.kind === 'stress' && !savedPlan) throw new Error('save-before-running');
       if (target.kind === 'stress' && target.plan.environmentId && store.environmentId && target.plan.environmentId !== store.environmentId) throw new Error('stress-environment-mismatch');
       if (target.kind === 'stress' && !store.isStressConfirmed(target.plan)) throw new Error('stress-confirmation-required');
       if (store.location.kind === "agent" && store.localOnlyRefIds.length) throw new Error("local-material-required");
       if (runs.get(key(context))?.pending) throw new Error('online-run-in-progress');
+      const cached = retain(context);
+      const identity = submissionKey(target, savedPlan?.id);
+      const prior = cached.uncertain.get(identity);
+      if (prior && !options.confirmNewSubmission?.(prior.runId)) {
+        chooseRun(prior);
+        store.error = prior.error;
+        return;
+      }
       const stress = target.kind === 'stress' ? StressRunConfigSchema.parse({ workerCount: store.stressWorkerCount, confirmedTargetOrigins: [...store.stressConfirmedOrigins] }) : undefined;
       if (stress) store.invalidateStressConfirmation();
       const runId = crypto.randomUUID(); const location = plain(store.location); const sessionKey = JSON.stringify([context, location]);
@@ -477,12 +497,12 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const apiAsset = invocation && invocation.mode !== 'free' && store.project ? findProjectApi(store.project, invocation.locator.apiId)?.api : undefined;
       const targetName = invocation?.mode === 'case' ? apiAsset?.cases.find(item => item.id === invocation.case.caseId && item.scope === invocation.case.scope)?.name
         : invocation?.mode === 'request' ? apiAsset?.contract.metadata.name : target.kind === 'workflow' ? store.project?.workflows.find(item => item.id === target.workflowId)?.name
-        : target.kind === 'stress' ? store.project?.stressPlans?.find(item => JSON.stringify(item.plan) === JSON.stringify(target.plan))?.name : suite?.name;
+        : target.kind === 'stress' ? savedPlan?.name : suite?.name;
       const environmentId = target.kind === 'stress' ? target.plan.environmentId ?? store.environmentId : store.environmentId ?? suite?.environmentId;
       const locationName = location.kind === 'agent' ? store.agents?.agents.find(agent => agent.id === location.agentId)?.name : undefined;
       const environmentName = store.project?.environments.find(env => env.id === environmentId)?.name;
       const run: RunRecord = shallowReactive({ context, runId, submittedAt: new Date().toISOString(), target: { kind: target.kind, ...(invocation?.mode === 'request' ? {debugRequestLocator: plain(invocation.locator)} : {}) }, targetName, location, locationName, environmentId, environmentName, pending: true, error: '' });
-      const cached = retain(context); cached.pending.add(runId); cached.payloadBytes = undefined;
+      cached.pending.add(runId); cached.payloadBytes = undefined;
       // Bound the desktop results to the same terminal history limit as the execution host.
       const history = [run, ...(histories.get(key(context)) ?? [])].slice(0, 100);
       histories.set(key(context), history); store.submissions = history;
@@ -495,12 +515,49 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
         if (/version_conflict/.test(run.error) && key(context) === key(store.context)) void store.checkForUpdates();
         throw failure;
       }
-      finally { run.pending = false; cached.pending.delete(runId); if (!run.result && !run.job) cached.uncertain.add(runId); cached.payloadBytes = undefined; publishRun(run); prune(); }
+      finally { run.pending = false; cached.pending.delete(runId); if (!run.result && !run.job) cached.uncertain.set(identity,run); cached.payloadBytes = undefined; publishRun(run); prune(); }
     },
     async cancelLocal() { if (!store.context || !store.activeLocalRunId) return; await api.onlineExecution({ operation: 'cancel', context: plain(store.context), location: { kind: 'local' }, runId: store.activeLocalRunId }); },
     async selectSubmission(runId: string) {
-      const run = store.submissions.find(item => item.runId === runId);
+      const cached = store.context && contexts.get(key(store.context));
+      const unresolved = cached && [...cached.uncertain].find(([,item]) => item.runId === runId);
+      const run = store.submissions.find(item => item.runId === runId) ?? unresolved?.[1];
       if (!run || !store.visible || store.projectAccessLost) throw new Error('run-record-unavailable');
+      if (!run.pending && !run.result && !run.agentRef && (run.error || unresolved)) {
+        chooseRun(run); store.error = run.error;
+        const selection = store.resultSelection, token = generation, context = plain(run.context);
+        if (run.location.kind === "agent") {
+          let raw;
+          try { raw = await api.onlineExecution({ operation:"findIntent", context, agentId:run.location.agentId, intentId:runId }); }
+          catch (error) { if (!current(token,context) || selection !== store.resultSelection) return; clearDeniedHistory(error); throw error; }
+          if (!current(token,context) || selection !== store.resultSelection) return;
+          const [job] = z.array(OnlineJobSchema).max(1).parse(raw);
+          if (!job) return;
+          const scope = onlineJobScope(job);
+          if (job.agentId !== run.location.agentId || scope.workspaceId !== context.scope.workspaceId || scope.groupId !== context.scope.groupId || scope.projectId !== context.scope.projectId) throw new Error("fixed-input-mismatch");
+          run.job = job; run.agentRef = jobReference(job); run.error = "";
+          if (unresolved && cached?.uncertain.get(unresolved[0]) === run) cached.uncertain.delete(unresolved[0]);
+          await store.inspect(job); return;
+        } else {
+          const raw = await api.onlineExecution({operation:"report", context, location:run.location, runId});
+          if (!current(token,context) || selection !== store.resultSelection) return;
+          const result = OnlineLocalResultSchema.safeParse(raw);
+          if (!result.success) {
+            const report = OnlineReportSchema.parse(raw);
+            if (report.executionId !== runId) throw new Error("fixed-input-mismatch");
+            run.localReport = report;
+            store.report = report;
+            store.error = run.error = "";
+            const terminal = ["failed","cancelled","timed-out","passed"].includes(report.verdict) && report.executionFact !== "uncertain";
+            if (terminal && unresolved && cached?.uncertain.get(unresolved[0]) === run) cached.uncertain.delete(unresolved[0]);
+            return;
+          }
+          if (result.data.runId !== runId) throw new Error("fixed-input-mismatch");
+          run.result = result.data; run.localReport = undefined;
+        }
+        run.error = "";
+        if (unresolved && cached?.uncertain.get(unresolved[0]) === run) cached.uncertain.delete(unresolved[0]);
+      }
       if (run.agentRef) {
         const expected = run.agentRef, context = plain(run.context), token = generation;
         store.report = null; store.localResult = null; store.selectedJobId = '';
@@ -576,7 +633,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
   }
   function retain(context: OnlineExecutionContext): CachedContext {
     const id = key(context); let entry = contexts.get(id);
-    if (!entry) { entry = { context: plain(context), lastUsed: now(), debugKeys: new Set(), pending: new Set(), uncertain: new Set(), jobs: new Map(), jobCursor: 0 }; contexts.set(id, entry); }
+    if (!entry) { entry = { context: plain(context), lastUsed: now(), debugKeys: new Set(), pending: new Set(), uncertain: new Map(), jobs: new Map(), jobCursor: 0 }; contexts.set(id, entry); }
     return entry;
   }
   function observeJob(context: OnlineExecutionContext, job: OnlineJob) {
@@ -616,7 +673,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       inactivePayloadBytes: bytes, overLimit: protectedEntries.length > preferences.maxInactiveContexts || protectedBytes > preferences.maxInactivePayloadMiB * 1024 * 1024 };
   }
   function chooseRun(run: RunRecord) {
-    store.report = null; store.localResult = null; store.selectedJobId = '';
+    store.report = run.localReport ?? null; store.localResult = null; store.selectedJobId = '';
     store.resultSelection = run.location.kind === 'local' ? { kind: 'local', runId: run.runId, ...(run.environmentId ? { environmentId: run.environmentId } : {}) } : run.job ? { kind: 'agent', job: run.job } : { kind: 'agent', runId: run.runId };
   }
   function publishRun(run: RunRecord) {

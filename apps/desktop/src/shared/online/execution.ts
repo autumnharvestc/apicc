@@ -44,6 +44,7 @@ export const OnlineExecutionInputSchema = z.discriminatedUnion("operation", [
   z.object({ ...base, operation: z.literal("credential"), action: z.enum(["status", "put", "remove"]), ref: SecretRefSchema, storage: z.enum(["project", "local"]), contractProjectId: z.string().uuid(), value: z.string().optional() }).strict(),
   z.object({ ...base, operation: z.literal("run"), runId: z.string().uuid(), location: ExecutionLocationSchema, target: TaskTargetSchema, expectedVersion: ConfigVersionSchema, environmentId: z.string().uuid().optional(), debugSessionId: z.string().min(1).optional(), runConfig: RunConfigSchema, materials: FixedMaterialSelectionSchema, localOnlyRefIds: z.array(z.string()), network: FixedNetworkInputSchema.optional() }).strict(),
   z.object({ ...base, operation: z.literal("list"), limit: z.number().int().min(1).max(100), beforeJobId: EntityIdSchema.optional() }).strict(),
+  z.object({ ...base, operation: z.literal("findIntent"), agentId: EntityIdSchema, intentId: uuid }).strict(),
   z.object({ ...base, operation: z.enum(["status", "cancel", "report"]), location: ExecutionLocationSchema, runId: z.string().min(1) }).strict(),
 ]);
 export type OnlineExecutionInput = z.infer<typeof OnlineExecutionInputSchema>;

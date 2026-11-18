@@ -81,6 +81,21 @@ async function fixture(extra?: (url: string, init?: RequestInit) => Response | P
   return { session, requests, fetcher, host: createOnlineExecutionHost({ session, fetch: fetcher }) };
 }
 describe("online execution main boundary", () => {
+  it("checks the original agent submission by intent with a read-only request", async () => {
+    const intentId = randomUUID();
+    const minimal = {jobId:"99",executionId:"100",agentId:"5",state:"running",cancelState:"none",executionReleased:false,canCancel:true,view:"active-status",scope:context.scope};
+    let found = false;
+    const f = await fixture(url => found && url.includes("/jobs/by-intent?") ? Response.json(minimal) : undefined);
+    try {
+      const start = f.requests.length;
+      await expect(f.host.handle({ context, operation:"findIntent", agentId:"5", intentId })).resolves.toEqual([]);
+      expect(f.requests.slice(start)).toEqual([{ url:`https://control.test/api/v1/workspaces/11/projects/33/jobs/by-intent?intentId=${intentId}`, method:"GET", body:undefined }]);
+      found = true;
+      await expect(f.host.handle({ context, operation:"findIntent", agentId:"5", intentId })).resolves.toEqual([minimal]);
+      await expect(f.host.handle({ context, operation:"findIntent", agentId:"6", intentId })).rejects.toThrow("online-project-scope-mismatch");
+      expect(f.requests.slice(start).every(call => call.method === "GET")).toBe(true);
+    } finally { await f.host.close(); }
+  });
   it("saves a stale formal API edit while an unrelated workflow already exists on the server", async () => {
     const baseline = assetsFixture();
     const remote = assetsFixture(project => {

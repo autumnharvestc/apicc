@@ -14,7 +14,7 @@ import RunLaunchForm from "./RunLaunchForm.vue";
 import RunWorkflowInputs from "./RunWorkflowInputs.vue";
 
 const props = defineProps<LocalLaunchProps>();
-const emit = defineEmits<{ records: [file: string]; "open-debug-record": [historyId: string] }>();
+const emit = defineEmits<{ records: [file: string]; "open-debug-record": [historyId: string]; selection: [kind: LaunchKind, id: string] }>();
 const { t } = useI18n();
 const label = useLaunchMessages();
 const kinds = ["module", "case", "suite", "workflow", "stress"] as const;
@@ -47,7 +47,7 @@ const busy = computed(() => starting.value || props.run.running || props.run.cas
 const ownCase = computed(() => props.run.caseOwner && projectSessionKey(props.run.caseOwner.root, props.run.caseOwner.project) === scope.value);
 const ownWorkflow = computed(() => props.workflowDesign.activeRun && projectSessionKey(props.workflowDesign.activeRun.root, props.workflowDesign.activeRun.locator) === scope.value);
 const archive = ref(""), debugHistoryId = ref("");
-let catalogueRead = 0, previewRead = 0, alive = true;
+let catalogueRead = 0, previewRead = 0, selectionEpoch = 0, alive = true;
 let lastPreview: { target: string; signature: string } | undefined;
 onBeforeUnmount(() => { alive = false; catalogueRead++; previewRead++; });
 function resetConfirmation() {
@@ -59,7 +59,8 @@ watch([scope, () => props.selectedCollectionLocator], () => {
   if (kind.value === "module") selected.value = target && projectSessionKey(props.workspace.root, target) === scope.value ? target.collectionId : "";
 }, { immediate: true });
 watch(kind, () => { selected.value = ""; }, { flush: "sync" });
-watch([kind, selected], () => { inputs.value = undefined; inputsValid.value = false; allowDraft.value = false; notice.value = ""; lastPreview = undefined; resetConfirmation(); }, { flush: "sync" });
+watch([kind, selected], ([type, id]) => emit("selection", type, id), { immediate: true, flush: "sync" });
+watch([kind, selected], () => { selectionEpoch++; archive.value = ""; debugHistoryId.value = ""; inputs.value = undefined; inputsValid.value = false; allowDraft.value = false; notice.value = ""; lastPreview = undefined; resetConfirmation(); }, { flush: "sync" });
 watch(() => props.environmentId, () => { notice.value = ""; resetConfirmation(); }, { flush: "sync" });
 
 watch([scope, () => props.workspace.tree, refresh], async () => {
@@ -129,6 +130,7 @@ const reason = computed(() => {
   if (!selected.value || loading.value || reading.value) return "";
   if (!choices.value.some(item => item.id === selected.value)) return label("target-unavailable");
   if (props.environmentId && !catalog.value?.environments.some(item => item.id === props.environmentId) || actualEnvId.value && !actualEnv.value) return label("environment-unavailable");
+  if ((kind.value === "module" || workflow.value) && actualEnv.value && catalog.value!.environments.some(env => env.id !== actualEnvId.value && env.name === actualEnv.value!.name)) return label("environment-ambiguous");
   if (kind.value === "module" && !collection.value?.cases.length) return label("no-cases");
   if (chosenCase.value) {
     if (!effectiveCase.value) return label("scope-unavailable");
@@ -143,7 +145,6 @@ const reason = computed(() => {
     const design = props.workflowDesign;
     if (design.root === props.workspace.root && design.locator && projectSessionKey(design.root, design.locator) === scope.value && design.workflowId === selected.value && (design.dirty || design.saving)) return label("save-before-running");
     if (workflow.value.status === "draft") return label("workflow-draft");
-    if (actualEnv.value && catalog.value!.environments.filter(env => env.name === actualEnv.value!.name).length !== 1) return label("environment-ambiguous");
   }
   if (savedPlan.value) {
     if (!StressPlanSchema.safeParse(savedPlan.value.plan).success) return label("invalid-stress");
@@ -160,11 +161,13 @@ async function start(confirmOrigin = false) {
   if (!catalog.value || busy.value || reason.value || loading.value || reading.value || !selected.value
     || workflow.value && !inputsValid.value || !!pendingOrigin.value !== confirmOrigin) return;
   const captured = intent.value, owner = scope.value, data = catalog.value;
+  const selection = selectionEpoch;
+  const stillSelected = () => alive && scope.value === owner && selection === selectionEpoch;
   starting.value = true;
   notice.value = ""; archive.value = ""; debugHistoryId.value = "";
   try {
     const current = await props.api.listTestingAssets({ root: data.context.root, project: plain(data.context.project) });
-    if (!alive || captured !== intent.value || reason.value) return;
+    if (!stillSelected() || captured !== intent.value || reason.value) return;
     if (current.context.revision !== data.context.revision || catalog.value !== data) { changed(); return; }
     const context = current.context;
     let file: string | undefined, feedback: string | undefined;
@@ -176,12 +179,12 @@ async function start(confirmOrigin = false) {
       const identity = chosenCase.value;
       const invocation = buildSavedCaseInvocation(identity.locator, { caseId: identity.caseId, scope: identity.scope }, props.environmentId ?? undefined, caseState.value?.settings ?? props.debug.settings);
       const result = await props.run.runSavedCase(invocation, context);
-      if (result?.historyId && alive && scope.value === owner) debugHistoryId.value = result.historyId;
+      if (result?.historyId && stillSelected()) debugHistoryId.value = result.historyId;
       if (result) feedback = [label("caseOutcome", { passed: result.run.passed, failed: result.run.failed }), result.error, ...result.warnings].filter(Boolean).join(" · ");
     } else if (suite.value && suitePreview.value) {
       const input = suiteInput(), before = suitePreview.value;
       const actual = await props.api.previewSuite(input);
-      if (!alive || captured !== intent.value || reason.value) return;
+      if (!stillSelected() || captured !== intent.value || reason.value) return;
       if (JSON.stringify(actual) !== JSON.stringify(before)) { changed(); return; }
       const result = await props.testing.run(input.overrides, { context, suiteId: suite.value.id, expectedDataDigest: actual.dataDigest });
       file = result?.archiveFile;
@@ -192,17 +195,17 @@ async function start(confirmOrigin = false) {
     } else if (savedPlan.value) {
       const saved = savedPlan.value;
       const latest = await props.api.stressPlansGet(plain(context.project), saved.id);
-      if (!alive || captured !== intent.value || reason.value) return;
+      if (!stillSelected() || captured !== intent.value || reason.value) return;
       if (!latest || JSON.stringify(saved) !== JSON.stringify(latest)) { changed(); return; }
       const result = confirmOrigin ? await props.stress.confirmPlanTarget(false, saved.id)
         : await props.stress.startPlan(false, { root: context.root, scope: context.project, revision: context.revision, id: saved.id,
           plan: StressPlanSchema.parse({ ...saved.plan, ...(actualEnvId.value ? { environmentId: actualEnvId.value } : {}) }) });
-      if (!result) { if (alive && scope.value === owner) notice.value = props.stress.error ?? ""; return; }
+      if (!result) { if (stillSelected()) notice.value = props.stress.error ?? ""; return; }
       file = result.file;
     } else return;
-    if (alive && owner === scope.value) { archive.value = file ?? ""; notice.value = feedback ?? label("finished"); }
+    if (stillSelected()) { archive.value = file ?? ""; notice.value = feedback ?? label("finished"); }
   } catch (error) {
-    if (alive && scope.value === owner) {
+    if (stillSelected()) {
       if (/run-launch-preview-changed|revision-conflict|root\/revision changed/.test(String(error))) changed();
       else { notice.value = launchError(error, label); props.reportError(error); }
     }
@@ -254,7 +257,7 @@ async function cancel() {
     </section>
     <template #actions>
       <button v-if="ownCase || (testing.running && testing.current) || ownWorkflow || (stress.running && stress.planCurrent())" type="button" @click="cancel">{{ label('cancel') }}</button>
-      <button v-if="debugHistoryId" type="button" @click="emit('open-debug-record', debugHistoryId)">{{ t("debugLoop.historyTitle") }}</button>
+      <button v-if="debugHistoryId" type="button" data-testid="launch-open-debug" @click="emit('open-debug-record', debugHistoryId)">{{ label("inspect") }}</button>
       <button v-if="archive" type="button" data-testid="launch-open-record" @click="emit('records', archive)">{{ label('inspect') }}</button>
     </template>
   </RunLaunchForm>

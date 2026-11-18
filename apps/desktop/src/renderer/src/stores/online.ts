@@ -170,10 +170,10 @@ export function locateOnlineApi(project: ContractProject, path: string) {
  * 登录态，服务器档案保留（裁定 C：档案与登录态分离）；档案激活（新增/切换）即对目标
  * 服务器 resume（裁定 A），恢复成功静默进入登录态、失败保持登出态。
  */
-export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage }) {
+export function createOnlineStore(deps: { api: ApiccApi; storage?: Storage; confirmNewSubmission?: (runId: string) => boolean }) {
   const api = deps.api;
   const storage = deps.storage ?? localStorage;
-  const execution = createOnlineExecutionStore(api, { storage });
+  const execution = createOnlineExecutionStore(api, { storage, confirmNewSubmission: deps.confirmNewSubmission });
   const formalBaselines = new WeakMap<OnlineEditorBuffer, { context: OnlineExecutionContext; version: string; project: ContractProject }>();
   const schedules = createOnlineSchedulesStore(api);
   watch(() => [execution.context, execution.visible] as const, ([context, visible]) => schedules.activate(context, visible), { flush: 'sync' });

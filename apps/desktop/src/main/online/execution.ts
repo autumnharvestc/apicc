@@ -311,6 +311,12 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
           }
           binding.assertCurrent(); return { ok: true };
         }
+        case "findIntent": {
+          const job = await member.findIntent(input.context, input.intentId, trusted.signal ?? new AbortController().signal);
+          binding.assertCurrent();
+          if (job && job.agentId !== input.agentId) throw new Error("online-project-scope-mismatch");
+          return job ? [job] : [];
+        }
         case "list": return (await request("GET", `${path}/jobs?limit=${input.limit}${input.beforeJobId ? `&beforeJobId=${input.beforeJobId}` : ""}`, undefined, z.array(FullOnlineJobSchema))).map(assertJob);
         case "status": case "cancel": case "report": {
           const signal = trusted.signal ?? new AbortController().signal;

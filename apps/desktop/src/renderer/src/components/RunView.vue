@@ -25,6 +25,7 @@ const label = useLaunchMessages();
 const pane = ref<"launch" | "records">("launch"), file = ref(""), recordsVisited = ref(false);
 watch(pane, value => { if (value === "records") recordsVisited.value = true; else file.value = ""; });
 const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
+const previewModule = ref<string | null>("");
 const selectedCollectionLocator = computed(() => props.run.target && projectSessionKey(props.run.targetRoot ?? "", props.run.target) === projectKey.value ? props.run.target : null);
 const collectionValue = (locator: CollectionLocator | null) => locator ? JSON.stringify(locator) : "";
 function projectOfCollection(locator: CollectionLocator): ProjectLocator {
@@ -105,10 +106,11 @@ async function selectObservation(record: Record<string, any>) {
         <button type="button" :aria-current="pane === 'launch' ? 'page' : undefined" data-testid="run-launch-tab" @click="pane = 'launch'">{{ label('launch') }}</button>
         <button type="button" :aria-current="pane === 'records' ? 'page' : undefined" data-testid="runs-history-btn" @click="pane = 'records'">{{ label('records') }}</button>
       </nav>
-      <LocalRunLaunch v-show="pane === 'launch'" v-bind="props" @records="openRecord" @open-debug-record="id => emit('open-debug-record', id)" />
+      <LocalRunLaunch v-show="pane === 'launch'" v-bind="props" @records="openRecord" @open-debug-record="id => emit('open-debug-record', id)"
+        @selection="(kind, id) => { previewModule = kind === 'module' ? id : null; }" />
       <LocalRunRecords v-if="recordsVisited && props.projectLocator" v-show="pane === 'records'" :run="run" :workspace="workspace" :project="props.projectLocator" :file="file"
         :ai="ai" :report-error="reportError" @launch="pane = 'launch'" @locate-evidence="emit('locate-evidence', $event)" @collaboration="emit('collaboration', $event)" />
-      <template v-if="pane === 'launch' && selectedCollectionLocator">
+      <template v-if="pane === 'launch' && selectedCollectionLocator && previewModule !== null && (!previewModule || previewModule === selectedCollectionLocator.collectionId)">
       <div v-if="run.result" class="summary" data-testid="run-summary">
         <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
         <a-button v-if="selectedCollectionLocator" data-testid="collaboration-publish-current" @click="shareReport">{{ t('collaboration.publishToProject') }}</a-button>

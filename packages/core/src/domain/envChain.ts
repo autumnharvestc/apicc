@@ -1,20 +1,24 @@
 import type { Environment, Project } from "./model.js";
 import type { DeepReadonly } from "../assets/context.js";
 
-/** 返回环境名称及其全部祖先名称（extends 按环境名引用）。无环保障由调用方 schema 外校验。 */
-export function envChain(env: DeepReadonly<Environment>, project: DeepReadonly<Project>): string[] {
-  const byName = new Map(project.environments.map((e) => [e.name, e]));
-  const chain: string[] = [];
+/** The selected leaf is identified by ID. Only the extends reference uses a name. */
+export function environmentLayers(env: DeepReadonly<Environment>, project: DeepReadonly<Project>): DeepReadonly<Environment>[] {
+  const chain: DeepReadonly<Environment>[] = [];
   const seen = new Set<string>([env.name]);
-  let cur: Environment | undefined = env;
+  let cur: DeepReadonly<Environment> | undefined = env;
   while (cur) {
-    chain.push(cur.name);
-    const parentName = cur.extends;
+    chain.push(cur);
+    const parentName: string | undefined = cur.extends;
     if (!parentName || seen.has(parentName)) break;
     seen.add(parentName);
-    cur = byName.get(parentName);
+    const parents: DeepReadonly<Environment>[] = project.environments.filter(item => item.name === parentName);
+    if (parents.length > 1) throw new Error(`Ambiguous parent environment: ${parentName}`);
+    cur = parents[0];
   }
   return chain;
+}
+export function envChain(env: DeepReadonly<Environment>, project: DeepReadonly<Project>): string[] {
+  return environmentLayers(env, project).map(layer => layer.name);
 }
 
 /**
@@ -24,10 +28,9 @@ export function envChain(env: DeepReadonly<Environment>, project: DeepReadonly<P
  */
 export function mergedEnvVars(env: DeepReadonly<Environment> | undefined, project: DeepReadonly<Project>): Record<string, string> {
   if (!env) return {};
-  const byName = new Map(project.environments.map((e) => [e.name, e]));
   const vars: Record<string, string> = {};
-  for (const name of [...envChain(env, project)].reverse()) {
-    Object.assign(vars, byName.get(name)?.variables ?? {});
+  for (const layer of environmentLayers(env, project).reverse()) {
+    Object.assign(vars, layer.variables);
   }
   return vars;
 }

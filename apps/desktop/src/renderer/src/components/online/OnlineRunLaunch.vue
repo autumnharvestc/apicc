@@ -17,7 +17,7 @@ import { confirmOnlineStress, runOnlineCase, runOnlineStress, runOnlineSuite, ru
 import RunLaunchForm from "../RunLaunchForm.vue";
 import RunWorkflowInputs from "../RunWorkflowInputs.vue";
 
-const props = defineProps<{ execution: OnlineExecutionStore; adapter: ReturnType<typeof createOnlineProjectAdapter>; readOnly?: boolean; reportError: (error: unknown) => void }>();
+const props = defineProps<{ execution: OnlineExecutionStore; adapter: ReturnType<typeof createOnlineProjectAdapter>; readOnly?: boolean; dirtyStressPlanId?: string | null; reportError: (error: unknown) => void }>();
 const emit = defineEmits<{ records: [runId: string] }>();
 const { t, te } = useI18n();
 const label = useLaunchMessages();
@@ -26,6 +26,7 @@ const kind = ref<LaunchKind>("case"), selected = ref("");
 const allowDraft = ref(false), origins = ref("");
 const inputs = ref<Record<string, JsonValue>>(), validInputs = ref(false);
 const busy = ref(false), launched = ref(""), notice = ref("");
+let selectionEpoch = 0;
 const project = computed(() => props.execution.confirmedProject());
 const scopeKey = computed(() => JSON.stringify(props.execution.context));
 const version = computed(() => props.execution.view?.assets.version);
@@ -117,6 +118,7 @@ const blocked = computed(() => {
   }
   if (suitePreview.value?.error) return suitePreview.value.error;
   if (plan.value) {
+    if (selected.value === props.dirtyStressPlanId) return label("save-before-running");
     if (!StressPlanSchema.safeParse(plan.value).success) return label("invalid-stress");
     if (plan.value.environmentId && e.environmentId && plan.value.environmentId !== e.environmentId) return t("onlineStress.environmentMismatch");
   }
@@ -125,7 +127,7 @@ const blocked = computed(() => {
 const reason = computed(() => blocked.value || (plan.value && !props.execution.isStressConfirmed(plan.value) ? t("onlineStress.confirmationRequired") : ""));
 watch(scopeKey, () => { kind.value = "case"; selected.value = ""; launched.value = ""; busy.value = false; notice.value = ""; }, { flush: "sync" });
 watch(kind, () => { selected.value = ""; }, { flush: "sync" });
-watch([kind, selected], () => { inputs.value = undefined; validInputs.value = false; allowDraft.value = false; origins.value = ""; notice.value = ""; }, { flush: "sync" });
+watch([kind, selected], () => { selectionEpoch++; launched.value = ""; inputs.value = undefined; validInputs.value = false; allowDraft.value = false; origins.value = ""; notice.value = ""; }, { flush: "sync" });
 watch(version, (next, previous) => {
   if (selected.value && previous && next !== previous) notice.value = label("preview-changed");
 });
@@ -150,24 +152,28 @@ async function start() {
   if (busy.value || e.running || reason.value || !selected.value || (workflow.value && !validInputs.value)) return;
   const scope = scopeKey.value, location = e.location.kind;
   const sameProject = () => mounted && scope === scopeKey.value;
+  const epoch = selectionEpoch;
+  const stillSelected = () => sameProject() && selectionEpoch === epoch;
   busy.value = true;
-  notice.value = "";
+  notice.value = ""; launched.value = "";
   try {
+    const previous = e.resultSelection;
     let pending: Promise<void>;
     if (testCase.value) {
       const { locator, testCase: chosen } = testCase.value;
       pending = runOnlineCase(e, locator, { caseId: chosen.id, scope: chosen.scope });
     } else if (suite.value) pending = runOnlineSuite(e, suite.value, allowDraft.value);
     else if (workflow.value) pending = runOnlineWorkflow(e, workflow.value, inputs.value);
-    else if (plan.value) pending = runOnlineStress(e, plan.value);
+    else if (plan.value) pending = runOnlineStress(e, plan.value, selected.value);
     else return;
     const selection = e.resultSelection;
-    const submittedId = selection && "runId" in selection && e.running ? selection.runId : "";
-    if (submittedId) launched.value = submittedId;
+    const submittedId = selection && selection !== previous && "runId" in selection ? selection.runId : "";
+    const reused = !!submittedId && !e.running;
+    if (submittedId && stillSelected()) launched.value = submittedId;
     await pending;
-    if (sameProject()) notice.value = location === "agent" ? label("accepted") : label("finished");
+    if (stillSelected()) notice.value = reused ? label("prior-submission") : location === "agent" ? label("accepted") : label("finished");
   } catch (error) {
-    if (sameProject()) {
+    if (stillSelected()) {
       notice.value = /version_conflict/.test(String(error)) ? label("preview-changed") : failure(error);
     }
   } finally { if (sameProject()) busy.value = false; }

@@ -42,9 +42,6 @@ export function previewCollectionLaunch(project: ContractProject, collectionId: 
   const collection = snapshot.project.collections.find(item => item.id === collectionId);
   if (!collection) throw new Error("run-launch-target-unavailable");
   const environment = snapshot.project.environments.find(item => item.id === environmentId);
-  if (environment && snapshot.project.environments.filter(item => item.name === environment.name).length !== 1) {
-    throw new Error("run-launch-environment-ambiguous");
-  }
   if (environmentId && !environment) throw new Error("run-launch-environment-unavailable");
   const selected = selectCollectionCases(snapshot, collection, environmentId);
   return {

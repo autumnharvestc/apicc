@@ -249,6 +249,52 @@ describe("RunView", () => {
     expect(wrapper.get('[data-testid="run-btn"]').attributes("disabled")).toBeDefined();
   });
 
+  it("uses the project environment ID for a single case even when module execution cannot resolve its name", async () => {
+    const { wrapper, api, workspace, project, collectionNode } = await mountRunView();
+    await api.envCreate({ locator: project.locator, name: "Same name" });
+    const second = await api.envCreate({ locator: project.locator, name: "Same name" });
+    await workspace.refresh();
+    await wrapper.setProps({ environmentId: second.id });
+    await chooseModule(wrapper, collectionNode.id);
+    await flushPromises();
+    const button = wrapper.get('[data-testid="run-btn"]');
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("同名");
+    const start = vi.spyOn(api, "debugStart");
+    await wrapper.get('[data-testid="launch-kind"]').setValue("case");
+    await wrapper.get('[data-testid="launch-target"]').setValue(true);
+    await flushPromises();
+    expect(button.attributes("disabled")).toBeUndefined();
+    await button.trigger("click"); await flushPromises();
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0]![0]).toMatchObject({ mode: "case", environmentId: second.id });
+  });
+
+  it("keeps late archive and debug receipts off a different launch target", async () => {
+    const { wrapper, api, collectionNode, run } = await mountRunView();
+    const button = wrapper.get('[data-testid="run-btn"]'), kind = wrapper.get('[data-testid="launch-kind"]');
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const normal = api.runCollection.bind(api);
+    const moduleRun = vi.spyOn(api,"runCollection").mockImplementation(async input => { await pending; return normal(input); });
+    await chooseModule(wrapper, collectionNode.id); await flushPromises(); await button.trigger("click");
+    await vi.waitFor(() => expect(moduleRun).toHaveBeenCalledTimes(1));
+    await kind.setValue("case"); finish();
+    await vi.waitFor(() => expect(run.result).toBeTruthy());
+    expect(wrapper.find('[data-testid="launch-open-record"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="run-summary"]').exists()).toBe(false);
+    const normalWait = api.debugWait.bind(api);
+    const waiting = new Promise<void>(resolve => { finish = resolve; });
+    const debugWait = vi.spyOn(api,"debugWait").mockImplementation(async input => {
+      await waiting; return {...await normalWait(input), historyId:"exact-history-entry"};
+    });
+    await wrapper.get('[data-testid="launch-target"]').setValue(true); await flushPromises(); await button.trigger("click");
+    await vi.waitFor(() => expect(debugWait).toHaveBeenCalledTimes(1));
+    await kind.setValue("suite"); finish(); await vi.waitFor(() => expect(run.caseRunning).toBe(false));
+    expect(wrapper.find('[data-testid="launch-open-debug"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("通过 1 条");
+  });
+
   it("previews single cases without loading an editor, fences old scope and captures exactly one explicit start", async () => {
     const { wrapper, api, workspace, project, collectionNode } = await mountRunView();
     const editor = wrapper.props("editor"), before = editor.activeKey;

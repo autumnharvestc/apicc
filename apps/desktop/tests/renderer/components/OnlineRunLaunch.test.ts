@@ -8,9 +8,24 @@ import { createOnlineExecutionStore } from "../../../src/renderer/src/stores/onl
 import { createOnlineProjectAdapter } from "../../../src/renderer/src/stores/onlineProjectAdapter.js";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import OnlineRunLaunch from "../../../src/renderer/src/components/online/OnlineRunLaunch.vue";
+import OnlineExecutionPanel from "../../../src/renderer/src/components/online/OnlineExecutionPanel.vue";
 import type { OnlineExecutionInput } from "../../../src/shared/online/execution.js";
 
 enableAutoUnmount(afterEach);
+it("shows the recovered local report verdict, request fact and reason only for its exact run ID", async () => {
+  const execution = createOnlineExecutionStore({onlineExecution:async () => []});
+  const runId = crypto.randomUUID();
+  execution.resultSelection = {kind:"local",runId};
+  execution.report = {executionId:runId,verdict:"timed-out",executionFact:"uncertain",reasonCode:"job-timeout"};
+  const { i18n } = createI18nInstance(); i18n.global.locale.value = "en";
+  const panel = mount(OnlineExecutionPanel,{props:{execution,reportOnly:true},global:{plugins:[i18n]}});
+  const report = panel.get('[data-testid="online-execution-report"]');
+  expect(report.text()).toContain(i18n.global.t("onlineExecution.states.timed-out"));
+  expect(report.text()).toContain(i18n.global.t("onlineExecution.states.uncertain"));
+  expect(report.get('[role="alert"]').text()).toBeTruthy();
+  execution.resultSelection = {kind:"local",runId:crypto.randomUUID()}; await flushPromises();
+  expect(panel.find('[data-testid="online-execution-report"]').exists()).toBe(false);
+});
 it("keeps online selection read-only, preserves the exact dispatched case and only opens that submission", async () => {
   const requests: Array<Extract<OnlineExecutionInput, {operation:"run"}>> = [];
   let settle!: () => void;
@@ -34,7 +49,8 @@ it("keeps online selection read-only, preserves the exact dispatched case and on
   execution.project = project; execution.saved = JSON.stringify(project);
   execution.view = { project, problems: [], assets:{...scope,format:"contract-files-v1",contractProjectId:project.id,version:"1",manifestHash:"a".repeat(64),files:[]} };
   const adapter = createOnlineProjectAdapter(execution, createMemoryApi(), () => false, () => false);
-  const panel = mount(OnlineRunLaunch, {props:{execution,adapter,reportError:vi.fn()},global:{plugins:[createI18nInstance().i18n]}});
+  const { i18n } = createI18nInstance(); i18n.global.locale.value = "zh-CN";
+  const panel = mount(OnlineRunLaunch, {props:{execution,adapter,reportError:vi.fn()},global:{plugins:[i18n]}});
   try {
     const kind = panel.get('[data-testid="launch-kind"]');
     expect(kind.findAll("option").map(item => item.attributes("value"))).toEqual(["case","suite","workflow","stress"]);
@@ -47,13 +63,27 @@ it("keeps online selection read-only, preserves the exact dispatched case and on
     await Promise.all([button.trigger("click"),button.trigger("click")]); await flushPromises();
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({operation:"run",expectedVersion:"1",location:{kind:"local"},target:{kind:"debug",invocation:{mode:"case",case:{apiId:asset.contract.id,caseId:"case-1",scope:"base"}}}});
-    await kind.setValue("stress"); settle(); await flushPromises();
     const recordsButton = panel.findAll("button").find(item => item.text().includes("本次运行") || item.text().includes("View this run"))!;
     await recordsButton.trigger("click"); expect(panel.emitted("records")?.[0]).toEqual([requests[0]!.runId]);
+    await panel.findAll('[data-testid="launch-target"]')[0]!.setValue(true); settle(); await flushPromises();
+    expect(panel.text()).not.toContain("查看本次运行");
+    expect(panel.text()).not.toContain("submission-uncertain");
+    await pick.setValue(true); await button.trigger("click"); await flushPromises();
+    expect(panel.text()).toContain("已选中原提交");
+    expect(requests).toHaveLength(1);
+    await panel.findAll("button").find(item => item.text() === "查看本次运行")!.trigger("click");
+    expect(panel.emitted("records")?.at(-1)).toEqual([requests[0]!.runId]);
+    await kind.setValue("stress"); await flushPromises();
     await panel.get('[data-testid="launch-target"]').setValue(true); await flushPromises();
     expect(button.attributes("disabled")).toBeDefined();
     const origins = panel.get(".stress-launch input:not([type=number])");
     await origins.setValue("http://127.0.0.1:8123"); await panel.get(".stress-launch button").trigger("click");
+    expect(button.attributes("disabled")).toBeUndefined();
+    await panel.setProps({ dirtyStressPlanId: "saved" });
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(panel.text()).toContain("请先保存所选目标");
+    await button.trigger("click"); expect(requests).toHaveLength(1);
+    await panel.setProps({ dirtyStressPlanId: "other" });
     expect(button.attributes("disabled")).toBeUndefined();
     await origins.setValue("http://127.0.0.1:8124");
     expect(button.attributes("disabled")).toBeDefined(); expect(requests).toHaveLength(1);

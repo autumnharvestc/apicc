@@ -25,8 +25,8 @@ export function runOnlineSuite(execution: OnlineExecutionStore, suite: SuiteAsse
   return execution.run({ kind: "suite", suiteId: suite.id, allowDraft });
 }
 
-export function runOnlineStress(execution: OnlineExecutionStore, plan: StressPlan) {
-  return execution.run({ kind: "stress", plan: StressPlanSchema.parse(plan) });
+export function runOnlineStress(execution: OnlineExecutionStore, plan: StressPlan, savedPlanId: string) {
+  return execution.run({ kind: "stress", plan: StressPlanSchema.parse(plan) }, savedPlanId);
 }
 
 export function confirmOnlineStress(execution: OnlineExecutionStore, plan: StressPlan, origins: string) {

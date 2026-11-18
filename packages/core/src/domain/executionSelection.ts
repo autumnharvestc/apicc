@@ -1,7 +1,7 @@
 import type { DeepReadonly } from "../assets/snapshot.js";
 import type { ContractProject } from "../contract/workspace.js";
 import type { Environment } from "./common.js";
-import { envChain, mergedEnvVars } from "./envChain.js";
+import { environmentLayers } from "./envChain.js";
 
 export interface ExecutionEnvironment {
   readonly environment?: DeepReadonly<Environment>;
@@ -39,12 +39,13 @@ export function resolveExecutionEnvironment(
   const environment = project.environments.find((candidate) => candidate.id === environmentId);
   if (!environment) throw new Error(`配置错误: 项目快照中不存在环境 ${environmentId}`);
 
-  const chain = envChain(environment, project);
-  const variables = mergedEnvVars(environment, project);
-  const environmentsByName = new Map(project.environments.map((candidate) => [candidate.name, candidate]));
+  const layers = environmentLayers(environment, project);
+  const chain = layers.map(layer => layer.name);
+  const variables: Record<string, string> = {};
   let baseUrl: string | undefined;
-  for (const name of [...chain].reverse()) {
-    const candidate = environmentsByName.get(name)?.baseUrls[collectionId];
+  for (const layer of layers.reverse()) {
+    Object.assign(variables, layer.variables);
+    const candidate = layer.baseUrls[collectionId];
     if (candidate !== undefined) baseUrl = candidate;
   }
   if (baseUrl !== undefined) variables.baseUrl = baseUrl;

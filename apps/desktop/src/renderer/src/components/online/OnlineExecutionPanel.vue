@@ -23,7 +23,11 @@ const duration = (value: number) => value.toLocaleString(locale.value, { maximum
 const selected = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection ? selection.job : props.execution.jobs.find(job => job.jobId === props.execution.selectedJobId); });
 const fullSelected = computed(() => selected.value && isFullOnlineJob(selected.value) ? selected.value : undefined);
 const local = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' ? null : selection?.kind === 'local' && selection.runId !== props.execution.localResult?.runId ? null : props.execution.localResult; });
-const report = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'local' || selection?.kind === 'agent' && !('job' in selection) || selected.value && selected.value.executionId !== props.execution.report?.executionId ? null : props.execution.report; });
+const report = computed(() => {
+  const selection = props.execution.resultSelection, retained = props.execution.report;
+  if (selection?.kind === 'local') return retained?.executionId === selection.runId ? retained : null;
+  return selection?.kind === 'agent' && !('job' in selection) || selected.value && selected.value.executionId !== retained?.executionId ? null : retained;
+});
 const output = computed(() => report.value?.output ?? local.value?.output);
 const stressReport=computed(()=>output.value?.kind==='stress'?output.value.result:undefined);
 const stressSummary=computed(()=>summarizeStressExecution({report:stressReport.value,agent:!local.value && props.execution.resultSelection?.kind!=='local'?fullSelected.value?.stressMetadata:undefined,local:local.value?.localStress}));
@@ -61,8 +65,10 @@ const raw = ref(false);
 const selectionKey = computed(() => JSON.stringify(props.execution.resultSelection ?? [props.execution.selectedJobId, local.value?.runId, report.value?.executionId]));
 function analyzeReport() {
   const context = props.execution.context, displayed = local.value ?? report.value, key = selectionKey.value;
-  const runId = local.value?.runId ?? selected.value?.jobId;
-  const location = local.value ? { kind: 'local' as const } : selected.value ? { kind: 'agent' as const, agentId: selected.value.agentId } : null;
+  const selection = props.execution.resultSelection;
+  const localId = local.value?.runId ?? (selection?.kind === 'local' && report.value?.executionId === selection.runId ? selection.runId : undefined);
+  const runId = localId ?? selected.value?.jobId;
+  const location = localId ? { kind: 'local' as const } : selected.value ? { kind: 'agent' as const, agentId: selected.value.agentId } : null;
   if (!context || !displayed || !runId || !location || !props.ai) return;
   const sourceKey = JSON.stringify(context);
   void props.ai.prepareReportAnalysis({ source: { kind: 'online', context }, report: { kind: 'online', runId, location }, displayed,
@@ -165,17 +171,17 @@ const recordedEnvironment = computed(() => {
     </div>
     </template>
     <section v-if="execution.resultSelection || selected || local || report" data-testid="online-selected-run">
-      <button v-if="ai && execution.context && (local || report)" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
+      <button v-if="ai && execution.context && output && output.kind !== 'stress-failure'" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
       <h4>{{ t('onlineExecution.recordedRun') }}</h4>
       <p v-if="selected && !fullSelected">{{ t('onlineExecution.statusOnly') }}</p>
       <dl class="summary" data-testid="selected-execution-facts">
         <div><dt>{{ msg("recordId") }}</dt><dd>{{ selected?.executionId ?? receipt?.runId ?? local?.runId ?? msg("notRecorded") }}</dd></div>
         <div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ selected ? label(selected.state) : local ? label("ended") : receipt?.pending ? msg("awaiting") : msg("notRecorded") }}</dd></div>
-        <div v-if="!selected || fullSelected"><dt>{{ msg("receipt") }}</dt><dd>{{ selected || local ? msg("accepted") : receipt?.pending ? msg("submitting") : msg("uncertain") }}</dd></div>
+        <div v-if="!selected || fullSelected"><dt>{{ msg("receipt") }}</dt><dd>{{ selected || local || report ? msg("accepted") : receipt?.pending ? msg("submitting") : msg("uncertain") }}</dd></div>
         <div v-if="!selected || fullSelected"><dt>{{ t("onlineExecution.verdict") }}</dt><dd>{{ report || local ? logicalVerdict : selected ? verdict(selected) : msg("notRecorded") }}</dd></div>
         <div v-if="!selected || fullSelected"><dt>{{ msg("requests") }}</dt><dd>{{ requestFact }}</dd></div>
         <div v-if="selected"><dt>{{ t("onlineExecution.release") }}</dt><dd>{{ label(selected.executionReleased ? 'released' : 'retained') }}</dd></div>
-        <div v-if="fullSelected || local"><dt>{{ t("onlineExecution.archive") }}</dt><dd>{{ local ? msg("sessionReport") : label(fullSelected?.reportState) }}</dd></div>
+        <div v-if="fullSelected || local || report"><dt>{{ t("onlineExecution.archive") }}</dt><dd>{{ execution.resultSelection?.kind === 'local' || local ? msg("sessionReport") : label(fullSelected?.reportState) }}</dd></div>
       </dl>
       <p v-if="failureText" role="alert">{{ failureText }}</p>
       <p v-if="selected && selected.cancelState !== 'none'">{{ label('cancel-' + selected.cancelState) }}</p>

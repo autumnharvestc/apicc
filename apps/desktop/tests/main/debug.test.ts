@@ -44,7 +44,7 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-async function setup(options: { environment?: boolean; scope?: string; unreachable?: boolean; assertStatus?: boolean; dataset?: boolean } = {}) {
+async function setup(options: { environment?: boolean; scope?: string; unreachable?: boolean; assertStatus?: boolean; dataset?: boolean; path?: string } = {}) {
   const root = await makeTempRoot("apicc-debug-assets-");
   roots.push(root);
   const workspace = makeWorkspace();
@@ -55,7 +55,7 @@ async function setup(options: { environment?: boolean; scope?: string; unreachab
     protocol: "http",
     method: "GET",
     baseUrl: options.environment ? "{{baseUrl}}" : options.unreachable ? "http://127.0.0.1:1" : baseUrl,
-    path: "/x",
+    path: options.path ?? "/x",
     pathParams: [], query: [], headers: [], cookies: [],
     auth: { kind: "none" }, body: { kind: "none" },
   };
@@ -184,6 +184,32 @@ describe("sendDebug", () => {
 });
 
 describe("debug controller", () => {
+  it("routes a case to the selected same-name environment's HTTP server and variables by ID", async () => {
+    const { session, locator, api, project } = await setup({environment:true,path:"/{{marker}}"});
+    const env = project.environments[0]!;
+    const otherPaths: string[] = [];
+    const other = createServer((req, res) => { otherPaths.push(req.url!); res.end("{}"); });
+    await new Promise<void>(resolve => other.listen(0, "127.0.0.1", resolve));
+    try {
+      const scope = { workspaceId:locator.workspaceId, groupId:locator.groupId, projectId:locator.projectId };
+      const second = await session.createEnvironment(scope, { name:env.name, variables:{ marker:"second" },
+        baseUrls:{[locator.collectionId]:`http://127.0.0.1:${(other.address() as {port:number}).port}`} });
+      await session.setEnvironmentVariables({...scope,environmentId:env.id}, { marker:"first" });
+      const controller = createDebugController(session, () => createDefaultRegistry(), {prepareRunForRequests: async (_scope,snapshot) =>
+        ({ run:{snapshot,credentialBindings:{resolve:()=>{throw new Error("unexpected credential");},versions:{}}},refs:[],markers:[] })});
+      const owner = {}, firstPaths: string[] = [];
+      const observe = (req: import("node:http").IncomingMessage) => { firstPaths.push(req.url!); };
+      server.on("request", observe);
+      try {
+        for (const environmentId of [env.id,second.id]) {
+          const started = controller.start(owner,{mode:"case",locator,case:{...locator,caseId:api.cases[0]!.id,scope:api.cases[0]!.scope},environmentId});
+          expect((await controller.wait(owner,started.runId)).run.failed).toBe(0);
+        }
+        expect(firstPaths).toEqual(["/first"]);
+        expect(otherPaths).toEqual(["/second"]);
+      } finally { server.off("request", observe); }
+    } finally { await new Promise<void>(resolve => other.close(() => resolve())); }
+  });
   it("runs a project-owned free request without persisting or exposing its temporary asset identity", async () => {
     const { session, project, projectLocator } = await setupProjectWithoutCollections();
     const diskBefore = workspaceBytes(session.root!);

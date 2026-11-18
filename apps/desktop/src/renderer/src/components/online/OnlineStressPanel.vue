@@ -115,7 +115,7 @@ async function stop() { const target = stopTarget.value; if (target?.kind === 'l
 async function run() {
   if (!plan.value || !canRun.value) return;
   const previous = props.execution.resultSelection;
-  const pending = runOnlineStress(props.execution, plan.value);
+  const pending = runOnlineStress(props.execution, plan.value, selected.value);
   const receipt = props.execution.resultSelection;
   if (receipt && receipt !== previous && "runId" in receipt) submitted.value.set(selected.value, receipt.runId);
   await pending;

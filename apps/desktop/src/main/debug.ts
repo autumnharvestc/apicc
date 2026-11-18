@@ -51,6 +51,9 @@ export async function runCollection(
   const collection = snapshot.project.collections.find((candidate) => candidate.id === captured.locator.collectionId);
   if (!collection) throw new Error(`未找到集合: ${JSON.stringify(captured.locator)}`);
   const env = resolveSnapshotEnvironment(snapshot.project, captured.envName);
+  if (input.preview && env && snapshot.project.environments.filter(item => item.name === env.name).length !== 1) {
+    throw new Error("run-launch-environment-ambiguous");
+  }
   if (input.preview && env?.id !== input.preview.environmentId) throw new Error("run-launch-preview-changed");
   const credentialSelections = selectCollectionCases(snapshot, collection, env?.id)
     .flatMap(({ asset, cases }) => cases.map(testCase => ({

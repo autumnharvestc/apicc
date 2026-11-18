@@ -7,6 +7,7 @@ import type { HttpHopObservation, PmApi } from "../plugin/types.js";
 import type { HttpSession } from "../http/session.js";
 import { captureProjectExecutionRun, CollectionRunError, CollectionRunner, type RunnerOptions } from "../runner/runner.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "../domain/executionSelection.js";
+import { mergedEnvVars } from "../domain/envChain.js";
 import { createExtractionRuntimeState, extractionVariables, type ExtractionRuntimeState } from "../testing/extraction.js";
 import { createEventBus } from "../events/bus.js";
 import { validateWorkflowStructure } from "./validate.js";
@@ -185,7 +186,7 @@ export class WorkflowRunner {
     const env = resolveEnv(project, environmentId);
     // 条件求值上下文 env（规格 §4）：按继承链根→叶合并的环境变量只读快照（与 CollectionRunner
     // 的环境层同源语义，规格 §3.1/§6）；sit extends dev 等继承场景父环境变量必须可见。未选环境时空对象。
-    const envVars = mergedEnvironmentVariables(env, project);
+    const envVars = mergedEnvVars(env, project);
     const runner = new CollectionRunner({
       registry: this.opts.registry,
       requestSettings: options.requestSettings,
@@ -578,27 +579,6 @@ function resolveNodeReference(
   const location = node.apiId ? findProjectApi(project, node.apiId) : undefined;
   const api = location?.api;
   return { location, api, caseDef: api?.cases.find((candidate) => candidate.id === node.caseId) };
-}
-
-function environmentChain(env: DeepReadonly<Environment>, project: DeepReadonly<ContractProject>): string[] {
-  const byName = new Map(project.environments.map((candidate) => [candidate.name, candidate]));
-  const names: string[] = [];
-  const seen = new Set<string>();
-  let current: DeepReadonly<Environment> | undefined = env;
-  while (current && !seen.has(current.name)) {
-    names.push(current.name);
-    seen.add(current.name);
-    current = current.extends ? byName.get(current.extends) : undefined;
-  }
-  return names;
-}
-
-function mergedEnvironmentVariables(env: DeepReadonly<Environment> | undefined, project: DeepReadonly<ContractProject>): Record<string, string> {
-  if (!env) return {};
-  const byName = new Map(project.environments.map((candidate) => [candidate.name, candidate]));
-  const variables: Record<string, string> = {};
-  for (const name of environmentChain(env, project).reverse()) Object.assign(variables, byName.get(name)?.variables ?? {});
-  return variables;
 }
 
 function missingReferenceMessage(node: DeepReadonly<WorkflowNode>): string {

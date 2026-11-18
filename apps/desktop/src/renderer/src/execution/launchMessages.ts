@@ -21,9 +21,13 @@ const messages = {
     planEnvironment: "Uses the environment saved in the target.", inputs: "Run inputs", required: "Required", missingInput: "Enter a value for {name}.",
     data: "Dataset", noData: "None", loading: "Reading saved scope…", busy: "Starting or running the selected task…",
     accepted: "Task submitted to agent.", finished: "Run finished.", inspect: "View this run", cancel: "Cancel", submitting: "Sending task…",
+    confirmAnother: "The outcome of submission {id} is unknown. This target may already be running. Start a separate new task? Cancel to keep the original submission.",
+    "prior-submission": "The original submission is selected. View this run to check its status.",
     sourceChanged: "The execution context changed. Launch again to confirm the target.",
   },
   "zh-CN": {
+    confirmAnother: "上一次提交 {id} 的结果未确定，目标可能已开始执行。确定另外发起一个新任务吗？取消将保留原提交。",
+    "prior-submission": "已选中原提交，请点击“查看本次运行”查询其状态。",
     launch: "发起任务", records: "任务记录", choose: "选择运行目标", type: "任务类型", search: "按名称查找",
     noTargets: "没有匹配的已保存目标", thisRun: "本次执行", pick: "选择目标以查看执行范围。",
     scope: "范围", environment: "环境", location: "执行位置", local: "本机", moduleScope: "当前模块及子文件夹",

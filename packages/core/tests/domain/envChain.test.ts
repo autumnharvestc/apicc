@@ -27,6 +27,15 @@ describe("envChain", () => {
   it("无继承时只含自身", () => {
     expect(envChain(project.environments[0] as Environment, project)).toEqual(["dev"]);
   });
+  it("resolves a selected leaf directly and rejects ambiguous name-based inheritance", () => {
+    const original = { ...project.environments[0]!, variables: { target:"first" } };
+    const duplicate = { ...original, id:"e4", variables:{ target:"second" } };
+    const inherited = project.environments[1]!;
+    const withDuplicates = { ...project, environments:[original, inherited, duplicate] };
+    expect(mergedEnvVars(original, withDuplicates)).toEqual({target:"first"});
+    expect(mergedEnvVars(duplicate, withDuplicates)).toEqual({target:"second"});
+    expect(() => mergedEnvVars(inherited, withDuplicates)).toThrow("Ambiguous parent environment: dev");
+  });
   it("readonly snapshot inputs preserve the existing chain and parent-to-child variable merge", () => {
     const mutableProject = createContractExecutionProject("http://parent.example");
     mutableProject.environments = [

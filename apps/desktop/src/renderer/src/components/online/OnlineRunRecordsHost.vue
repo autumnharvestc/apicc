@@ -60,10 +60,10 @@ const rows = computed(() => {
     if (receipt.job) { const job = e.value.jobs.find(j => jobKey(j) === jobKey(receipt.job!)); if (job) addJob(job, receipt); continue; }
     const local = receipt.result?.output;
     result.push({key:receipt.runId,run:receipt,name:receipt.targetName ?? receipt.runId,kind:receipt.target.kind,time:receipt.submittedAt,
-      state:local ? code("ended") : receipt.pending ? msg("awaiting") : msg("uncertain"),
+      state:local || receipt.localReport ? code("ended") : receipt.pending ? msg("awaiting") : msg("uncertain"),
       verdict:local?.kind === "failure" || local?.kind === "stress-failure" ? code("failed") : local?.kind === "stress" ? code(local.result.verdict.status) :
         local?.kind === "debug" ? code(local.result.error || local.result.failureKind || local.result.run.failed ? "failed" : "passed") :
-        local ? code(local.kind === "suite" ? local.result.suite?.verdict : local.result.verdict) : undefined });
+        local ? code(local.kind === "suite" ? local.result.suite?.verdict : local.result.verdict) : receipt.localReport ? code(receipt.localReport.verdict) : undefined });
   }
   e.value.jobs.forEach(job => addJob(job));
   if (selectedJob.value) addJob(selectedJob.value);
