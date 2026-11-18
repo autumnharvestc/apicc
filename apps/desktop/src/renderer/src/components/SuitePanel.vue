@@ -9,14 +9,23 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import type { EvidenceIdentity } from "@apicc/core";
 import { reportEntryEvidence } from "@apicc/core/report/units";
 import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
+import type { LocalRunRecordTarget } from "../execution/localLaunch.js";
+import { useLaunchMessages } from "../execution/launchMessages.js";
 function runOverrides() {
   const id = props.projectEnvironment?.value;
   if (id && !props.projectEnvironment?.options.some(option => option.key === id)) throw new Error(t('environmentShortcut.unavailable'));
   return { allowDraft: allowDraft.value, ...(id ? { environmentId: id } : {}) };
 }
-const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
+const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void; (event: "open-run-record", target: LocalRunRecordTarget): void }>();
 const props = defineProps<{ testing: TestingStore; projectEnvironment?: import("../debugEnvironment.js").DebugEnvironmentSelection; externalRunIssue?: string; externalRun?: (allowDraft: boolean) => Promise<void>; ai?: import('../stores/ai.js').AiStore; refreshingDisk?: boolean }>();
 const { t, te } = useI18n(); const allowDraft = ref(false); const error = ref("");
+const launchLabel = useLaunchMessages();
+const record = computed<LocalRunRecordTarget | undefined>(() => {
+  const result = props.testing.result;
+  if (!props.externalRun && props.testing.current && result?.archiveFile) {
+    return { ...result.context, kind: "archive", id: result.archiveFile };
+  }
+});
 const errorIsTyped = ref(false);
 function stateLabel(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
 function workflowStatus(code: string) { return ['draft','published','enabled'].includes(code) ? t(`testingUi.workflowStates.${code}`) : code; }
@@ -98,6 +107,7 @@ function analyzeReport() {
         <div v-if="testing.result"><p>{{ t('run.reportingUnits', { total: testing.result.result.reportingUnits?.total ?? '—', failed: testing.result.result.reportingUnits?.failed ?? '—', diagnostics: testing.result.result.reportingUnits?.entryDiagnostics ?? '—' }) }}</p><details v-for="(row,index) in testing.result.result.cases" :key="JSON.stringify([row.locator,row.scope,row.entryId,row.suiteRow,row.row,row.nodeId,index])"><summary>{{ row.apiName }} / {{ row.caseName }} · {{ stateLabel(row.passed ? 'passed' : 'failed') }} · {{ t('run.row') }}={{ row.row === undefined ? '—' : row.row + 1 }} · {{ t('caseEvidence.entry') }}={{ row.entryId }}</summary><CaseEvidencePanel :evidence="row.evidence" :disabled="testing.running || testing.transitioning || testing.dirty" :inspect="testing.inspectEvidence" :rerun="testing.rerunEvidence" @locate="emit('locate-evidence', $event)" /></details></div>
         <div v-if="testing.preview" data-testid="suite-preview-result"><p>{{ t('testing.scale', { entries: testing.preview.plan.entries.length, rows: testing.preview.outerRows, executions: testing.preview.plannedExecutions }) }}</p><div class="table-scroll"><table data-testid="suite-preview-table"><thead><tr><th>#</th><th>{{ t('testingUi.kind') }}</th><th>{{ t('testingUi.executions') }}</th><th>{{ t('testingUi.resolvedCases') }}</th></tr></thead><tbody><tr v-for="(entry,index) in testing.preview.plan.entries" :key="entry.id"><th>{{ index + 1 }}</th><td>{{ entry.kind === 'case' ? t('testingUi.case') : entry.kind === 'workflow' ? t('testingUi.workflow') : entry.kind }}</td><td>{{ testing.preview.entries[index]?.plannedExecutions ?? '—' }}</td><td><p v-if="entry.workflowId">{{ t('testingUi.workflow') }}: {{ entry.workflowId }}</p><dl v-for="item in entry.cases" :key="JSON.stringify(item.locator)"><dt>{{ t('testingUi.api') }}</dt><dd>{{ item.locator.apiId }}</dd><dt>{{ t('testingUi.case') }}</dt><dd>{{ item.locator.caseId }}</dd><dt>{{ t('testingUi.scope') }}</dt><dd>{{ item.locator.scope }}</dd><dt>{{ t('testingUi.folder') }}</dt><dd>{{ item.locator.folderIds.join('/') || '—' }}</dd></dl></td></tr></tbody></table></div><div v-if="testing.preview.sources.length" class="table-scroll"><table><thead><tr><th>{{ t('testingUi.source') }}</th><th>{{ t('testing.rows') }}</th><th>{{ t('testingUi.notes') }}</th></tr></thead><tbody><tr v-for="(source,index) in testing.preview.sources" :key="index"><td>{{ source.label }}</td><td>{{ source.rowCount }}</td><td>{{ source.legacyEmptyFallback ? t('testing.legacyEmpty') : '—' }}</td></tr></tbody></table></div></div>
         <div v-if="testing.result" data-testid="suite-result"><h4>{{ testing.result.result.collectionName }} · {{ stateLabel(testing.result.result.suite?.verdict) }}</h4><p>{{ t('testing.entryCounts', testing.result.result.suite ?? {}) }}</p><p>{{ t('testing.caseCounts', testing.result.result) }}</p><div class="table-scroll"><table data-testid="suite-result-table"><thead><tr><th>{{ t('caseEvidence.entry') }}</th><th>{{ t('testingUi.outerRow') }}</th><th>{{ t('testingUi.state') }}</th><th>{{ t('testingUi.reason') }}</th></tr></thead><tbody><tr v-for="(entry,index) in testing.result.result.suite?.entries" :key="index"><th>{{ entry.entryId }}</th><td>{{ entry.suiteRow === undefined ? '—' : entry.suiteRow + 1 }}</td><td>{{ stateLabel(entry.status) }}</td><td><p v-if="entry.error" class="error">{{ entry.error }}</p><p v-if="entry.skipReason">{{ stateLabel(entry.skipReason) }}</p><span v-if="!entry.error && !entry.skipReason">—</span></td></tr></tbody></table></div><p v-for="warning in testing.result.result.warnings" :key="warning">{{ warning }}</p></div>
+        <button v-if="record" type="button" data-testid="suite-open-record" @click="emit('open-run-record', record)">{{ launchLabel("inspect") }}</button>
         <template v-for="entry in testing.result?.result.suite?.entries" :key="JSON.stringify([entry.entryId,entry.suiteRow])"><CaseEvidencePanel v-if="entry.status === 'failed' || entry.status === 'aborted'" :evidence="entryEvidence(entry)" :disabled="testing.running || testing.transitioning || testing.dirty" :inspect="testing.inspectEvidence" :rerun="testing.rerunEvidence" @locate="emit('locate-evidence', $event)" /></template>
       </div>
     </template>

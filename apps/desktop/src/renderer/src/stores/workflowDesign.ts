@@ -28,7 +28,7 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
       saving: false,
       validationErrors: [] as string[],
       warnings: [] as string[],
-      runResult: null as WorkflowRunResult | null,
+      runResult: null as (WorkflowRunResult & { archiveFile?: string }) | null,
       running: false,
       stopping: false,
       activeRun: null as { locator: WorkflowLocator; root: string; invocationId: string; epoch: number } | null,

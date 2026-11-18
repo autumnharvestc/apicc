@@ -17,7 +17,7 @@ type Editor = ReturnType<typeof useEditorStore>;
 type RunFn = (input: DebugInvocation) => Promise<DebugResult>;
 type StartFn = (onStarted: (runId: string) => boolean) => Promise<DebugResult>;
 type OnRunAccepted = () => void;
-type CaseRunRecord = { tabId?: string; environmentName: string | null; pending: boolean; result: DebugResult | null; error: string | null };
+type CaseRunRecord = { tabId?: string; environmentName: string | null; pending: boolean; result: (DebugResult & { historyId?: string }) | null; error: string | null };
 const maxRetainedCaseRuns = 12;
 type OnRunSettled = (result: DebugResult | null, error: string | null) => void;
 type ResultTarget = { root: string; locator: ApiLocator; generation?: number };
@@ -433,7 +433,7 @@ export function useDebugStore(
               void api.debugCancel({ runId: started.runId });
               return;
             }
-            result = await api.debugWait({ runId: started.runId });
+            result = await api.debugWait({ runId: started.runId, ...(invocation.mode === "case" ? { includeHistoryId: true } : {}) });
           } else throw new Error("缺少调试调用信息");
           onSettled?.(result, null);
           if (ownerIsCurrent()) {
@@ -868,7 +868,7 @@ export function useDebugStore(
               void api.debugCancel({ runId: started.runId });
               return;
             }
-            result = await api.debugWait({ runId: started.runId });
+            result = await api.debugWait({ runId: started.runId, ...(invocation.mode === "case" ? { includeHistoryId: true } : {}) });
           } else {
             throw new Error("缺少调试调用信息");
           }

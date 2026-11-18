@@ -110,6 +110,7 @@ import {
 } from "./stores/tabs.js";
 import { useModuleMemoryStore } from "./stores/moduleMemory.js";
 import { apiSessionKey, projectSessionKey } from "./stores/localIdentity.js";
+import type { LocalRunRecordTarget } from "./execution/localLaunch.js";
 import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import {
   isViewDisabled,
@@ -2262,6 +2263,17 @@ function openProjectDebugRecord(historyId: string) {
   void debugHistory.openRecord(historyId, () => historyOpen.value && historyNavigationGeneration.value === navigation);
 }
 
+const runView = ref<InstanceType<typeof RunView>>();
+async function openLocalRunRecord(target: LocalRunRecordTarget) {
+  const current = () => !onlineMode.value && !isHome.value && workspace.root === target.root &&
+    !!selectedProjectLocator.value && sameProjectLocator(selectedProjectLocator.value, target.project);
+  if (!current()) return;
+  if (target.kind === "debug") { openProjectDebugRecord(target.id); return; }
+  view.value = "run";
+  await nextTick();
+  if (view.value === "run" && current()) runView.value?.openRecord(target.id);
+}
+
 function closeDebugHistory() {
   historyOpen.value = false;
 }
@@ -2655,6 +2667,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :report-error="reportError"
           />
           <RunView
+            ref="runView"
             :ai="ai"
             v-else-if="view === 'run'"
             class="panel-view"
@@ -2679,6 +2692,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
                 <a-tag color="orange">{{ t("test.stressContext") }}</a-tag>
               </div>
               <StressPanel
+                @open-run-record="openLocalRunRecord"
                 :ai="ai"
                 class="panel-view"
                 :stress="stress"
@@ -2695,6 +2709,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
               />
             </template>
             <TestView
+              @open-run-record="openLocalRunRecord"
               :refresh-disk="refreshLocalWorkspaceFromDisk"
               :refreshing-disk="workspace.hasPendingDiskRefresh()"
               :ai="ai"
@@ -2720,6 +2735,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             />
           </template>
           <WfDesigner
+            @open-run-record="openLocalRunRecord"
             :ai="ai"
             v-else
             class="wf-view"

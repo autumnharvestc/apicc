@@ -1106,6 +1106,8 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
 
   it("运行完成 → 结果抽屉自动打开：节点行 label/状态/耗时；关闭后「结果」按钮可重开", async () => {
     const ctx = await mountRunnableFlow();
+    const run = ctx.api.wfRun.bind(ctx.api);
+    ctx.api.wfRun = async input => ({ ...await run(input), archiveFile:"workflow-host-receipt.json" });
     expect(drawerState()).toBe("absent"); // 未运行无抽屉
     await runWorkflowFromUi(ctx);
     await vi.waitFor(() => expect(drawerState()).toBe("open"));
@@ -1122,6 +1124,8 @@ describe("WfDesigner 运行接线与结果抽屉", () => {
     await new DOMWrapper(document.body.querySelector(".ant-drawer-close")!).trigger("click");
     await flushPromises();
     expect(drawerState()).toBe("closed");
+    await ctx.wrapper.get('[data-testid="wf-open-record"]').trigger("click");
+    expect(ctx.wrapper.emitted("open-run-record")?.[0]).toEqual([{ root:ctx.root, project:ctx.projectLocator, kind:"archive", id:"workflow-host-receipt.json" }]);
     await ctx.wrapper.find('[data-testid="wf-results"]').trigger("click");
     await flushPromises();
     expect(drawerState()).toBe("open");

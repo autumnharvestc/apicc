@@ -317,5 +317,10 @@ describe("current project testing center", () => {
     await wrapper.get('[data-testid="suite-run"]').trigger("click"); await running.mock.results[0]!.value; await flushPromises();
     expect(store.result!.result.suite).toMatchObject({ total: 1, passed: 1, failed: 0, skipped: 0 });
     expect(wrapper.get('[data-testid="suite-result"]').text()).toContain("smoke");
+    expect(store.result!.archiveFile).toBeTruthy();
+    await wrapper.get('[data-testid="suite-open-record"]').trigger("click");
+    expect(wrapper.emitted("open-run-record")?.[0]).toEqual([expect.objectContaining({
+      root:store.result!.context.root, project:store.result!.context.project, kind:"archive", id:store.result!.archiveFile,
+    })]);
   });
 });

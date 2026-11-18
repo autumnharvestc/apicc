@@ -216,6 +216,8 @@ describe("stress workbench report", () => {
     expect(rpsRow.findAll('td')[3]!.text()).toBe('1'); expect(rpsRow.findAll('td')[4]!.text()).toBe(i18n.global.t('stress.workbench.notComputable'));
     await view.findAll('.export-tools button')[0]!.trigger('click'); await flushPromises();
     expect(exports).toEqual([{ file: 'candidate.json', baselineFile: 'base.json', format: 'html' }]);
+    await view.get('[data-testid="stress-open-record"]').trigger('click');
+    expect(view.emitted("open-run-record")?.[0]).toEqual([{ root:f.root, project:f.projectLocator, kind:"archive", id:"candidate.json" }]);
     await view.get('[data-testid="stress-baseline-clear"]').trigger('click'); await flushPromises(); expect(s.comparison).toBeNull(); expect(s.baselineFile).toBeNull();
   });
   // Collapsing incomplete into a pass/fail, or treating recovered HTTP failures as iterations, loses facts.

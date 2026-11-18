@@ -87,7 +87,10 @@ const props = defineProps<{
   externalRun?: (workflow: import("@apicc/core").Workflow, inputs?: Readonly<Record<string, JsonValue>>) => Promise<void>;
 }>();
 const { t } = useI18n();
-const emit = defineEmits<{ "locate-evidence": [identity: EvidenceIdentity, project: ProjectLocator, root: string]; "stress-workflow": [locator: WorkflowLocator] }>();
+import type { LocalRunRecordTarget } from "../execution/localLaunch.js";
+import { useLaunchMessages } from "../execution/launchMessages.js";
+const emit = defineEmits<{ "locate-evidence": [identity: EvidenceIdentity, project: ProjectLocator, root: string]; "stress-workflow": [locator: WorkflowLocator]; "open-run-record": [target: LocalRunRecordTarget] }>();
+const launchLabel = useLaunchMessages();
 
 const design = computed(() => props.workflowDesign);
 const wf = computed(() => props.workflowDesign.workflow);
@@ -98,6 +101,12 @@ const designProjectLocator = computed<ProjectLocator | null>(() => {
 const designBindIndex = computed(() => {
   const index = props.bindIndex;
   return index && sameProjectLocator(index.projectLocator, designProjectLocator.value) ? index : null;
+});
+const record = computed<LocalRunRecordTarget | undefined>(() => {
+  const id = design.value.runResult?.archiveFile, root = design.value.root, project = designProjectLocator.value;
+  if (!props.externalRun && id && root && project && root === props.workspace.root && sameProjectLocator(project, props.projectLocator)) {
+    return { root, project, kind: "archive", id };
+  }
 });
 const workflowOptions = computed(() => {
   const project = designProjectLocator.value;
@@ -689,6 +698,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           >
             {{ t("wf.results") }}
           </a-button>
+          <a-button v-if="record" size="small" data-testid="wf-open-record" @click="emit('open-run-record', record)">{{ launchLabel("inspect") }}</a-button>
         </a-space>
       </div>
       <details v-if="wf.executionVersion === 2 && Object.keys(wf.inputs).length" class="wf-run-inputs" data-testid="wf-run-inputs">

@@ -44,6 +44,7 @@ async function shareReport() {
   if (displayed === props.run.result && selected === selectedCollectionLocator.value) emit("collaboration", { kind: "current", project: projectOfCollection(selected), expectedReportDigest });
 }
 function openRecord(target: string) { file.value = target; pane.value = "records"; }
+defineExpose({ openRecord });
 
 // —— 结果表 ——
 const columns = computed(() => [

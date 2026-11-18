@@ -9,6 +9,13 @@ import type { TestingStore } from "../stores/testing.js";
 import type { useWorkflowDesignStore } from "../stores/workflowDesign.js";
 import type { createStressStore } from "../stores/stress.js";
 
+export interface LocalRunRecordTarget {
+  root: string;
+  project: ProjectLocator;
+  kind: "archive" | "debug";
+  id: string;
+}
+
 export interface LocalLaunchProps {
   api: ApiccApi;
   projectLocator: ProjectLocator | null;

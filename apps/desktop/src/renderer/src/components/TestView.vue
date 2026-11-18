@@ -13,6 +13,8 @@ import DatasetPanel from "./DatasetPanel.vue";
 import SuitePanel from "./SuitePanel.vue";
 import type { TestingStore } from "../stores/testing.js";
 import type { TestingPane } from "../../../shared/testing.js";
+import type { LocalRunRecordTarget } from "../execution/localLaunch.js";
+import { useLaunchMessages } from "../execution/launchMessages.js";
 
 /**
  * 测试模块主视图（M11：导航列迁至 TestSidebar——API 栏按模块专用，澄清③）。
@@ -41,7 +43,8 @@ const props = defineProps<{
   refreshDisk?: () => Promise<void>;
   refreshingDisk?: boolean;
 }>();
-const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evidence", identity: import("@apicc/core").EvidenceIdentity): void }>();
+const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evidence", identity: import("@apicc/core").EvidenceIdentity): void; (e: "open-run-record", target: LocalRunRecordTarget): void }>();
+const label = useLaunchMessages();
 const { t } = useI18n();
 const requestTab = computed(() => props.editor.activeKey
   ? props.debug.requestTabForSession(props.editor.activeKey) : null);
@@ -52,6 +55,11 @@ const currentCase = computed(() => {
   return api?.cases.find((item) => item.id === identity?.caseId && item.scope === identity.scope) ?? api?.cases[0];
 });
 const run = computed(() => currentCase.value ? props.debug.caseRunFor(props.editor, { caseId: currentCase.value.id, scope: currentCase.value.scope }) : undefined);
+const record = computed<LocalRunRecordTarget | undefined>(() => {
+  const session = props.editor.activeKey && props.editor.sessions[props.editor.activeKey];
+  const id = run.value?.result?.historyId;
+  if (session && id) return { root: session.root, project: session.locator, kind: "debug", id };
+});
 const runError = computed(() => {
   const error = run.value?.error;
   return error && /is not effective in the selected environment|is not the current effective case scope/.test(error)
@@ -71,7 +79,7 @@ function showResult() {
 <template>
   <section class="test-view" data-testid="test-view">
     <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" :refreshing-disk="refreshingDisk" />
-    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" :project-environment="projectEnvironment" :refreshing-disk="refreshingDisk" @locate-evidence="emit('locate-evidence', $event)" />
+    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" :project-environment="projectEnvironment" :refreshing-disk="refreshingDisk" @open-run-record="emit('open-run-record', $event)" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
     <template v-else-if="pane === 'api-cases'">
       <p v-if="interfaceReady === false && interfaceError" class="interface-error" role="alert">{{ t("testWorkbench.loadApiFailed", { error: interfaceError }) }}</p>
@@ -82,6 +90,7 @@ function showResult() {
             <div v-if="run" ref="resultRegion" class="result" data-testid="test-result" tabindex="-1" role="region" :aria-label="t('testWorkbench.result')">
               <p class="result-environment"><strong>{{ t("testWorkbench.runEnvironment") }}</strong>
                 {{ run.result?.run.envName ?? run.environmentName ?? t("testWorkbench.defaultEnvironment") }}</p>
+              <button v-if="record" type="button" data-testid="case-open-record" @click="emit('open-run-record', record)">{{ label("inspect") }}</button>
               <ResponseViewer :key="run.result?.runId ?? 'pending'" :result="run.result" :sending="run.pending" :error="runError" />
             </div>
           </template>

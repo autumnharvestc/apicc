@@ -3634,6 +3634,31 @@ describe("App 测试模块装配（M9-D）", () => {
       assertLocated(); expect(testing.dirty).toBe(false);
     } finally { confirm.mockRestore(); }
   });
+  it("opens the original case's exact history receipt and rejects another project's archive navigation", async () => {
+    const read = vi.spyOn(failingApi, "debugHistoryGet");
+    const wait = failingApi.debugWait.bind(failingApi);
+    const receipt = vi.spyOn(failingApi, "debugWait").mockImplementation(async input => ({
+      ...await wait(input), ...(input.includeHistoryId ? { historyId: "host-history-receipt" } : {}),
+    }));
+    const wrapper = await mountApp(document.body);
+    try {
+      await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+      await wrapper.get('[data-testid="rail-test"]').trigger("click");
+      await wrapper.get('[data-testid^="case-run-"]').trigger("click");
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="case-open-record"]').exists()).toBe(true));
+      expect(wrapper.find('[data-testid="response-outcome"]').exists()).toBe(true);
+      await wrapper.get('[data-testid="case-open-record"]').trigger("click");
+      await vi.waitFor(() => expect(read).toHaveBeenCalledExactlyOnceWith("host-history-receipt"));
+      const test = wrapper.getComponent({name:"TestView"}), editor = wrapper.getComponent(CasePanel).props("editor");
+      const session = editor.sessions[editor.activeKey!]!;
+      const { workspaceId, groupId, projectId } = session.locator;
+      const target = { root:session.root, project:{workspaceId,groupId,projectId}, kind:"archive", id:"exact-run.json" };
+      test.vm.$emit("open-run-record", {...target, project:{...target.project,groupId:"another-group"}});
+      await flushPromises(); expect(wrapper.findComponent(RunView).exists()).toBe(false);
+      test.vm.$emit("open-run-record", target);
+      await vi.waitFor(() => expect(wrapper.getComponent({name:"LocalRunRecords"}).props("file")).toBe("exact-run.json"));
+    } finally { wrapper.unmount(); receipt.mockRestore(); read.mockRestore(); }
+  });
   it("rail-test 打开测试模块：单接口用例面板选接口后可编辑，case-run 运行结果内嵌上屏", async () => {
     const wrapper = await mountApp(document.body);
     await openLocalDir(wrapper);

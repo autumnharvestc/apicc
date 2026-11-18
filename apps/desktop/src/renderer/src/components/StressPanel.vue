@@ -44,11 +44,29 @@ const props = defineProps<{
   readOnly?: boolean;
   ai?: import('../stores/ai.js').AiStore;
 }>();
+import type { LocalRunRecordTarget } from "../execution/localLaunch.js";
+import { useLaunchMessages } from "../execution/launchMessages.js";
+import { apiSessionKey, projectSessionKey } from "../stores/localIdentity.js";
+const emit = defineEmits<{ "open-run-record": [target: LocalRunRecordTarget] }>();
+const launchLabel = useLaunchMessages();
 const { t,te } = useI18n();
 const pane = ref<'configuration' | 'report'>('configuration');
 const filter = ref('');
 const valid = ref(false);
 const workbench = computed(() => !!props.projectLocator && !!props.stress.planOwner);
+const record = computed<LocalRunRecordTarget | undefined>(() => {
+  const stress = props.stress, project = props.projectLocator;
+  if (!project) return;
+  if (workbench.value) {
+    const owner = stress.planOwner;
+    if (owner && stress.planCurrent() && stress.planFile && projectSessionKey(owner.root, owner.scope) === projectSessionKey(owner.root, project)) {
+      return {root: owner.root, project: owner.scope, kind: "archive", id: stress.planFile};
+    }
+  } else if (stress.file && stress.activeRoot && props.apiLocator && stress.activeSessionKey === apiSessionKey(stress.activeRoot, props.apiLocator)
+    && stress.isCurrent(stress.activeRoot, stress.activeSessionKey, stress.generation)) {
+    return {root: stress.activeRoot, project: props.apiLocator, kind: "archive", id: stress.file};
+  }
+});
 const history = computed(() => props.stress.history.filter(row => `${row.file} ${row.startedAt}`.toLowerCase().includes(filter.value.toLowerCase())));
 const comparisonRows = computed(() => Object.entries(props.stress.comparison?.metrics ?? {}).map(([key,value]) => ({ key, ...value })));
 const value = (n: number | null) => n === null ? t('stress.workbench.notComputable') : String(Math.round(n * 10000) / 10000);
@@ -159,6 +177,7 @@ function setThreshold(key: keyof typeof props.stress.form.thresholds, value: num
           <template v-else>
             <div class="baseline-tools"><label>{{ t('stress.workbench.baseline') }}<select :value="stress.baselineFile ?? ''" data-testid="stress-baseline" @change="perform(() => stress.selectBaseline(($event.target as HTMLSelectElement).value || null))"><option value="">{{ t('stress.workbench.noBaseline') }}</option><option v-for="row in stress.history" :key="row.file" :value="row.file">{{ row.file }}</option></select></label><button :disabled="!stress.baselineFile" data-testid="stress-baseline-clear" @click="perform(() => stress.selectBaseline(null))">{{ t('stress.workbench.clearBaseline') }}</button></div>
             <div class="export-tools"><button :disabled="!stress.planFile" @click="perform(() => stress.exportReport('html'))">{{ t('stress.workbench.exportHtml') }}</button><button :disabled="!stress.planFile" @click="perform(() => stress.exportReport('json'))">{{ t('stress.workbench.exportJson') }}</button></div>
+            <button v-if="record" type="button" data-testid="stress-open-record" @click="emit('open-run-record', record)">{{ launchLabel("inspect") }}</button>
             <p v-if="stress.comparisonError" class="error" data-testid="stress-comparison-error">{{ stress.comparisonError }}</p>
             <section v-if="stress.comparison" data-testid="stress-comparison"><h4>{{ t('stress.workbench.comparison') }}</h4><p v-if="!stress.comparison.directlyComparable">{{ t('stress.workbench.notComparable') }}</p><p>{{t('stressPresentation.reasons.metadata')}}</p><p>{{ [...stress.comparison.mismatches,...stress.comparison.notices].map(comparisonCode).join(' · ') }}</p><div class="comparison-scroll"><table><thead><tr><th>{{ t('stress.metricName') }}</th><th>{{ t('stress.workbench.baseline') }}</th><th>{{ t('stress.workbench.report') }}</th><th>Δ</th><th>Δ %</th></tr></thead><tbody><tr v-for="row in comparisonRows" :key="row.key" :data-metric="row.key"><td>{{comparisonMetric(row.key)}}</td><td>{{ comparisonValue(row.key,row.base) }}</td><td>{{ comparisonValue(row.key,row.candidate) }}</td><td>{{ comparisonValue(row.key,row.absolute) }}</td><td>{{ row.relative === null ? t('stress.workbench.notComputable') : `${value(row.relative * 100)}%` }}</td></tr></tbody></table></div></section>
             <StressReportView :ai="ai" :source="stress.planOwner ? { kind: 'local', project: stress.planOwner.scope } : undefined" :report-ref="stress.planFile ? { kind: 'stress', file: stress.planFile.split(/[\\/]/).at(-1)! } : undefined" :baseline-ref="stress.comparison?.directlyComparable && stress.baselineFile ? { kind: 'stress', file: stress.baselineFile.split(/[\\/]/).at(-1)! } : undefined" :report="stress.planReport" /><p v-if="!stress.planReport">{{ t('stress.workbench.noReport') }}</p><p v-if="stress.planFile" class="file-line" :title="stress.planFile">{{ stress.planFile }}</p>
@@ -281,6 +300,7 @@ function setThreshold(key: keyof typeof props.stress.form.thresholds, value: num
     </div>
     <StressReportView :ai="ai" :source="projectLocator ? { kind: 'local', project: projectLocator } : undefined" :report-ref="stress.file ? { kind: 'stress', file: stress.file.split(/[\\/]/).at(-1)! } : undefined" :report="stress.report" />
     <div v-if="stress.file" class="file-line" data-testid="stress-file">{{ t("stress.savedTo", { file: stress.file }) }}</div>
+    <button v-if="record" type="button" data-testid="stress-open-record" @click="emit('open-run-record', record)">{{ launchLabel("inspect") }}</button>
   </section>
 </template>
 
