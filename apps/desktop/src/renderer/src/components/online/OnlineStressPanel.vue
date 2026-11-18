@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { confirmOnlineStress, runOnlineStress } from '../../execution/launch.js';
 import { ZodError } from 'zod';
 import { StressPlanSchema } from '@apicc/core/schema';
 import type { StressPlan, StressTarget, ContractCollection, ContractFolder } from '@apicc/core';
@@ -9,7 +10,9 @@ import StressLoadEditor from '../StressLoadEditor.vue';
 import {resolveStressExecutionConfig} from '@apicc/execution/contract';
 import { isFullOnlineJob } from '../../../../shared/online/execution.js';
 import { onlineSessionErrorKey } from '../../i18n/index.js';
-const props = defineProps<{ execution: OnlineExecutionStore; readOnly?: boolean }>();
+const props = defineProps<{ execution: OnlineExecutionStore; readOnly?: boolean; shortcut?: StressTarget }>();
+const emit = defineEmits<{ record: [id: string] }>();
+const submitted = ref<{ planId: string; runId: string }>();
 const { t } = useI18n();
 const selected = ref('');
 const plans = computed(() => props.execution.project?.stressPlans ?? []);
@@ -17,12 +20,17 @@ const plan = ref<StressPlan | null>(null), name = ref(''), origins = ref(''), er
 watch(origins, () => props.execution.invalidateStressConfirmation(), { flush: 'sync' });
 const saved = computed(() => plans.value.find(item => item.id === selected.value));
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
+function choosePlan(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  if (!confirmLeave()) { select.value = selected.value; return; }
+  pick(select.value);
+}
 function pick(id: string) {
   selected.value = id;
   plan.value = saved.value ? clone(saved.value.plan) : null; name.value = saved.value?.name ?? ''; origins.value = ''; error.value = '';
-  if (plan.value?.environmentId) props.execution.environmentId = plan.value.environmentId;
+  props.execution.invalidateStressConfirmation();
 }
-watch(() => props.execution.context, () => { selected.value = ''; plan.value = null; name.value = ''; origins.value = ''; error.value = ''; });
+watch(() => props.execution.context, () => { submitted.value = undefined; selected.value = ''; plan.value = null; name.value = ''; origins.value = ''; error.value = ''; });
 const targetKey = (target: StressTarget) => target.kind === 'workflow' ? `workflow:${target.workflowId}` : `case:${target.collectionId}:${target.apiId}:${target.caseId}`;
 const targets = computed(() => {
   const values: Array<{ label: string; target: StressTarget }> = (props.execution.project?.workflows ?? []).map(workflow => ({ label: `${t('stress.workbench.workflow')} · ${workflow.name}`, target: { kind: 'workflow', workflowId: workflow.id } }));
@@ -35,14 +43,20 @@ const targets = computed(() => {
   }
   return values;
 });
-function newPlan() {
-  if (props.readOnly || props.execution.running) return;
-  const target = targets.value[0]?.target; if (!target) { error.value = t('onlineStressDraft.noTargets'); return; }
+function newPlan(shortcut?: StressTarget) {
+  if (props.readOnly || props.execution.running || !confirmLeave()) return;
+  const target = shortcut ? targets.value.find(row => targetKey(row.target) === targetKey(shortcut))?.target : targets.value[0]?.target; if (!target) { error.value = t('onlineStressDraft.noTargets'); return; }
   selected.value = crypto.randomUUID(); name.value = t('stress.workbench.new'); origins.value = ''; error.value = '';
   plan.value = StressPlanSchema.parse({ formatVersion: 1, target: clone(target), load: { kind: 'constant-vus', vus: 1 }, termination: { maxIterations: 10 }, ...(props.execution.environmentId ? { environmentId: props.execution.environmentId } : {}) });
 }
+watch(() => props.shortcut, shortcut => {
+  if (!shortcut) return;
+  newPlan(shortcut);
+});
 function target(value: string) { const next = targets.value.find(item => targetKey(item.target) === value); if (plan.value && next && !props.readOnly && !props.execution.running) plan.value.target = clone(next.target); }
 const dirty = computed(() => !!plan.value && (!saved.value || name.value !== saved.value.name || JSON.stringify(plan.value) !== JSON.stringify(saved.value.plan)));
+function confirmLeave() { return !dirty.value || window.confirm(t("testing.discardConfirm")); }
+defineExpose({ confirmLeave });
 const agent = computed(() => props.execution.location.kind === 'agent' ? props.execution.agents?.agents.find(row => props.execution.location.kind === 'agent' && row.id === props.execution.location.agentId) : undefined);
 const admissionRows=computed(()=>{const configuration=agent.value?.stressConfiguration;if(!configuration||!agent.value)return [];return [
   {label:t('stressPresentation.requestConcurrency'),scope:t('stressPresentation.agent'),value:configuration.agent.maxStressRequestConcurrency,unit:t('stressPresentation.requestUnit'),source:configuration.sources['agent.maxStressRequestConcurrency']},
@@ -56,8 +70,15 @@ const workerLimit=computed(()=>{
   if(!agent.value)return Math.min(props.execution.agents?.policy.maxStressWorkers??1000,plan.value.maxVus);
   try{return resolveStressExecutionConfig(plan.value,{workerCount:1},{...agent.value.stressConfiguration,policy:agent.value.policy}).effectiveWorkerLimit;}catch{return 0;}
 });
+const effectiveEnvironment = computed(() => {
+  const id = plan.value?.environmentId ?? props.execution.environmentId;
+  if (!id) return t("onlineExecution.baseEnvironment");
+  return props.execution.project?.environments.find(env => env.id === id)?.name ?? id;
+});
 const environmentMismatch = computed(() => !!plan.value?.environmentId && !!props.execution.environmentId && plan.value.environmentId !== props.execution.environmentId);
-const canRun = computed(() => !!plan.value && valid.value && !dirty.value && !props.execution.dirty && !props.execution.running && !unavailable.value && !environmentMismatch.value && !(props.execution.location.kind === 'agent' && props.execution.localOnlyRefIds.length) && props.execution.isStressConfirmed(plan.value));
+// A shortcut can mount this panel after the user has already chosen a target.
+if (props.shortcut) newPlan(props.shortcut);
+const canRun = computed(() => !!plan.value && valid.value && !props.readOnly && !dirty.value && !props.execution.dirty && !props.execution.running && !unavailable.value && !environmentMismatch.value && !(props.execution.location.kind === 'agent' && props.execution.localOnlyRefIds.length) && props.execution.isStressConfirmed(plan.value));
 const errorText = computed(() => {
   const key = onlineSessionErrorKey(error.value);
   if (key) return t(key);
@@ -83,19 +104,26 @@ async function save() {
 }
 function confirm() {
   if (!plan.value) return;
-  try { props.execution.confirmStressOrigins(plan.value, origins.value.split(/[\s,]+/).filter(Boolean)); error.value = ''; }
+  try { confirmOnlineStress(props.execution, plan.value, origins.value); error.value = ''; }
   catch (cause) { if (cause instanceof ZodError) throw new Error(t('onlineStressDraft.invalidRunConfiguration')); throw cause; }
 }
-function environment(value: string) { if (!plan.value) return; if (value) plan.value.environmentId = value; else delete plan.value.environmentId; props.execution.environmentId = value || undefined; }
+function environment(value: string) { if (!plan.value) return; if (value) plan.value.environmentId = value; else delete plan.value.environmentId; props.execution.invalidateStressConfirmation(); }
 async function stop() { const target = stopTarget.value; if (target?.kind === 'local') await props.execution.cancelLocal(); else if (target?.kind === 'agent') await props.execution.cancel(target.job); }
-async function run() { if (plan.value && canRun.value) await props.execution.run({ kind: 'stress', plan: clone(plan.value) }); }
+async function run() {
+  if (!plan.value || !canRun.value) return;
+  const previous = props.execution.resultSelection;
+  const pending = runOnlineStress(props.execution, plan.value);
+  const receipt = props.execution.resultSelection;
+  if (receipt && receipt !== previous && "runId" in receipt) submitted.value = { planId: selected.value, runId: receipt.runId };
+  await pending;
+}
 </script>
 <template>
   <section class="online-stress online-surface" data-testid="online-stress-panel">
-    <button data-testid="online-stress-new" :disabled="readOnly || execution.running" @click="newPlan">{{ t('stress.workbench.new') }}</button>
-    <label>{{ t('stress.workbench.plans') }}<select :value="selected" :disabled="execution.running" data-testid="online-stress-plan" @change="pick(($event.target as HTMLSelectElement).value)"><option value="">{{ t('stress.workbench.plans') }}</option><option v-if="plan && !saved" :value="selected">{{ name }} · {{ t('onlineStressDraft.unsaved') }}</option><option v-for="item in plans" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-    <label>{{ t('onlineExecution.location') }}<select :value="execution.location.kind === 'local' ? 'local' : execution.location.agentId" :disabled="execution.running" data-testid="online-stress-location" @change="execution.selectLocation(($event.target as HTMLSelectElement).value === 'local' ? { kind: 'local' } : { kind: 'agent', agentId: ($event.target as HTMLSelectElement).value })"><option value="local">{{ t('onlineExecution.local') }}</option><option v-for="agent in execution.agents?.agents" :key="agent.id" :value="agent.id">{{ agent.name }}</option></select></label>
-    <label>{{ t('onlineExecution.environment') }}<select :value="plan?.environmentId ?? execution.environmentId ?? ''" :disabled="!plan || execution.running || readOnly" data-testid="online-stress-environment" @change="environment(($event.target as HTMLSelectElement).value)"><option value="">{{ t('onlineExecution.baseEnvironment') }}</option><option v-for="env in execution.project?.environments" :key="env.id" :value="env.id">{{ env.name }}</option></select></label>
+    <button data-testid="online-stress-new" :disabled="readOnly || execution.running" @click="newPlan()">{{ t('stress.workbench.new') }}</button>
+    <label>{{ t('stress.workbench.plans') }}<select :value="selected" :disabled="execution.running" data-testid="online-stress-plan" @change="choosePlan"><option value="">{{ t('stress.workbench.plans') }}</option><option v-if="plan && !saved" :value="selected">{{ name }} · {{ t('onlineStressDraft.unsaved') }}</option><option v-for="item in plans" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+    <label>{{ t('projectWorkbench.planEnvironment') }}<select :value="plan?.environmentId ?? ''" :disabled="!plan || execution.running || readOnly" data-testid="online-stress-environment" @change="environment(($event.target as HTMLSelectElement).value)"><option value="">{{ t('projectWorkbench.inheritEnvironment') }}</option><option v-for="env in execution.project?.environments" :key="env.id" :value="env.id">{{ env.name }}</option></select></label>
+    <p v-if="plan" data-testid="online-stress-effective-environment">{{ t('projectWorkbench.effectiveEnvironment', { name: effectiveEnvironment }) }}</p>
     <p>{{ t('onlineStress.loopback') }}</p>
     <p>{{ t(execution.location.kind === 'local' ? 'onlineExecution.localLifetime' : 'onlineExecution.agentLifetime') }}</p>
     <p v-if="errorText" role="alert">{{ errorText }}</p>
@@ -120,6 +148,7 @@ async function run() { if (plan.value && canRun.value) await props.execution.run
     <button :disabled="!plan || dirty || !valid || execution.running" data-testid="online-stress-confirm" @click="action(confirm)">{{ t('onlineStress.confirm') }}</button>
     <p v-if="plan && !execution.isStressConfirmed(plan)">{{ t('onlineStress.confirmationRequired') }}</p>
     <button :disabled="!canRun" data-testid="online-stress-run" @click="action(run)">{{ t('stress.start') }}</button>
+    <button v-if="submitted?.planId === selected && submitted" @click="emit('record', submitted.runId)">{{ t('projectWorkbench.viewRun') }}</button>
     <button :disabled="!canStop" data-testid="online-stress-stop" @click="action(stop)">{{ t('stress.stop') }}</button>
   </section>
 </template>

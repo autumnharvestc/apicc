@@ -1,4 +1,29 @@
 {
+  "projectWorkbench": {
+    "attachmentKind": "附件类型",
+    "afterMigration": "本次发送使用所选环境。之后的请求跟随项目底栏。",
+    "planEnvironment": "计划环境",
+    "inheritEnvironment": "使用项目环境",
+    "effectiveEnvironment": "本次执行环境 · {name}",
+    "viewRun": "查看本次运行",
+    "environment": "环境",
+    "executionDetails": "执行详情",
+    "agentMissing": "所选代理已无法为此项目执行。",
+    "configurationPending": "所选代理的配置尚未应用。",
+    "noScriptApproval": "所选代理没有受信脚本批准，需要受信脚本的任务无法运行。",
+    "readOnlyRun": "运行发起需要项目编辑权限。",
+    "savedTargetRequired": "请选择已保存的接口再发送请求。",
+    "pickApi": "从项目目录选择接口。",
+    "response": "响应",
+    "waiting": "正在提交请求…",
+    "materialsRefresh": "刷新项目材料",
+    "oldEnvironment": "原请求签环境",
+    "projectEnvironment": "项目环境",
+    "environmentChangeTitle": "选择本次请求使用的环境",
+    "usePreviousEnvironment": "按原请求签环境发送",
+    "useProjectEnvironment": "按项目环境发送",
+    "environmentNameAmbiguous": "多个环境使用同一个名称，此操作无法按名称安全选定环境。"
+  },
   "testAssertionOperators": {
     "eq": "等于",
     "neq": "不等于",
@@ -168,7 +193,7 @@
   "onlineExecution": {
     "expiredArchive": "报告已到期；执行身份和归档确认保留",
     "invalidOutput": "执行报告结构无效，未打开结果。",
-    "agent": "代理", "nextRunSettings": "下一次运行（当前配置）", "recordedRun": "选中运行的记录事实", "recordedPolicy": "记录的策略版本", "failureReason": "运行失败原因", "evidenceWarnings": "证据与完整性提示", "workflowEnvironmentSource": "运行环境使用项目执行栏的选择", "runInProgress": "本项目仍有一次运行正在准备或执行，请等待其结束或取消后再运行。",
+    "agent": "代理", "nextRunSettings": "下一次运行（当前配置）", "recordedRun": "选中运行的记录事实", "recordedPolicy": "记录的策略版本", "failureReason": "运行失败原因", "evidenceWarnings": "证据与完整性提示", "workflowEnvironmentSource": "运行环境使用项目底栏的选择", "runInProgress": "本项目仍有一次运行正在准备或执行，请等待其结束或取消后再运行。",
     "location":"执行位置","local":"本机","environment":"环境","baseEnvironment":"基础环境","refresh":"状态刷新间隔","refreshNow":"刷新任务","connection":"控制连接","snapshot":"快照 / 短指纹","dispatch":"执行方式","scriptTimeout":"有效脚本时限","runtime":"实际运行兼容档位","configuration":"配置应用 / 保存版本","notCollected":"未采集","notPrepared":"尚未准备","runtimeCheckedAtStart":"启动前核对本机实际 Node / V8","scripts":"受信脚本与批准","scriptCapability":"现有同步 Core pm API：变量读写、环境读取、请求/响应和断言；不支持任意 npm 模块或异步脚本生命周期。","scriptRisk":"仅运行受信内部脚本；脚本可能接触授权请求中的认证材料并主动外发。node:vm 不是安全沙箱。","projectTrustRisk":"此代理信任整个项目，批准会覆盖未来脚本修改，且脚本可能读取授权认证材料。","approvalEntry":"前往项目脚本批准管理","askAdmin":"需要项目 OWNER / ADMIN 批准所需脚本版本。","localLifetime":"本机任务依赖桌面进程；关闭后不会交给后端或其他代理自动重跑。","agentLifetime":"代理任务独立运行；重新打开本项目可查询。控制断开不等于执行失败，重连不会重跑目标。","task":"任务","state":"任务状态","verdict":"逻辑结论","release":"执行资源","archive":"报告归档","actions":"操作","cancel":"申请取消","statusOnly":"仅任务状态；未获历史读取权限","noTasks":"当前页没有代理任务；只查询最近 20 条，不拉取全部历史。","requestFact":"目标请求事实","incompleteReport":"完整 Core 输出不可用；请结合执行事实与原因判断，不能视为通过。","startedAt":"开始","finishedAt":"结束","raw":"原始数据（默认折叠）","logicalTotals":"逻辑执行：共 {total}，通过 {passed}，失败 {failed}","requestTotals":"真实请求事实：已开始 {started}，已完成 {completed}，HTTP 交换 {exchanges}","loading":"正在读取在线项目资产…","legacy":"此项目不是有效的 contract-files-v1 项目，现有内容保留，不能直接执行或自动覆盖。","publishEmpty":"可将有效本地项目显式发布到空的新在线项目；项目凭据值不会随定义上传。","localProject":"选择本地项目","publish":"显式发布项目定义","debug":"调试当前接口（草稿仅作用于本次快照）","pickApi":"选择本项目接口","runCase":"运行已保存用例","authInProject":"接口认证在本项目维护。项目凭据默认加密保存在服务端；勾选仅本机后，只供本次本机运行使用。","refId":"凭据引用 ID","username":"用户名","keyName":"API Key 名称","saveAuth":"保存认证定义","localOnly":"仅本机临时凭据（不会上传，代理执行不可用）",
     "newSession":"显式新建调试会话","pluginDifference":"本机保留用户已登记的受信插件；代理只使用内置执行能力。含插件的本机任务不承诺与代理语义等价。","pluginLoaded":"本机已加载","materials":"项目材料","attachmentRef":"附件引用 ID","attachmentPath":"逻辑项目相对路径","upload":"显式上传附件","bindAttachment":"绑定本次运行路径","attachmentHint":"仅上传普通文件或公共证书；私钥和口令必须使用凭据引用。未声明的文件不会从开发机路径补取。","file":"普通文件","networkPublic":"公共证书","version":"版本","bytes":"大小（bytes）","materialState":"材料状态",
     "panes":{"api":"接口调试","cases":"用例与脚本","environments":"环境","datasets":"数据集","suites":"测试套件","workflows":"工作流","auth":"认证","materials":"项目材料"},
@@ -1913,7 +1938,7 @@
     "title": "协作与分享", "target": "在线目标项目", "account": "当前账号", "trust": "来源可信程度", "sourceRevision": "源版本", "previewExpires": "候选到期时间", "location": "执行位置", "localExecution": "本机执行", "scope": "发送范围", "singleItem": "仅选中单项", "source": "来源", "artifactBytes": "安全副本大小", "uploadBytes": "将发送的完整单项大小", "sourceBudget": "源读取上限", "artifactBudget": "安全副本上限", "fieldBudget": "单字段上限", "evidence": "证据范围", "evidenceExcluded": "不包含证据正文", "retention": "独立保留", "retentionUnknown": "本机尚不知道服务器保留期限；上传后查看本次服务器限制。取消不删除本机历史。", "localCeiling": "本机产品安全上限，非服务器当前有效值", "localNoNetwork": "此阶段尚未发送任何网络请求；强制遮罩仍有效。不承诺识别所有业务秘密，请核对安全内容。", "serverLimits": "本次服务器限制", "policyNotAuthority": "策略允许不等于本人成员权限，也不代表公开服务已就绪；发布与授权仍会重新核对当前权限、预算和版本。", "retentionIndependent": "成员上传历史和固定副本独立保留；授权另有到期时间。关闭预览不会撤销已有授权、停用独立服务或取消服务端任务。", "confirmUpload": "确认上传安全单项", "confirmPublication": "确认发布固定副本", "cancelPreview": "取消本次预览", "setting": "限制项目", "value": "有效值", "factSource": "取值来源", "allowed": "允许", "notAllowed": "不允许", "reportFacts": "报告事实", "conclusion": "逻辑结论", "populationHint": "不同总体分别统计；逻辑成功不会抹掉原始失败。", "population": "统计总体", "total": "总数", "passed": "通过", "failed": "失败", "logicalUnits": "逻辑单元", "caseRows": "原始用例行", "requestsStarted": "已开始请求", "requestsCompleted": "已完成请求", "httpExchanges": "HTTP 交换", "iterations": "迭代", "originalFailures": "原始失败", "originalFailure": "原始失败原因", "node": "节点／用例", "state": "状态", "notCollected": "未采集", "sharedHistory": "项目共享历史", "conclusionBasis": "结论依据", "integrity": "完整性", "createdAt": "创建时间", "agent": "执行代理", "execution": "执行编号", "runtime": "运行时",
     "constraints": { "defaultShareDurationMs": "默认授权期限", "maxShareDurationMs": "最长授权期限", "externalSharingAllowed": "外部受众策略", "externalDownloadAllowed": "外部下载策略", "maxSourceBytes": "源大小上限", "maxArtifactBytes": "安全副本上限", "maxFieldBytes": "单字段上限", "maxEvidenceBytes": "证据大小上限", "evidenceAllowed": "证据策略", "memberUploadRetentionMs": "成员上传历史保留", "inactiveArtifactRetentionMs": "停用副本保留" },
     "sources": { "builtin": "产品内置", "deployment": "部署层", "platform": "平台层", "workspace": "工作区层", "project": "项目层", "upper-ceiling": "上级上限", "union": "多层合并" },
-    "codes": { "member-claim": "成员上传／本机执行声明", "saved-contract": "已保存契约", "server-archive": "服务端可信归档", "server-report": "服务端归档", "member-history": "成员上传历史", "local-current": "当前窗口已完成结果", "local-debug": "私有本机调试历史", "local-stress": "已证明归属的本机压测报告", "online-local": "在线项目的本机执行结果", "legacy-unindexed": "旧结果未建立终态索引", "not-ended": "任务尚未结束", "terminal-index": "服务端终态索引", "passed": "通过", "failed": "失败", "unknown": "未知", "ended": "已结束", "unavailable": "未采集", "transport": "传输失败", "active": "有效", "revoked": "已撤销", "expired": "已到期" }
+    "codes": { "local-run": "已证明归属的本机运行报告", "member-claim": "成员上传／本机执行声明", "saved-contract": "已保存契约", "server-archive": "服务端可信归档", "server-report": "服务端归档", "member-history": "成员上传历史", "local-current": "当前窗口已完成结果", "local-debug": "私有本机调试历史", "local-stress": "已证明归属的本机压测报告", "online-local": "在线项目的本机执行结果", "legacy-unindexed": "旧结果未建立终态索引", "not-ended": "任务尚未结束", "terminal-index": "服务端终态索引", "passed": "通过", "failed": "失败", "unknown": "未知", "ended": "已结束", "unavailable": "未采集", "transport": "传输失败", "active": "有效", "revoked": "已撤销", "expired": "已到期" }
   },
   "sync": {
     "sectionNavigation": "同步页面导航",

@@ -82,6 +82,8 @@ const props = defineProps<{
   bindIndex: WfBindIndex | null;
   reportError: (e: unknown) => void;
   ai?: import('../stores/ai.js').AiStore;
+  projectEnvironment?: import("../debugEnvironment.js").DebugEnvironmentSelection;
+  externalRunIssue?: string;
   externalRun?: (workflow: import("@apicc/core").Workflow, inputs?: Readonly<Record<string, JsonValue>>) => Promise<void>;
 }>();
 const { t } = useI18n();
@@ -212,6 +214,15 @@ function clearSelection() {
 // 环境按名称引用（wf:run 入参 envName），首项「无环境」= 不传 envName（先例同 RunView）；
 // 选项 = 当前完整项目定位下的 environments，不按裸 projectId 首匹配。
 const runEnv = ref("");
+const effectiveEnvironment = computed(() => {
+  const project = props.projectEnvironment;
+  if (!project) return { name: runEnv.value || undefined, problem: "" };
+  if (!project.value) return { name: undefined, problem: "" };
+  const selected = project.options.find(option => option.key === project.value);
+  if (!selected) return { name: undefined, problem: t("environmentShortcut.unavailable") };
+  if (project.options.some(option => option.name === selected.name && option.key !== selected.key)) return { name: undefined, problem: t("projectWorkbench.environmentNameAmbiguous") };
+  return { name: selected.name, problem: "" };
+});
 const projectEnvs = computed<Array<{ id: string; name: string }>>(() => {
   return props.projectLocator ? props.workspace.findProject(props.projectLocator)?.envs ?? [] : [];
 });
@@ -262,13 +273,14 @@ watch(
 /** 顶栏「运行」：design.run 门控 draft/在途（store 内），链路拒绝统一转报错误通道。 */
 async function onRun() {
   syncRunInputDefinitions();
-  if (Object.keys(inputErrors.value).length) return;
+  if (props.externalRunIssue || Object.keys(inputErrors.value).length) return;
   const targetLocator = design.value.locator ? { ...design.value.locator } : null;
   const targetRoot = design.value.root;
   const targetGeneration = design.value.loadEpoch;
   try {
     if (props.externalRun && wf.value) { await props.externalRun(wf.value, wf.value.executionVersion === 2 ? definedRunInputs(runInputs.value) : undefined); return; }
-    await design.value.run(runEnv.value || undefined, wf.value?.executionVersion === 2 ? definedRunInputs(runInputs.value) : undefined);
+    if (effectiveEnvironment.value.problem) return;
+    await design.value.run(effectiveEnvironment.value.name, wf.value?.executionVersion === 2 ? definedRunInputs(runInputs.value) : undefined);
   } catch (e) {
     if (design.value.loadEpoch === targetGeneration && design.value.root === targetRoot) props.reportError(e);
     return;
@@ -647,18 +659,19 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
           </a-button>
           <!-- 运行接线（任务 7）：draft 禁用并提示先发布；环境按名称引用（首项=不传 envName） -->
           <a-select
-            v-if="!externalRun"
+            v-if="!externalRun && !projectEnvironment"
             v-model:value="runEnv"
             class="wf-run-env"
             size="small"
             :options="runEnvOptions"
             data-testid="wf-run-env"
           />
-          <span v-else class="hint" data-testid="wf-online-environment">{{ t('onlineExecution.workflowEnvironmentSource') }}</span>
+          <span v-else-if="externalRun" class="hint" data-testid="wf-online-environment">{{ t('onlineExecution.workflowEnvironmentSource') }}</span>
+          <span v-if="externalRunIssue || effectiveEnvironment.problem" role="status">{{ externalRunIssue || effectiveEnvironment.problem }}</span>
           <a-button
             size="small"
             data-testid="wf-run"
-            :disabled="wf.status === 'draft' || design.dirty || design.saving || design.running || Object.keys(inputErrors).length > 0"
+            :disabled="!!externalRunIssue || !!effectiveEnvironment.problem || wf.status === 'draft' || design.dirty || design.saving || design.running || Object.keys(inputErrors).length > 0"
             :loading="design.running"
             :title="wf.status === 'draft' ? t('wf.runDraftDisabled') : undefined"
             @click="onRun"

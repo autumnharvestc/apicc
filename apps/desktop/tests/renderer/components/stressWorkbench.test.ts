@@ -155,12 +155,13 @@ describe("stress workbench report", () => {
     project.stressPlans = [{ formatVersion: 1, id: 'saved', name: 'Online saved plan', updatedAt: 0, plan: StressPlanSchema.parse({ formatVersion: 1, target: { kind: 'workflow', workflowId: project.workflows[0]!.id }, load: { kind: 'constant-vus', vus: 1 }, termination: { maxIterations: 1 } }) }];
     execution.activate(context); execution.setVisible(true); execution.project = project; execution.saved = JSON.stringify(project); execution.view = { project, problems: [], assets: { ...context.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
     const adapter = createOnlineProjectAdapter(execution, f.api, () => true, () => true), { i18n } = createI18nInstance();
-    const view = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+    const view = mount(OnlineProjectAssets, { props: { view: "test", online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
     try {
       const tab = view.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'));
       expect(tab?.exists()).toBe(true); await tab!.trigger('click'); await flushPromises();
       expect(view.get('[data-testid="online-stress-panel"]').text()).toContain('Online saved plan');
-      expect(view.get('[data-testid="online-stress-location"]').text()).toContain(i18n.global.t('onlineExecution.local'));
+      expect(view.find('[data-testid="online-stress-location"]').exists()).toBe(false);
+      expect(view.get('[data-testid="online-stress-panel"]').text()).toContain(i18n.global.t("onlineExecution.localLifetime"));
     } finally { view.unmount(); adapter.stop(); execution.setVisible(false); }
   });
   it("edits rise/fall stages and arrival units, rejecting missing lifecycle references and unfinished input mappings", async () => {

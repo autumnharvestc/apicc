@@ -1,9 +1,3 @@
-// M8 布局层级改造：九平铺视图收敛为七图标导航模块 + 接口子视图页签，禁用语义
-// 单测钉住沿用 M7-B 折入项约定（纯函数抽出自 App.vue）：
-//   - 在线工作区激活 → 全部模块与子视图禁用（内容区让位 OnlineApiEditor）；
-//   - 未打开工作区（非在线）→ 工作区级模块禁用、plugins（管理类视图）恒可用；
-//   - 压测（接口级视图，M2-D3 裁定 A）仅在已打开工作区且未选中接口时禁用；
-//   - api 子视图（调试/设计/用例）：在线模式或未选中接口时禁用。
 import { describe, expect, it } from "vitest";
 import {
   isViewDisabled,
@@ -16,15 +10,16 @@ import {
 const base = { workspaceOpened: false, onlineActive: false, apiSelected: false };
 
 describe("viewSwitch 模块禁用语义（M9-D：测试模块取代压测栏）", () => {
-  it("模块清单：7 模块固定顺序（rail 渲染顺序契约，主页固定最左）", () => {
+  it("模块清单：5 模块固定顺序（rail 渲染顺序契约，主页固定最左）", () => {
     expect(SWITCH_VIEWS).toEqual(["api", "run", "wf", "test", "envs"]); // 主页在顶栏（M11）；导入归接口模块（M10）
     expect(API_SUB_VIEWS).toEqual(["debug", "design"]);
   });
 
-  it("在线模式激活：全部 rail 模块禁用（内容区让位 OnlineApiEditor；主页在顶栏恒可达）", () => {
+  it("在线格式未解析时可浏览接口，正式项目开放五个模块", () => {
     const online = { ...base, onlineActive: true };
     for (const v of SWITCH_VIEWS as SwitchView[]) {
-      expect(isViewDisabled(v, online), `在线模式下 ${v} 应禁用`).toBe(true);
+      expect(isViewDisabled(v, online)).toBe(v !== "api");
+      expect(isViewDisabled(v, { ...online, onlineProjectAvailable: true })).toBe(false);
     }
   });
 

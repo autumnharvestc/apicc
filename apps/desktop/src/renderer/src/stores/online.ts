@@ -145,7 +145,7 @@ function activeBufferOf(state: { sessions: Record<string, OnlineSession>; active
   return session.buffers[session.activeEditorPath] ?? null;
 }
 
-function locateOnlineApi(project: ContractProject, path: string) {
+export function locateOnlineApi(project: ContractProject, path: string) {
   const segments = path.split("/");
   if (segments[0] !== "collections") return null;
   let container: Pick<ContractProject["collections"][number], "folders" | "apis"> | undefined = project.collections.find(row => row.id === segments[1]);

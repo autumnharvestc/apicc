@@ -57,7 +57,7 @@ describe('online stress plan entry', () => {
     }finally{f.store.setVisible(false);}
   });
   // Final I1: a stale outer environment must not be submitted behind a visible base-environment selection.
-  it.each([false,true])('final I1 displays the effective outer environment after a plan switch and explicitly clears base=%s',async chooseBase=>{
+  it.each([false,true])('keeps project and plan environment selections independent and displays the effective run target (base=%s)',async chooseBase=>{
     const calls: OnlineExecutionInput[]=[];
     const f=panelFixture({onlineExecution:async input=>{calls.push(input);if(input.operation!=='run')throw Error('unexpected-operation');return {location:{kind:'local'},runId:input.runId,snapshotId:'66',manifestHash:'a'.repeat(64),runtimeCompatibilityId:'compatible',scriptTimeoutMs:3000,output:{kind:'stress-failure',error:'worker-failed',started:false,requests:{started:0,completed:0}}};}});
     const environmentId='00000000-0000-4000-8000-000000000019';
@@ -65,10 +65,13 @@ describe('online stress plan entry', () => {
     f.store.project={...f.store.project!,stressPlans:[...f.store.project!.stressPlans!,withEnvironment]};f.store.saved=JSON.stringify(f.store.project);f.store.view={...f.store.view!,project:f.store.project};await flushPromises();
     try {
       await f.view.get('[data-testid="online-stress-plan"]').setValue('with-environment');
-      expect(f.store.environmentId).toBe(environmentId);
+      expect(f.store.environmentId).toBeUndefined();
+      f.store.environmentId = chooseBase ? undefined : environmentId;
       await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
       if(chooseBase)await f.view.get('[data-testid="online-stress-environment"]').setValue('');
-      expect.soft((f.view.get('[data-testid="online-stress-environment"]').element as HTMLSelectElement).value).toBe(chooseBase?'':environmentId);
+      expect((f.view.get('[data-testid="online-stress-environment"]').element as HTMLSelectElement).value).toBe('');
+      const name = f.store.project!.environments.find(row => row.id === environmentId)?.name ?? environmentId;
+      expect(f.view.get('[data-testid="online-stress-effective-environment"]').text()).toContain(chooseBase ? f.i18n.global.t('onlineExecution.baseEnvironment') : name);
       await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
       await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
       await f.view.get('[data-testid="online-stress-run"]').trigger('click');await flushPromises();
@@ -309,7 +312,7 @@ describe('online stress plan entry', () => {
     const { i18n } = createI18nInstance();
     const view = mount(OnlineStressPanel, { props: { execution: store }, global: { plugins: [i18n] } });
     expect(view.text()).toContain('Saved scenario');
-    expect(view.find('[data-testid="online-stress-location"]').exists()).toBe(true);
+    expect(view.find('[data-testid="online-stress-location"]').exists()).toBe(false);
     expect(view.find('[data-testid="online-stress-environment"]').exists()).toBe(true);
     expect(view.find('[data-testid="online-stress-run"]').text()).toBe(i18n.global.t('stress.start'));
     expect(view.find('[data-testid="online-stress-stop"]').text()).toBe(i18n.global.t('stress.stop'));

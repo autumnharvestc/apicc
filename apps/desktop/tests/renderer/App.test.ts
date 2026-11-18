@@ -712,45 +712,54 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     }
   });
 
-  it("R7 左栏与请求栏共享请求签环境，切换请求后旧菜单不能选到另一签", async () => {
-    const wrapper = await mountApp();
-    await openLocalDir(wrapper);
+  it("项目底栏切环境不更改草稿，旧请求签可取消或明确按原环境发送", async () => {
     const project = projectByLabel(await failingApi.treeGet(), "示例项目");
-    const env = await failingApi.envCreate({ locator: project.locator, name: "R7 调试环境" });
-    const locator = { ...project.locator, environmentId: env.id };
+    const previous = await failingApi.envCreate({ locator: project.locator, name: "预发" });
+    const current = await failingApi.envCreate({ locator: project.locator, name: "开发" });
+    const start = vi.spyOn(failingApi, "debugStart").mockRejectedValue(new Error("synthetic-stop"));
     try {
-      await clickApiAndWait(wrapper);
-      const requestEditor = wrapper.getComponent(RequestEditor);
-      const debug = requestEditor.props("debug") as ReturnType<typeof useDebugStore>;
-      const asset = requestEditor.props("requestTab") as RequestTab;
-      const rail = wrapper.get('[data-testid="rail-envs"]');
-      const request = () => wrapper.get('[data-testid="debug-env-select"]');
-      await rail.trigger("click");
-      await expectBody(`debug-env-option-${env.id}`).trigger("click");
-      expect(request().text()).toBe("R7 调试环境");
-      expect(debug.requestTabState(asset).selectedEnvironmentId).toBe(env.id);
-      await request().trigger("click");
-      await expectBody("debug-env-option-none").trigger("click");
-      expect(rail.text()).toBe("无环境");
-      await rail.trigger("click");
-      const stale = expectBody(`debug-env-option-${env.id}`);
-      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click");
+      const wrapper = await mountApp();
+      await openLocalDir(wrapper); await clickApiAndWait(wrapper);
+      const request = wrapper.getComponent(RequestEditor);
+      const state = request.props("debug").requestTabState(request.props("requestTab")!);
+      state.selectedEnvironmentId = previous.id;
+      state.projectEnvironmentAdopted = false;
+      await wrapper.get('[data-testid="project-environment"]').trigger("click");
+      await expectBody(`project-env-option-${current.id}`).trigger("click");
+      expect(wrapper.get('[data-testid="project-environment"]').text()).toContain("开发");
+      expect(wrapper.find('[data-testid="debug-env-select"]').exists()).toBe(false);
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      let choice = wrapper.get('[data-testid="request-environment-migration"]');
+      expect(choice.text()).toContain("预发"); expect(choice.text()).toContain("开发");
+      await choice.get("button:last-child").trigger("click");
+      expect(start).not.toHaveBeenCalled(); expect(state.selectedEnvironmentId).toBe(previous.id);
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      choice = wrapper.get('[data-testid="request-environment-migration"]');
+      await choice.findAll("button").find(b => b.text().includes("按原请求签环境发送"))!.trigger("click");
+      expect(start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ environmentId: previous.id }));
       await flushPromises();
-      const free = wrapper.getComponent(RequestEditor).props("requestTab") as RequestTab;
-      expect(free.source.kind).toBe("free");
-      expect(bodyFind(`debug-env-option-${env.id}`)).toBeNull();
-      await stale.trigger("click");
-      expect(debug.requestTabState(free).selectedEnvironmentId).toBeNull();
-      expect(debug.requestTabState(asset).selectedEnvironmentId).toBeNull();
-      await request().trigger("click");
-      await expectBody(`debug-env-option-${env.id}`).trigger("click");
-      expect(debug.requestTabState(free).selectedEnvironmentId).toBe(env.id);
-      expect(wrapper.get('[data-testid="rail-envs"]').text()).toBe("R7 调试环境");
-      await wrapper.get(`[data-testid="request-tab-${asset.tabId}"]`).trigger("click");
-      await flushPromises();
-      expect(wrapper.get('[data-testid="rail-envs"]').text()).toBe("无环境");
+      state.selectedEnvironmentId = "removed-environment";
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      choice = wrapper.get('[data-testid="request-environment-migration"]');
+      expect(choice.findAll("button").find(b => b.text().includes("按原请求签环境发送"))!.attributes("disabled")).toBeDefined();
+      await choice.get("button:last-child").trigger("click");
+      await wrapper.get('[data-testid="request-tab-new-free"]').trigger("click"); await flushPromises();
+      const freeEditor = wrapper.getComponent(RequestEditor), freeTab = freeEditor.props("requestTab")!;
+      expect(freeTab.source.kind).toBe("free");
+      const freeState = freeEditor.props("debug").requestTabState(freeTab);
+      freeState.projectEnvironmentAdopted = false; freeState.selectedEnvironmentId = null;
+      await wrapper.get('[data-testid="editor-full-url"]').setValue("https://example.test/legacy-free");
+      await wrapper.get('[data-testid="request-send-slot"]').trigger("click");
+      choice = wrapper.get('[data-testid="request-environment-migration"]');
+      expect(choice.text()).toContain("无环境");
+      await choice.findAll("button").find(b => b.text().includes("按项目环境发送"))!.trigger("click");
+      expect(start).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "free", environmentId: current.id }));
+      await wrapper.get('[data-testid="rail-envs"]').trigger("click");
+      expect(wrapper.get('[data-testid="env-panel"]').isVisible()).toBe(true);
+      expect(wrapper.get('[data-testid="project-environment"]').text()).toContain("开发");
     } finally {
-      await failingApi.nodeDelete({ kind: "environment", locator });
+      start.mockRestore();
+      for (const env of [previous, current]) await failingApi.nodeDelete({ kind: "environment", locator: { ...project.locator, environmentId: env.id } });
     }
   });
 
@@ -825,7 +834,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true); expect(calls).toEqual([]); expect(wrapper.get('[data-testid="run-btn"]').attributes('disabled')).toBeUndefined();
     } finally { try { await digest?.settle(); await flushPromises(); } finally { digest?.restore(); wrapper.unmount(); failingApi.onlineCollaboration = original; } }
   });
-  it.each(['entry', 'online-local', 'session-change', 'navigation', 'local-target'] as const)('T9 opens the actual App collaboration panel and binds its %s flow to the selected online project', async flow => {
+  it.each(['entry', 'entry-en', 'online-local', 'session-change', 'navigation', 'local-target'] as const)('T9 opens the actual App collaboration panel and binds its %s flow to the selected online project', async flow => {
     const names = ['onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution', 'onlineCollaboration'] as const, originals = new Map(names.map(name => [name, failingApi[name]]));
     const projectAsset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!, scope = { workspaceId: '11', groupId: '22', projectId: '33' }, api = collaborationPort();
     const projects = [{ id: '33', groupId: '22', name: projectAsset.name, myRole: 'EDITOR' as const }], view = { workspaceId: '11', name: 'Member fixture', myRole: 'OWNER' as const, projects, tree: onlineTreeToDto({ workspaceId: '11', rootVersion: 1, files: [], projects }, 'Member fixture') };
@@ -836,20 +845,26 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     try {
       const online = wrapper.findComponent(OnlineLoginDialog).props('online'); online.addProfile('http://127.0.0.1:8080', 'Member'); await online.login('alice', 'password8'); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
       await wrapper.findComponent(ProjectTabs).props('tabs').openProjectTab({ kind: 'online', workspaceId: '11', name: view.name }, { id: '33', name: projectAsset.name }); await flushPromises();
-      await vi.waitFor(() => expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(true)); await wrapper.get('[data-testid="collaboration-entry"]').trigger('click'); await flushPromises();
+      await vi.waitFor(() => expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(true)); if (flow === 'entry-en') initI18n().setLocale('en');
+      await wrapper.get('[data-testid="project-tools"]').trigger('click');
+      expect(expectBody('collaboration-entry').text()).toBe(flow === 'entry-en' ? 'Collaboration and sharing' : '协作与分享');
+      await expectBody('collaboration-entry').trigger('click'); await flushPromises();
       expect(wrapper.findComponent(CollaborationPanel).exists()).toBe(true); expect(api.calls.map(call => call.operation)).toEqual(['activate', 'access', 'history', 'publications']);
       expect(wrapper.findComponent(CollaborationPanel).text()).toContain('40');
       if (flow === 'session-change') { online.clearLoginState(); await flushPromises(); expect(wrapper.findComponent(CollaborationPanel).exists()).toBe(false); expect(api.calls.at(-1)?.operation).toBe('cancel-preview'); }
       if (flow === 'navigation') { await wrapper.get('[data-testid="topbar-home"]').trigger('click'); await flushPromises(); expect(wrapper.findComponent(CollaborationPanel).exists()).toBe(false); expect(api.calls.at(-1)?.operation).toBe('cancel-preview'); }
       if (flow === 'online-local') {
         await wrapper.findComponent(CollaborationPanel).props('collaboration').close(); online.execution.localResult = { location: { kind: 'local' }, runId: '40000000-0000-4000-8000-000000000019', snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded', scriptTimeoutMs: 3000, output: { kind: 'suite', result: collaborationRunFixture() } }; await flushPromises();
+        online.execution.resultSelection = { kind: 'local', runId: online.execution.localResult!.runId };
+        await wrapper.get('[data-testid="rail-run"]').trigger('click'); await flushPromises();
+        await wrapper.get('[data-testid="run-pane-records"]').trigger('click'); await flushPromises();
         const count = api.calls.length; await wrapper.get('[data-testid="collaboration-publish-result"]').trigger('click'); await flushPromises(); expect(api.calls.slice(count)).toEqual([{ operation: 'preview-local', context: { serverId: 'http://127.0.0.1:8080/api/v1', ownerId: '7', scope }, source: { kind: 'online-local', runId: '40000000-0000-4000-8000-000000000019' }, title: '本机执行报告' }]); expect(wrapper.findComponent(CollaborationPanel).text()).toContain('Selected safe report');
       }
       if (flow === 'local-target') {
         await openLocalDir(wrapper); await clickApiAndWait(wrapper); await wrapper.get('[data-testid="rail-run"]').trigger('click'); await flushPromises(); const run = wrapper.findComponent(RunView).props('run'); run.result = collaborationRunFixture(); await flushPromises(); await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); const count = api.calls.length;
         await vi.waitFor(() => expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true)); await wrapper.get('[data-testid="collaboration-target"]').setValue('33'); await wrapper.get('[data-testid="collaboration-prepare-local"]').trigger('click'); await flushPromises(); expect(api.calls.slice(count)).toHaveLength(1); expect(api.calls.at(-1)).toMatchObject({ operation: 'preview-local', context: { scope }, source: { kind: 'current', expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) } }); expect((api.calls.at(-1) as any).source.project.projectId).not.toBe('33');
       }
-    } finally { wrapper.unmount(); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
+    } finally { wrapper.unmount(); initI18n().setLocale('zh-CN'); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
   });
   it('T11 prepares the actual App online member editor through the one shared AI store', async () => {
     const fixture = createAiBusinessFixture(); const names = ['aiSettingsRead', 'aiCatalogReload', 'aiPrepareAssistance', 'aiStart', 'aiCancel', 'onAiProgress', 'aiInspectChoices', 'onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution'] as const;
@@ -2199,7 +2214,6 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     const cleanRequest = requests.activeId!;
     expect(cleanRequest).toBeTruthy();
     await wrapper.get('[data-testid="rail-envs"]').trigger("click");
-    await expectBody("manage-environments").trigger("click");
     await vi.waitFor(() => expect(wrapper.find('[data-testid="env-global-var-add"]').exists()).toBe(true));
     await wrapper.get('[data-testid="env-global-var-add"]').trigger("click");
     await wrapper.get('[data-testid="env-global-var-key"]').setValue("region");
@@ -2412,7 +2426,6 @@ describe("App 视图切换装配（M8 模块化）", () => {
     expect(wrapper.find('[data-testid="editor-pane"]').exists()).toBe(true);
     // 环境模块
     await wrapper.find('[data-testid="rail-envs"]').trigger("click");
-    await expectBody("manage-environments").trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="env-panel"]').exists()).toBe(true);
     // 运行模块（RunView 内含运行历史抽屉）
@@ -3612,7 +3625,7 @@ describe("App 测试模块装配（M9-D）", () => {
     expect(wrapper.get('[data-testid="case-panel"]').text()).toContain("保存后可运行");
   });
 
-  it("运行按请求签环境提交，迟到失败只显示在原用例，压测沿用项目环境", async () => {
+  it("运行按项目环境提交，迟到失败保留原用例与环境，压测使用新选择", async () => {
     const project = projectByLabel(await failingApi.treeGet(), "示例项目");
     const projectEnvironment = await failingApi.envCreate({ locator: project.locator, name: "project-stress-environment" });
     const requestEnvironment = await failingApi.envCreate({ locator: project.locator, name: "request-test-environment" });
@@ -3636,8 +3649,11 @@ describe("App 测试模块装配（M9-D）", () => {
       debug.selectEnv(projectEnvironment.name);
       const other = panel.props("cases").addCase({ name: "另外一条未保存用例", scope: "base" });
       await flushPromises();
-      const environment = wrapper.get<HTMLSelectElement>('[data-testid="case-run-environment"]');
-      await environment.setValue(requestEnvironment.id);
+      const selectEnvironment = async (id: string) => {
+        await wrapper.get('[data-testid="project-environment"]').trigger("click");
+        await expectBody(`project-env-option-${id}`).trigger("click");
+      };
+      await selectEnvironment(requestEnvironment.id);
       const run = wrapper.get(`[data-testid="case-run-${first.id}"]`);
       expect(run.attributes("disabled")).toBeUndefined();
       await run.trigger("click");
@@ -3655,7 +3671,7 @@ describe("App 测试模块装配（M9-D）", () => {
       expect(wrapper.get('[data-testid="case-panel"]').text()).toContain("保存后可运行");
       await wrapper.findAll(".case-choice").find((row) => row.text().includes(first.name))!.trigger("click");
       expect(wrapper.get('[data-testid="test-result"]').text()).toContain("request transport failed");
-      await environment.setValue("");
+      await selectEnvironment(projectEnvironment.id);
       expect(wrapper.get('[data-testid="test-result"]').text()).toContain(requestEnvironment.name);
       await wrapper.get(`[data-testid="case-stress-${first.id}"]`).trigger("click");
       await vi.waitFor(() => expect(wrapper.getComponent(StressPanel).props("stress").plan?.environmentId).toBe(projectEnvironment.id));
@@ -3898,7 +3914,6 @@ describe("App 环境联动（M9-A1）", () => {
     expect(editorOf().envs).toEqual([]);
     // 环境模块新建环境
     await wrapper.find('[data-testid="rail-envs"]').trigger("click");
-    await expectBody("manage-environments").trigger("click");
     await flushPromises();
     await wrapper.get('[data-testid="env-create-menu"]').trigger("click");
     await expectBody("env-new").trigger("click");
@@ -3923,10 +3938,10 @@ describe("App 环境联动（M9-A1）", () => {
     await wrapper.find('[data-testid="rail-api"]').trigger("click");
     await vi.waitFor(() => expect(editorOf().envs.map((entry) => entry.name)).toContain("prod"));
     const prod = editorOf().envs.find((entry) => entry.name === "prod")!;
-    await wrapper.get('[data-testid="debug-env-select"]').trigger("click");
-    expect(expectBody(`debug-env-option-${prod.id}`).text()).toBe("prod");
-    await expectBody(`debug-env-option-${prod.id}`).trigger("click");
-    expect(wrapper.get('[data-testid="debug-env-select"]').text()).toContain("prod");
+    await wrapper.get('[data-testid="project-environment"]').trigger("click");
+    expect(expectBody(`project-env-option-${prod.id}`).text()).toBe("prod");
+    await expectBody(`project-env-option-${prod.id}`).trigger("click");
+    expect(wrapper.get('[data-testid="project-environment"]').text()).toContain("prod");
 
     await wrapper.get('[data-testid="rail-test"]').trigger("click");
     await wrapper.get('[data-testid^="case-stress-"]').trigger("click");

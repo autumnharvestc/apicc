@@ -1,16 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from 'vitest';
-import { enableAutoUnmount, shallowMount, mount, flushPromises } from '@vue/test-utils';
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils';
 import CollaborationPanel from '../../../src/renderer/src/components/online/CollaborationPanel.vue';
 import { createCollaborationStore } from '../../../src/renderer/src/stores/collaboration.js';
 import { context, port, publication, grant, server, source } from './collaboration-fixtures.js';
-import { ContractWorkspaceSchema } from '@apicc/core/schema';
-import { workspaceFixture } from '../../../../../packages/core/tests/helpers/contractFixtures.js';
-import OnlineProjectAssets from '../../../src/renderer/src/components/online/OnlineProjectAssets.vue';
-import { createOnlineStore } from '../../../src/renderer/src/stores/online.js';
-import { createOnlineProjectAdapter } from '../../../src/renderer/src/stores/onlineProjectAdapter.js';
 import { createI18nInstance } from '../../../src/renderer/src/i18n/index.js';
-import type { ApiccApi } from '../../../src/shared/types.js';
 enableAutoUnmount(afterEach);
 it.each([['create','online'],['rotate','local']] as const)('addendum N01 original %s pending survives same-context %s preview selection and can reconcile',async(command,selection)=>{
   const api=port(),store=createCollaborationStore(api),{i18n}=createI18nInstance();store.context=context;await store.loadPublications();await store.loadGrants('41');
@@ -288,17 +282,4 @@ it.each(['copy', 'rotate', 'revoke'] as const)('performs only the explicit %s ac
   expect(api.calls[count]).toEqual({ operation: `${command}-grant`, context, input: command === 'copy' ? { grantId: '42' } : { grantId: '42', expectedRevision: 1 } });
 });
 
-it.each([['zh-CN', '协作与分享'], ['en', 'Collaboration and sharing']] as const)('offers a visible %s collaboration entry on an actual readable online project', async (locale, label) => {
-  const api = { onlineExecution: async () => [], onlineCollaboration: async () => ({ stage: 'idle' }) } as unknown as ApiccApi;
-  const online = createOnlineStore({ api }), context = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } };
-  online.execution.activate(context); online.execution.project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
-  online.execution.saved = JSON.stringify(online.execution.project);
-  online.execution.view = { project: online.execution.project, problems: [], assets: { ...context.scope, format: 'contract-files-v1', contractProjectId: online.execution.project.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
-  const adapter = createOnlineProjectAdapter(online.execution, api, () => false, () => true), { i18n } = createI18nInstance(); i18n.global.locale.value = locale;
-  try {
-    const view = shallowMount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
-    expect(view.find('[data-testid="online-debug-run"]').exists()).toBe(true);
-    const entry = view.findAll('button').find(button => button.text() === label); expect(entry, 'business entry, not an empty new component').toBeDefined();
-    await entry!.trigger('click'); expect(view.emitted('collaboration')).toEqual([[context]]);
-  } finally { adapter.stop(); online.execution.setVisible(false); }
-});
+// The project menu and its translated action are exercised through App.test.ts (T9).

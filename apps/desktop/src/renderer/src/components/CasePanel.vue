@@ -8,7 +8,7 @@ import { ApiRequestSchema } from "@apicc/core/schema";
 import type { useCasesStore } from "../stores/cases.js";
 import type { CaseIdentity } from "../stores/cases.js";
 import { isPersistedCase, type useDebugStore } from "../stores/debug.js";
-import { debugEnvironmentSelection } from "../debugEnvironment.js";
+import { debugEnvironmentSelection, type DebugEnvironmentSelection } from "../debugEnvironment.js";
 import type { useEditorStore } from "../stores/editor.js";
 import EmptyState from "./EmptyState.vue";
 import AssertionEditor from "./AssertionEditor.vue";
@@ -35,6 +35,7 @@ const props = defineProps<{
   datasets?: DatasetAsset[];
   ai?: AiStore;
   workbench?: boolean;
+  projectEnvironment?: DebugEnvironmentSelection;
   interfacePath?: string;
   canOperate?: () => boolean;
   refreshDisk?: () => Promise<void>;
@@ -61,8 +62,8 @@ const requestTab = computed(() => props.debug && props.editor.activeKey
   ? props.debug.requestTabForSession(props.editor.activeKey) : null);
 const requestTabState = computed(() => requestTab.value && props.debug
   ? props.debug.requestTabState(requestTab.value) : null);
-const environment = computed(() => props.workbench && props.debug
-  ? debugEnvironmentSelection(props.editor, props.debug, requestTab.value) : null);
+const environment = computed(() => props.projectEnvironment ?? (props.workbench && props.debug
+  ? debugEnvironmentSelection(props.editor, props.debug, requestTab.value) : null));
 const session = computed(() => props.editor.activeKey ? props.editor.sessions[props.editor.activeKey] : undefined);
 const validationError = computed(() => overrideError.value || assertionError.value || extractionError.value);
 const saving = ref(new Set<string>());
@@ -152,7 +153,8 @@ async function runCase(identity: CaseIdentity) {
   if (props.workbench && (!active || unavailableRunReason(active))) return;
   try {
     // debug.send captures the complete editor/root identity before its own save await.
-    await props.debug.runCase(props.editor, { caseId: identity.caseId, scope: identity.scope });
+    if (props.projectEnvironment) await props.debug.runCase(props.editor, identity, undefined, props.projectEnvironment.value);
+    else await props.debug.runCase(props.editor, identity);
   } catch (e) {
     props.reportError?.(e);
   }
@@ -387,7 +389,7 @@ function removeOp(kind: "pre" | "post", index: number) {
               @click="saveCases">{{ t("case.save") }}</a-button>
           </div>
         </div>
-        <div v-if="environment" class="runtime-environment">
+        <div v-if="environment && !projectEnvironment" class="runtime-environment">
           <label>{{ t("testWorkbench.runEnvironment") }}
             <select :key="environment.owner" :value="environment.value ?? ''"
               data-testid="case-run-environment" @change="environment.select(($event.target as HTMLSelectElement).value || null)">

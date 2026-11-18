@@ -11,9 +11,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from "@ant-design/icons-vue";
-import { SWITCH_VIEWS, isViewDisabled, type SwitchView } from "../viewSwitch.js";
-import DebugEnvironmentMenu from "./DebugEnvironmentMenu.vue";
-import type { DebugEnvironmentSelection } from "../debugEnvironment.js";
+import { SWITCH_VIEWS, isViewDisabled, type SwitchView, type ViewGateContext } from "../viewSwitch.js";
 
 /**
  * 图标导航栏（M8 布局层级改造）：64px 竖排模块入口——图标 + 语言标签 + 选中高亮。
@@ -23,15 +21,12 @@ import type { DebugEnvironmentSelection } from "../debugEnvironment.js";
  */
 const props = defineProps<{
   view: SwitchView;
-  gate: { workspaceOpened: boolean; onlineActive: boolean; apiSelected: boolean };
-  environment?: DebugEnvironmentSelection | null;
-  environmentLoading?: boolean;
+  gate: ViewGateContext;
   directoryOverlay?: boolean;
   directoryOpen?: boolean;
 }>();
 const emit = defineEmits<{ "update:view": [view: SwitchView]; "toggle-directory": [] }>();
 const { t } = useI18n();
-const moduleViews = SWITCH_VIEWS.filter((view) => view !== "envs");
 const directoryLabel = computed(() => t(props.directoryOpen ? "workbench.closeDirectory" : "workbench.openDirectory"));
 
 const ICONS: Record<SwitchView, ReturnType<typeof ApiOutlined>> = {
@@ -50,7 +45,7 @@ function disabled(v: SwitchView): boolean {
 
 <template>
   <nav class="rail" data-testid="module-rail" :aria-label="t('workbench.moduleNavigation')">
-    <a-tooltip v-for="v in moduleViews" :key="v" :title="t(`nav.${v}`)" placement="right">
+    <a-tooltip v-for="v in SWITCH_VIEWS" :key="v" :title="t(`nav.${v}`)" placement="right">
       <button
         type="button"
         class="rail-item"
@@ -71,22 +66,6 @@ function disabled(v: SwitchView): boolean {
       <MenuUnfoldOutlined v-else class="rail-icon" />
       <span class="rail-label">{{ t("workbench.directory") }}</span>
     </button>
-    <div class="rail-environment">
-      <DebugEnvironmentMenu
-        v-if="environment || environmentLoading"
-        :selection="environment ?? null"
-        :loading="environmentLoading"
-        :disabled="disabled('envs')"
-        rail manage test-id="rail-envs"
-        @manage="emit('update:view', 'envs')"
-      />
-      <button v-else type="button" class="rail-item" :class="{ active: view === 'envs' }" data-testid="rail-envs"
-        :title="t('environmentShortcut.selectRequest')" :aria-label="t('nav.envs')"
-        :aria-current="view === 'envs' ? 'page' : undefined" :disabled="disabled('envs')" @click="emit('update:view', 'envs')">
-        <GlobalOutlined class="rail-icon" />
-        <span class="rail-label">{{ t("nav.envs") }}</span>
-      </button>
-    </div>
     <div v-if="$slots.tools" class="rail-tools"><slot name="tools" /></div>
   </nav>
 </template>
@@ -138,8 +117,6 @@ function disabled(v: SwitchView): boolean {
 .rail-item:disabled { opacity: 0.4; cursor: not-allowed; }
 .rail-icon { font-size: 17px; }
 .rail-label { font-size: 11px; line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-environment { padding-top: 6px; margin-top: 4px; border-top: 1px solid var(--border); }
-.rail-environment > * { width: 100%; }
 .rail-tools { margin-top: auto; }
 @media (max-width: 1023px) { .rail { width: 56px; } }
 @media (forced-colors: active) { .rail-item.active { border: 1px solid Highlight; } }

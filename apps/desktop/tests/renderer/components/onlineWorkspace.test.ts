@@ -28,6 +28,7 @@ import OnlineStressPanel from "../../../src/renderer/src/components/online/Onlin
 import OnlineProjectAssets from "../../../src/renderer/src/components/online/OnlineProjectAssets.vue";
 import { createOnlineProjectAdapter } from "../../../src/renderer/src/stores/onlineProjectAdapter.js";
 import { ContractWorkspaceSchema } from "@apicc/core/schema";
+import { defaultPolicyConfig } from "@apicc/execution/contract";
 import { applyProjectSave } from "@apicc/core/collaboration/project-save";
 import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
 import type { OnlineExecutionContext, OnlineLocalResult, OnlineExecutionInput, OnlineJob } from "../../../src/shared/online/execution.js";
@@ -184,10 +185,12 @@ describe('online execution readable projection', () => {
     const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
     const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
     try {
-      await wrapper.get('[data-testid="online-execution-environment"]').setValue(environmentId);
-      await wrapper.findAll('nav.tabs button').find(button => button.text() === '工作流')!.trigger('click'); await flushPromises();
+      execution.environmentId = environmentId;
+      online.activeWorkspaceId = EXECUTION_CONTEXT.scope.workspaceId;
+      online.sessions[EXECUTION_CONTEXT.scope.workspaceId] = { workspace: { id: EXECUTION_CONTEXT.scope.workspaceId, name: 'Team', myRole: 'EDITOR' }, projects: [{ id: EXECUTION_CONTEXT.scope.projectId, name: project.name, myRole: 'EDITOR' }], tree: null, buffers: {}, activeEditorPath: null };
+      await wrapper.setProps({ view: 'wf' }); await flushPromises();
       expect(wrapper.find('[data-testid="wf-run-env"]').exists()).toBe(false);
-      expect(wrapper.text()).toContain('运行环境使用项目执行栏的选择');
+      expect(wrapper.text()).toContain('运行环境使用项目底栏的选择');
       await wrapper.get('[data-testid="wf-run"]').trigger('click'); await flushPromises();
       expect(submitted).toMatchObject({ operation: 'run', environmentId, target: { kind: 'workflow', workflowId: project.workflows[0]!.id } });
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
@@ -210,27 +213,29 @@ describe('online execution readable projection', () => {
     const wrapper = mount(OnlineProjectAssets, { attachTo: document.body, props: { online, adapter, localProjects: [] },
       slots: { draft: '<input data-testid="new-online-api" />' }, global: { plugins: [i18n] } });
     try {
+      await wrapper.setProps({ view: 'test' });
       await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'))!.trigger('click');
       await wrapper.get('[data-testid="online-stress-new"]').trigger('click');
       const name = wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]');
       await name.setValue('Unsaved load profile');
-      await wrapper.setProps({ directoryDraft: true });
+      await wrapper.setProps({ view: "api", directoryDraft: true });
       expect(wrapper.get('[data-testid="new-online-api"]').isVisible()).toBe(true);
       expect(wrapper.get('[data-testid="online-stress-panel"]').isVisible()).toBe(false);
-      await wrapper.setProps({ directoryDraft: false });
+      await wrapper.setProps({ view: "test", directoryDraft: false });
       const restored = wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]');
       expect(restored.isVisible()).toBe(true);
       expect(restored.element).toBe(name.element);
       expect(restored.element.value).toBe('Unsaved load profile');
-      await wrapper.setProps({ directoryDraft: true });
+      await wrapper.setProps({ view: "api", directoryDraft: true });
       const session = online.sessions[EXECUTION_CONTEXT.scope.workspaceId]!;
       const created = project.collections[0]!.apis[0]!;
       const path = `${EXECUTION_CONTEXT.scope.projectId}/collections/${project.collections[0]!.id}/apis/${created.contract.id}/api.yaml`;
       session.buffers[path] = { path, kind: 'api', api: structuredClone(created), version: 1, raw: '', snapshot: JSON.stringify(created), problems: [], loading: false };
       session.activeEditorPath = path;
       await wrapper.setProps({ directoryDraft: false });
-      expect(wrapper.get('[data-testid="online-api-select"]').isVisible()).toBe(true);
+      expect(wrapper.get('[data-testid="online-api-editor"]').isVisible()).toBe(true);
       expect(wrapper.get('[data-testid="online-stress-panel"]').isVisible()).toBe(false);
+      await wrapper.setProps({ view: 'test' });
       await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'))!.trigger('click');
       expect(wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]').element).toBe(name.element);
       expect(name.element.value).toBe('Unsaved load profile');
@@ -267,7 +272,7 @@ describe('online execution readable projection', () => {
     const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
     const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
     try {
-      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('onlineExecution.panes.environments'))!.trigger('click');
+      await wrapper.setProps({ view: 'envs' });
       await flushPromises();
       await wrapper.get(`[data-testid="env-item-${envId}"]`).trigger('click');
       await wrapper.get('[data-testid="env-var-value"]').setValue('confirmed');
@@ -334,10 +339,12 @@ describe('online execution readable projection', () => {
     };
     const runButton = () => wrapper.findAll('button').find(item => item.text() === i18n.global.t('onlineExecution.runCase'))!;
     try {
-      await wrapper.get('[data-testid="online-execution-environment"]').setValue(envId);
+      execution.environmentId = envId;
+      await wrapper.setProps({ view: 'test' });
       await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('onlineExecution.panes.cases'))!.trigger('click');
-      const selectApi = wrapper.findAll('select').find(select => select.find(`option[value="${asset.contract.id}"]`).exists())!;
-      await selectApi.setValue(asset.contract.id);
+      const selectApi = wrapper.get('[data-testid="online-case-api"]');
+      const entry = adapter.apiEntries().find(row => row.locator.apiId === asset.contract.id)!;
+      await selectApi.setValue(JSON.stringify(entry.locator));
       await vi.waitFor(() => expect(wrapper.find('[data-testid="case-request-copy-default"]').exists()).toBe(true));
       await wrapper.get('[data-testid="case-row"]').trigger('click');
       await wrapper.get('[data-testid="case-request-copy-default"]').trigger('click');
@@ -363,7 +370,7 @@ describe('online execution readable projection', () => {
       expect(runButton().attributes('disabled')).toBeDefined();
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
   });
-  it('selecting another online API and back through the existing dropdown preserves the first API draft', async () => {
+  it('opening an API through the directory keeps its draft across modules, and sends exactly that request snapshot', async () => {
     const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
     const collection = project.collections[0]!;
     const first = collection.apis[0]!;
@@ -388,19 +395,97 @@ describe('online execution readable projection', () => {
     const { i18n } = createI18nInstance();
     const wrapper = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
     try {
-      const selector = wrapper.get<HTMLSelectElement>('[data-testid="online-api-select"]');
-      await selector.setValue(first.contract.id);
+      expect(wrapper.get('[data-testid="online-project-api-empty"]').text()).toContain(i18n.global.t('projectWorkbench.pickApi'));
+      const openApi = (id: string) => online.selectNode('api', `${EXECUTION_CONTEXT.scope.projectId}/collections/${collection.id}/apis/${id}/api.yaml`);
+      await openApi(first.contract.id);
       await flushPromises();
       expect(online.editorApi?.contract.id, online.error ?? '').toBe(first.contract.id);
       online.editorApi!.contract.metadata.name = 'First API local draft';
-      await selector.setValue(second.contract.id);
+      await openApi(second.contract.id);
       await flushPromises();
       expect(online.editorApi?.contract.metadata.name).toBe('Second API');
-      await selector.setValue(first.contract.id);
+      await openApi(first.contract.id);
       await flushPromises();
       expect(online.editorApi?.contract.metadata.name).toBe('First API local draft');
       expect(online.editorDirty).toBe(true);
+      await wrapper.setProps({ view: 'envs' });
+      await wrapper.setProps({ view: 'api' });
+      const path = '/unsaved-snapshot';
+      online.editorApi!.contract.request.path = path;
+      const submit = vi.spyOn(api, 'onlineExecution').mockImplementation(async input => {
+        if (input.operation === 'run') return failureResult(input.runId);
+        throw new Error('unexpected operation');
+      });
+      await wrapper.get('[data-testid="online-debug-run"]').trigger('click');
+      await flushPromises();
+      expect(submit.mock.calls.map(([input]) => input.operation)).toEqual(['run']);
+      expect(submit.mock.calls[0]![0]).toMatchObject({ target: { kind: 'debug', invocation: { mode: 'request', locator: { collectionId: collection.id, apiId: first.contract.id }, request: { path } } } });
+      expect(online.editorDirty).toBe(true);
       expect(read).not.toHaveBeenCalled();
+    } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
+  });
+  it('saves the visible API authentication reference and binds the exact uploaded material from project tools', async () => {
+    const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const collection = project.collections[0]!, asset = collection.apis[0]!;
+    const filePath = `collections/${collection.id}/apis/${asset.contract.id}/api.yaml`;
+    let remote = { project, problems: [], assets: { ...EXECUTION_CONTEXT.scope, format: 'contract-files-v1' as const, contractProjectId: project.id,
+      version: '1', manifestHash: 'a'.repeat(64), files: [{ path: filePath, content: '', hash: 'a'.repeat(64), size: 0, version: '1' }] } };
+    const attachment = { refId: 'public-data', version: '7', hash: 'b'.repeat(64), size: 3, kind: 'file' as const };
+    const api = createMemoryApi();
+    const writes: OnlineExecutionInput[] = [];
+    api.onlineExecution = async input => {
+      if (input.operation === 'assets') return remote;
+      if (input.operation === 'credential' && input.action === 'status') return { ok: true, status: 'missing' };
+      if (input.operation === 'saveAssetEdit') {
+        writes.push(input);
+        const result = applyProjectSave(remote.project, input.change);
+        if (result.status === 'conflict') throw new Error('unexpected conflict');
+        remote = { ...remote, project: result.project, assets: { ...remote.assets, version: '2' } };
+        return { status: 'saved', disposition: 'written', view: remote };
+      }
+      if (input.operation === 'materials') return { credentials: [], attachments: [attachment] };
+      if (input.operation === 'attachmentUpload') { writes.push(input); return attachment; }
+      throw new Error('Unexpected operation');
+    };
+    const online = createOnlineStore({ api }), execution = online.execution;
+    const { workspaceId, groupId, projectId } = EXECUTION_CONTEXT.scope;
+    online.activeBaseUrl = EXECUTION_CONTEXT.serverId.replace(/\/api\/v1$/, '');
+    online.loggedIn = true; online.user = { id: EXECUTION_CONTEXT.ownerId, username: 'tester', displayName: 'Tester' };
+    online.activeWorkspaceId = workspaceId;
+    online.sessions[workspaceId] = { workspace: { id: workspaceId, name: 'Team', myRole: 'EDITOR' }, projects: [{ id: projectId, groupId, name: project.name, myRole: 'EDITOR' }], tree: null, buffers: {}, activeEditorPath: null };
+    execution.activate(EXECUTION_CONTEXT); execution.setVisible(true); execution.acceptDirectoryView(EXECUTION_CONTEXT, remote);
+    execution.agents = { defaultAgentId: null, canManageScripts: false, agents: [], policyVersion: '1', policy: structuredClone(defaultPolicyConfig) };
+    const adapter = createOnlineProjectAdapter(execution, api, () => !online.canEdit(`${projectId}/project.yaml`), () => true);
+    const { i18n } = createI18nInstance();
+    const wrapper = mount(OnlineProjectAssets, { attachTo: document.body, props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+    try {
+      const path = `${projectId}/${filePath}`;
+      await online.selectNode('api', path); await flushPromises();
+      await wrapper.get('[data-testid="online-tab-auth"]').trigger('click');
+      const auth = wrapper.get('.auth');
+      await auth.get('select').setValue('bearer');
+      await auth.get('label input').setValue('qa-token');
+      await auth.findAll('button').find(button => button.text() === i18n.global.t('onlineExecution.saveAuth'))!.trigger('click');
+      await vi.waitFor(() => expect(writes[0]).toMatchObject({ operation: 'saveAssetEdit', change: { submitted: { contract: { request: { auth: { token: { id: 'qa-token' } } } } } } }));
+      await online.selectNode('api', path, { force: true }); await flushPromises();
+      expect(online.editorApi?.contract.request.auth).toMatchObject({ kind: 'bearer', token: { id: 'qa-token' } });
+      await wrapper.setProps({ materialsOpen: true }); await flushPromises();
+      const materials = new DOMWrapper(document.body.querySelector<HTMLElement>('.materials')!);
+      await materials.get('label input').setValue(attachment.refId);
+      const input = materials.get('input[type=file]');
+      Object.defineProperty(input.element, 'files', { value: [new File(['abc'], 'qa.txt')] });
+      await input.trigger('change');
+      await vi.waitFor(() => expect(materials.text()).toContain(attachment.refId));
+      expect(writes[1]).toMatchObject({ operation: 'attachmentUpload', attachment: { refId: attachment.refId, contentBase64: 'YWJj' } });
+      expect(materials.get('tbody tr').findAll('td').map(cell => cell.text())).toEqual(['public-data','7','3']);
+      await materials.findAll('label input').at(-1)!.setValue('fixtures/qa.txt');
+      await materials.findAll('select').at(-1)!.setValue(attachment.refId);
+      await materials.findAll('button').at(-1)!.trigger('click');
+      expect(materials.get('li').text()).toContain('fixtures/qa.txt');
+      expect(execution.materials.attachmentPaths['fixtures/qa.txt']).toEqual({ refId: attachment.refId, version: '7', hash: attachment.hash });
+      online.sessions[workspaceId]!.projects[0]!.myRole = 'VIEWER'; await flushPromises();
+      expect(input.attributes('disabled')).toBeDefined();
+      expect(materials.findAll('button').at(-1)!.attributes('disabled')).toBeDefined();
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
   });
   it('defers a case scope migration while its original save requires verification', async () => {

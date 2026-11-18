@@ -50,6 +50,7 @@ const props = defineProps<{
   requestTab?: RequestTab | null;
   environmentSelection?: DebugEnvironmentSelection | null;
   environmentLoading?: boolean;
+  projectEnvironment?: DebugEnvironmentSelection;
   requestPath?: string;
   viewModel?: (modelId: string, trigger: HTMLElement) => void;
   viewProjectAsset?: (target: ProjectAssetTarget, trigger: HTMLElement) => void;
@@ -219,7 +220,8 @@ const sendAction = computed(() => sending.value && runId.value ? "cancel" : send
 const sendDisabled = computed(() => sendAction.value === "cancel"
   ? runId.value === cancellingRun.value
   : sendAction.value === "busy" || diskConflict.value?.asset?.reason === "deleted"
-    || pendingRestoreFields.value.length > 0 || environmentUnavailable.value || !!freeSession.value?.urlDraftInvalid);
+    || pendingRestoreFields.value.length > 0 || (environmentUnavailable.value && !legacyEnvironmentDifference.value)
+    || !!freeSession.value?.urlDraftInvalid);
 
 function selectProtocol(key: string) {
   if (key === "http" || key === "websocket" || key === "soap") switchProtocol(key);
@@ -458,13 +460,27 @@ function setRequest(value: ApiRequest) {
   else if (props.editor.api) props.editor.api.contract.request = value;
 }
 
-const environment = computed(() => props.environmentSelection === undefined
-  ? debugEnvironmentSelection(props.editor, props.debug, props.requestTab) : props.environmentSelection);
+const environment = computed(() => props.projectEnvironment ?? (props.environmentSelection === undefined
+  ? debugEnvironmentSelection(props.editor, props.debug, props.requestTab) : props.environmentSelection));
 const selectedEnvironmentId = computed(() => environment.value?.value ?? "");
 const environmentUnavailable = computed(() => {
   const selection = environment.value;
   return !!selection?.value && !selection.options.some((option) => option.key === selection.value);
 });
+const legacyEnvironmentDifference = computed(() => {
+  const project = props.projectEnvironment;
+  const state = tabDebugState.value;
+  return !!project && !!state && !state.projectEnvironmentAdopted && state.selectedEnvironmentId !== project.value;
+});
+const previousEnvironmentId = computed(() => tabDebugState.value?.selectedEnvironmentId ?? null);
+const previousEnvironmentUnavailable = computed(() => !!previousEnvironmentId.value
+  && !environment.value?.options.some(option => option.key === previousEnvironmentId.value));
+const environmentLabel = (id: string | null) => id === null ? t("editor.noEnv")
+  : environment.value?.options.find(option => option.key === id)?.name ?? t("environmentShortcut.unavailable");
+const environmentChoiceOpen = ref(false);
+watch(() => [props.projectEnvironment?.owner, props.projectEnvironment?.value, tabDebugState.value, previousEnvironmentId.value], () => {
+  environmentChoiceOpen.value = false;
+}, { flush: "sync" });
 
 const oauthContextKey = computed(() => JSON.stringify({
   root: props.requestTab?.root ?? null,
@@ -494,10 +510,31 @@ function updateRequestAuth(auth: ApiRequest["auth"]): void {
 }
 
 function onSend() {
-  if (environmentUnavailable.value) return;
+  if (legacyEnvironmentDifference.value) {
+    environmentChoiceOpen.value = true;
+    return;
+  }
+  if (!environmentUnavailable.value) sendRequest(props.projectEnvironment?.value);
+}
+
+function sendRequest(environmentOverride?: string | null) {
   const onAccepted = props.captureResponseExpansion?.();
-  if (props.requestTab) void props.debug.sendRequestTab(props.requestTab, props.editor, undefined, onAccepted);
+  const state = tabDebugState.value;
+  const originalEnvironment = state?.selectedEnvironmentId;
+  if (props.requestTab) {
+    void props.debug.sendRequestTab(props.requestTab, props.editor, undefined, () => {
+      if (state && environmentOverride !== undefined && state.selectedEnvironmentId === originalEnvironment) state.projectEnvironmentAdopted = true;
+      onAccepted?.();
+    }, environmentOverride);
+  }
   else void props.debug.send(props.editor, undefined, onAccepted);
+}
+
+function chooseEnvironment(usePrevious: boolean) {
+  if (!legacyEnvironmentDifference.value || sendDisabled.value
+      || (usePrevious ? previousEnvironmentUnavailable.value : environmentUnavailable.value)) return;
+  environmentChoiceOpen.value = false;
+  sendRequest(usePrevious ? previousEnvironmentId.value : props.projectEnvironment?.value);
 }
 
 async function onCancel() {
@@ -770,7 +807,7 @@ async function saveRequest(requestOnly: boolean) {
           </template>
         </div>
         <div class="request-actions">
-          <DebugEnvironmentMenu :selection="environment" :loading="environmentLoading" test-id="debug-env-select" />
+          <DebugEnvironmentMenu v-if="!projectEnvironment" :selection="environment" :loading="environmentLoading" test-id="debug-env-select" />
           <button type="button" class="send-slot" data-testid="request-send-slot" :aria-busy="sending" :aria-disabled="sendDisabled" @click="runCommand">
             <span :data-testid="sendAction === 'cancel' ? 'debug-cancel' : 'send-btn'">{{ sendAction === "cancel" ? t('debugLoop.cancelRun') : sending ? t('editor.sending') : t('editor.send') }}</span>
           </button>
@@ -784,6 +821,20 @@ async function saveRequest(requestOnly: boolean) {
       </div>
       <p v-if="freeSession?.urlDraftInvalid" class="request-feedback error" role="alert" data-testid="free-url-draft-error">{{ t('editor.invalidFullUrl') }}</p>
       <p v-if="environmentUnavailable" class="request-feedback error" role="status">{{ t("environmentShortcut.unavailable") }}</p>
+      <section v-if="environmentChoiceOpen" class="migration-choice" data-testid="request-environment-migration"
+        aria-labelledby="request-environment-title" @keydown.esc.stop="environmentChoiceOpen = false">
+        <h3 id="request-environment-title">{{ t("projectWorkbench.environmentChangeTitle") }}</h3>
+        <dl>
+          <dt>{{ t("projectWorkbench.oldEnvironment") }}</dt><dd>{{ environmentLabel(previousEnvironmentId) }}</dd>
+          <dt>{{ t("projectWorkbench.projectEnvironment") }}</dt><dd>{{ environmentLabel(projectEnvironment?.value ?? null) }}</dd>
+        </dl>
+        <p>{{ t("projectWorkbench.afterMigration") }}</p>
+        <div class="migration-actions">
+          <a-button :disabled="previousEnvironmentUnavailable" @click="chooseEnvironment(true)">{{ t("projectWorkbench.usePreviousEnvironment") }}</a-button>
+          <a-button :disabled="environmentUnavailable" @click="chooseEnvironment(false)">{{ t("projectWorkbench.useProjectEnvironment") }}</a-button>
+          <a-button @click="environmentChoiceOpen = false">{{ t("common.cancel") }}</a-button>
+        </div>
+      </section>
       <p v-if="cancelError" class="request-feedback error" role="alert">{{ cancelError }}</p>
       <span v-if="saveFeedback" class="request-feedback" role="status" data-testid="save-feedback">{{ t(saveFeedback) }}</span>
       <span v-if="saveError" class="request-feedback error" role="alert" data-testid="save-error">{{ saveDiskFailure ? t(`diskRefresh.error.${saveDiskFailure.reason}`) : saveError }}</span>
@@ -1018,6 +1069,10 @@ async function saveRequest(requestOnly: boolean) {
 .request-actions { display: flex; align-items: center; flex: none; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .request-actions :deep(.menu-trigger) { border-color: var(--border); min-height: 32px; }
 .send-slot { flex: 0 0 8.6em; width: 8.6em; height: 32px; border: 1px solid transparent; border-radius: 6px; background: #1557d8; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.migration-choice { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--subtle); overflow-wrap: anywhere; }
+.migration-choice dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 8px; margin: 0 0 8px; }
+.migration-choice dd { margin: 0; }
+.migration-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .send-slot[aria-disabled="true"] { opacity: 0.7; cursor: default; }
 .send-slot:focus-visible, .editor-detail-button:focus-visible { outline-offset: 1px; }
 .editor-detail-button { flex: none; min-height: 26px; padding: 2px 6px; color: var(--text-muted); border: 1px solid transparent; border-radius: 4px; background: transparent; font: inherit; cursor: pointer; }

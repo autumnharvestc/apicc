@@ -9,8 +9,13 @@ import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import type { EvidenceIdentity } from "@apicc/core";
 import { reportEntryEvidence } from "@apicc/core/report/units";
 import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
+function runOverrides() {
+  const id = props.projectEnvironment?.value;
+  if (id && !props.projectEnvironment?.options.some(option => option.key === id)) throw new Error(t('environmentShortcut.unavailable'));
+  return { allowDraft: allowDraft.value, ...(id ? { environmentId: id } : {}) };
+}
 const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void }>();
-const props = defineProps<{ testing: TestingStore; externalRun?: (allowDraft: boolean) => Promise<void>; ai?: import('../stores/ai.js').AiStore; refreshingDisk?: boolean }>();
+const props = defineProps<{ testing: TestingStore; projectEnvironment?: import("../debugEnvironment.js").DebugEnvironmentSelection; externalRunIssue?: string; externalRun?: (allowDraft: boolean) => Promise<void>; ai?: import('../stores/ai.js').AiStore; refreshingDisk?: boolean }>();
 const { t, te } = useI18n(); const allowDraft = ref(false); const error = ref("");
 const errorIsTyped = ref(false);
 function stateLabel(code: string | undefined) { if (!code) return '—'; const key = `executionLabels.${code}`; return te(key) ? t(key) : code; }
@@ -86,7 +91,8 @@ function analyzeReport() {
         <label>{{ t('testing.reporters') }}<select multiple :value="suite.reporters" :disabled="testing.readOnly" @change="field('reporters',Array.from(($event.target as HTMLSelectElement).selectedOptions).map(item=>item.value))"><option>html</option><option>json</option><option>junit</option></select></label>
         <p class="hint">{{ t('testing.suiteIsolation') }}</p></div>
       </div>
-      <div class="run-toolbar"><label><input v-model="allowDraft" type="checkbox" :disabled="testing.running" />{{ t('testing.allowDraft') }}</label><button v-if="!externalRun" data-testid="suite-preview" :disabled="testing.dirty || testing.running || !testing.current" @click="attempt(() => testing.previewSuite({allowDraft}))">{{ t('testing.preview') }}</button><button class="primary" data-testid="suite-run" :disabled="testing.dirty || testing.running || !testing.current" @click="attempt(() => externalRun ? externalRun(allowDraft) : testing.run({allowDraft}))">{{ t('testing.run') }}</button><button v-if="!externalRun" data-testid="suite-cancel" :disabled="!testing.running" @click="attempt(() => testing.cancel())">{{ t('testing.cancel') }}</button></div>
+      <p v-if="externalRunIssue" role="status">{{ externalRunIssue }}</p>
+      <div class="run-toolbar"><label><input v-model="allowDraft" type="checkbox" :disabled="testing.running" />{{ t('testing.allowDraft') }}</label><button v-if="!externalRun" data-testid="suite-preview" :disabled="testing.dirty || testing.running || !testing.current" @click="attempt(() => testing.previewSuite(runOverrides()))">{{ t('testing.preview') }}</button><button class="primary" data-testid="suite-run" :disabled="!!externalRunIssue || testing.dirty || testing.running || !testing.current" @click="attempt(() => externalRun ? externalRun(allowDraft) : testing.run(runOverrides()))">{{ t('testing.run') }}</button><button v-if="!externalRun" data-testid="suite-cancel" :disabled="!testing.running" @click="attempt(() => testing.cancel())">{{ t('testing.cancel') }}</button></div>
       <div v-if="testing.result || testing.preview" class="result-scroll">
         <button v-if="ai && testing.result && !externalRun" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
         <div v-if="testing.result"><p>{{ t('run.reportingUnits', { total: testing.result.result.reportingUnits?.total ?? '—', failed: testing.result.result.reportingUnits?.failed ?? '—', diagnostics: testing.result.result.reportingUnits?.entryDiagnostics ?? '—' }) }}</p><details v-for="(row,index) in testing.result.result.cases" :key="JSON.stringify([row.locator,row.scope,row.entryId,row.suiteRow,row.row,row.nodeId,index])"><summary>{{ row.apiName }} / {{ row.caseName }} · {{ stateLabel(row.passed ? 'passed' : 'failed') }} · {{ t('run.row') }}={{ row.row === undefined ? '—' : row.row + 1 }} · {{ t('caseEvidence.entry') }}={{ row.entryId }}</summary><CaseEvidencePanel :evidence="row.evidence" :disabled="testing.running || testing.transitioning || testing.dirty" :inspect="testing.inspectEvidence" :rerun="testing.rerunEvidence" @locate="emit('locate-evidence', $event)" /></details></div>

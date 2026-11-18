@@ -205,6 +205,7 @@ function authDescription(request_: ApiRequest | null): string {
           :placeholder="t('online.path')"
           :disabled="!writable"
         />
+        <slot name="send" />
         <a-button
           v-if="writable"
           type="primary"
@@ -267,8 +268,10 @@ function authDescription(request_: ApiRequest | null): string {
         <a-tab-pane key="auth">
           <template #tab><span data-testid="online-tab-auth">{{ t("editor.auth") }}</span></template>
           <div class="panel">
+            <slot name="auth">
             <a-typography-text data-testid="online-auth-summary">{{ authDescription(request) }}</a-typography-text>
             <a-typography-text type="secondary" data-testid="online-auth-secret-note">{{ t("online.authSecretNote") }}</a-typography-text>
+            </slot>
           </div>
         </a-tab-pane>
 
@@ -359,9 +362,9 @@ function authDescription(request_: ApiRequest | null): string {
 .name-input { flex: 1; max-width: 420px; font-weight: 600; }
 .dirty { color: var(--accent); }
 .saved-tip { color: var(--pass); font-size: 12px; }
-.top-row { display: flex; gap: 8px; }
+.top-row { display: flex; flex-wrap:wrap; gap: 8px; }
 .method-select { width: 96px; }
-.url { flex: 1; }
+.url { flex: 1 1 160px; min-width:0; }
 .path-line { font-size: 11px; }
 .draft-target { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
 .draft-target :deep(.ant-select) { flex: 1 1 230px; min-width: 160px; max-width: 100%; }

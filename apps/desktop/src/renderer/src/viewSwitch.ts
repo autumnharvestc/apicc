@@ -4,7 +4,7 @@
  * - api（接口）模块子视图收敛为 调试/设计（接口栏聚焦接口定义，裁定⑥）；
  * - test（测试）：单接口用例管理（用例项运行/压测）+ 场景用例（裁定 D2），取代原压测栏；
  * - run/wf/envs 内容面板挂到各自模块；导入（M10）归接口模块头部按钮；插件在设置抽屉。
- * 禁用语义（单测钉住）：home 恒可用；在线 → 除主页外全禁用；其余工作区级。
+ * 旧格式在线项目仍可浏览接口及文件。已解析的在线项目开放业务模块。
  */
 export type SwitchView = "api" | "run" | "wf" | "test" | "envs";
 
@@ -18,11 +18,12 @@ export const API_SUB_VIEWS: ApiSubView[] = ["debug", "design"];
 export interface ViewGateContext {
   workspaceOpened: boolean;
   onlineActive: boolean;
+  onlineProjectAvailable?: boolean;
   apiSelected: boolean;
 }
 
 export function isViewDisabled(view: SwitchView, ctx: ViewGateContext): boolean {
-  if (ctx.onlineActive) return true;
+  if (ctx.onlineActive) return view !== "api" && !ctx.onlineProjectAvailable;
   return !ctx.workspaceOpened;
 }
 

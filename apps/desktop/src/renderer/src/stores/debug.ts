@@ -1,3 +1,4 @@
+import { buildSavedCaseInvocation } from "../execution/launch.js";
 import { createPinia, defineStore } from "pinia";
 import { watch } from "vue";
 import type { ApiccApi, DebugCancelResult } from "../../../shared/types.js";
@@ -37,6 +38,7 @@ export interface RequestTabDebugState {
   draftSnapshot: string;
   settings: RequestSettingsOverride;
   selectedEnvironmentId: string | null;
+  projectEnvironmentAdopted?: boolean;
   selectedCase: CaseIdentity | null;
   parameters: Record<string, string>;
   fields: DebugFieldState[];
@@ -300,6 +302,7 @@ export function useDebugStore(
           readSessionRestoreField(invocation.request, invocation.parameters, field.path)]));
         state.settings = { ...(invocation.settings ?? {}) };
         state.selectedEnvironmentId = invocation.environmentId ?? null;
+        state.projectEnvironmentAdopted = false;
         state.selectedCase = null;
         state.result = null;
         state.error = null;
@@ -457,16 +460,17 @@ export function useDebugStore(
           if (record.tabId === tabId) delete this.caseRuns[key];
         }
       },
-      async sendRequestTab(tab: RequestTab, editorValue: Editor, runFn?: RunFn, onAccepted?: OnRunAccepted): Promise<void> {
+      async sendRequestTab(tab: RequestTab, editorValue: Editor, runFn?: RunFn, onAccepted?: OnRunAccepted, environmentOverride?: string | null): Promise<void> {
         const state = this.requestTabState(tab);
         if (state.starting || state.sending || !requestTabs?.isCurrent(tab.tabId, tab.generation, tab.root)) return;
         if (getContext().root !== tab.root) return;
+        const environmentId = environmentOverride === undefined ? state.selectedEnvironmentId : environmentOverride;
         let invocation: DebugInvocation;
         if (tab.source.kind === "asset") {
           const key = apiSessionKey(tab.root, tab.source.locator);
           const session = key ? editorValue.sessions[key] : undefined;
           if (!session || session.root !== tab.root || !sameLocator(session.locator, tab.source.locator)) return;
-          if (state.selectedEnvironmentId && !session.envs.some((env) => env.id === state.selectedEnvironmentId)) {
+          if (environmentId && !session.envs.some((env) => env.id === environmentId)) {
             state.error = "debug-environment-unavailable";
             return;
           }
@@ -488,7 +492,7 @@ export function useDebugStore(
             request: JSON.parse(JSON.stringify(session.api.contract.request)) as typeof session.api.contract.request,
             parameters: { ...state.parameters },
             fields: state.fields.map((field) => ({ ...field })),
-            ...(state.selectedEnvironmentId ? { environmentId: state.selectedEnvironmentId } : {}),
+            ...(environmentId ? { environmentId } : {}),
             ...(Object.keys(state.settings).length ? { settings: { ...state.settings } } : {}),
             ...(state.parentHistoryId ? { parentHistoryId: state.parentHistoryId } : {}),
           };
@@ -496,7 +500,7 @@ export function useDebugStore(
           const session = editorValue.freeSessions[tab.tabId];
           if (!session || session.root !== tab.root || session.draftId !== tab.source.draftId
             || !sameProject(session.project, tab.source.project)) return;
-          if (state.selectedEnvironmentId && !session.envs.some((env) => env.id === state.selectedEnvironmentId)) {
+          if (environmentId && !session.envs.some((env) => env.id === environmentId)) {
             state.error = "debug-environment-unavailable";
             return;
           }
@@ -520,7 +524,7 @@ export function useDebugStore(
             request: JSON.parse(JSON.stringify(session.request)) as typeof session.request,
             parameters: { ...state.parameters },
             fields: state.fields.map((field) => ({ ...field })),
-            ...(state.selectedEnvironmentId ? { environmentId: state.selectedEnvironmentId } : {}),
+            ...(environmentId ? { environmentId } : {}),
             ...(Object.keys(state.settings).length ? { settings: { ...state.settings } } : {}),
             ...(state.parentHistoryId ? { parentHistoryId: state.parentHistoryId } : {}),
           };
@@ -559,6 +563,7 @@ export function useDebugStore(
           state.originalValues = Object.fromEntries(copied.fields.map((field) => [field.path, readRestoreField(copied, field.path)]));
           state.settings = { ...(copied.settings ?? {}) };
           state.selectedEnvironmentId = copied.environmentId ?? null;
+          state.projectEnvironmentAdopted = false;
           state.error = null;
           delete this.restoreByTarget[restoreStateKey(expectedKey, session.generation)];
         } else {
@@ -713,7 +718,7 @@ export function useDebugStore(
         const tab = assetTabFor(requestTabs, session.root, session.locator);
         return this.caseRuns[caseRunKey(session, identity, tab)];
       },
-      async runCase(targetEditor: Editor, identity: CaseIdentity, runFn?: RunFn) {
+      async runCase(targetEditor: Editor, identity: CaseIdentity, runFn?: RunFn, environmentOverride?: string | null) {
         const activeKey = targetEditor.activeKey;
         const session = activeKey ? targetEditor.sessions[activeKey] : undefined;
         if (!session || session.root !== getContext().root) return;
@@ -725,21 +730,16 @@ export function useDebugStore(
           return;
         }
         if (tabState ? tabState.sending || tabState.starting : this.sending || this.starting) return;
-        const env = tabState ? session.envs.find((item) => item.id === tabState.selectedEnvironmentId)
-          : session.envs.find((item) => item.name === this.selectedEnvName);
-        if ((tabState ? tabState.selectedEnvironmentId : this.selectedEnvName) && !env) {
+        const usesId = environmentOverride !== undefined || !!tabState;
+        const environment = environmentOverride !== undefined ? environmentOverride : tabState ? tabState.selectedEnvironmentId : this.selectedEnvName;
+        const env = session.envs.find(item => usesId ? item.id === environment : item.name === environment);
+        if (environment && !env) {
           if (tabState) tabState.error = "debug-environment-unavailable";
           else this.error = "debug-environment-unavailable";
           return;
         }
         const settings = tabState?.settings ?? this.settings;
-        const invocation: DebugInvocation = {
-          mode: "case",
-          locator: copyLocator(session.locator),
-          case: { ...copyLocator(session.locator), caseId: identity.caseId, scope: identity.scope },
-          ...(env ? { environmentId: env.id } : {}),
-          ...(Object.keys(settings).length ? { settings: { ...settings } } : {}),
-        };
+        const invocation = buildSavedCaseInvocation(session.locator, identity, env?.id, settings);
         const key = caseRunKey(session, invocation.case, tab);
         const previous = this.caseRuns[key];
         // Existing debug history remains the durable source for earlier runs.

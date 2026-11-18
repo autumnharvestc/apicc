@@ -5,6 +5,7 @@ import type { DebugHistoryListFilter, DebugHistoryPreferences, DebugHistoryReadR
 const DEFAULT_PREFERENCES: DebugHistoryPreferences = { enabled: true, retentionDays: 30, maxRecords: 1000 };
 
 export function useDebugHistoryStore(api: ApiccApi) {
+  let selectionIntent = 0;
   const getHistoryRecord = api.debugHistoryGet.bind(api) as (historyId: string) => Promise<DebugHistoryReadResult>;
   return defineStore("debugHistory", {
     state: () => ({
@@ -56,12 +57,16 @@ export function useDebugHistoryStore(api: ApiccApi) {
         this.filter.offset = this.nextOffset;
         await this.refresh(false);
       },
-      async openRecord(historyId: string) {
+      async openRecord(historyId: string, isCurrent: () => boolean = () => true) {
+        const intent = ++selectionIntent;
+        this.selected = null;
         this.error = null;
         try {
           const result = await getHistoryRecord(historyId);
+          if (intent !== selectionIntent || !isCurrent()) return;
           (this as unknown as { selected: DebugHistoryReadResult | null }).selected = result;
         } catch (error) {
+          if (intent !== selectionIntent || !isCurrent()) return;
           this.error = error instanceof Error ? error.message : String(error);
         }
       },

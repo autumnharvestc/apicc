@@ -2,13 +2,16 @@
 // M8 布局层级改造新增组件测试：ModuleRail（图标导航栏）与 SideTree 搜索过滤。
 // 装配约定同 components.test.ts：store 经 props 注入、组件内不调工厂；
 // jsdom 需要 matchMedia stub（antd 响应式断点）。
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useTreeStore } from "../../../src/renderer/src/stores/tree.js";
 import { useWorkflowDesignStore } from "../../../src/renderer/src/stores/workflowDesign.js";
+import ProjectStatusBar from "../../../src/renderer/src/components/ProjectStatusBar.vue";
+import { environmentIdForLegacyName } from "../../../src/renderer/src/projectEnvironment.js";
+import { createOnlineExecutionStore } from "../../../src/renderer/src/stores/onlineExecution.js";
 import ModuleRail from "../../../src/renderer/src/components/ModuleRail.vue";
 import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 
@@ -30,7 +33,7 @@ beforeAll(() => {
 
 enableAutoUnmount(afterEach);
 
-function mountRail(view: string, gate: { workspaceOpened: boolean; onlineActive: boolean; apiSelected: boolean }) {
+function mountRail(view: string, gate: { workspaceOpened: boolean; onlineActive: boolean; apiSelected: boolean; onlineProjectAvailable?: boolean }) {
   const { i18n } = createI18nInstance();
   return mount(ModuleRail, {
     props: { view: view as never, gate },
@@ -39,7 +42,7 @@ function mountRail(view: string, gate: { workspaceOpened: boolean; onlineActive:
 }
 
 describe("ModuleRail（M8 图标导航栏）", () => {
-  it("渲染 7 个模块按钮，顺序与 SWITCH_VIEWS 一致，含语言标签", () => {
+  it("渲染 5 个模块按钮，顺序与 SWITCH_VIEWS 一致，含语言标签", () => {
     const wrapper = mountRail("api", { workspaceOpened: true, onlineActive: false, apiSelected: false });
     const items = wrapper.findAll("button.rail-item").map((b) => b.attributes("data-testid"));
     expect(items).toEqual([
@@ -57,13 +60,61 @@ describe("ModuleRail（M8 图标导航栏）", () => {
     expect(wrapper.emitted("update:view")![0]).toEqual(["envs"]);
   });
 
-  it("门控：未打开工作区时工作区级模块禁用；在线全禁用", () => {
+  it("门控：未打开工作区时工作区级模块禁用；已解析的在线项目开放业务模块", () => {
     const closed = mountRail("api", { workspaceOpened: false, onlineActive: false, apiSelected: false });
     expect(closed.find('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
     const online = mountRail("api", { workspaceOpened: true, onlineActive: true, apiSelected: true });
+    expect(online.get('[data-testid="rail-api"]').attributes("disabled")).toBeUndefined();
+    expect(online.get('[data-testid="rail-run"]').attributes("disabled")).toBeDefined();
+    const formal = mountRail("api", { workspaceOpened: false, onlineActive: true, apiSelected: false, onlineProjectAvailable: true });
     for (const v of ["api", "run", "wf", "test", "envs"]) {
-      expect(online.find(`[data-testid="rail-${v}"]`).attributes("disabled")).toBeDefined();
+      expect(formal.find(`[data-testid="rail-${v}"]`).attributes("disabled")).toBeUndefined();
     }
+  });
+});
+
+describe("项目底栏", () => {
+  it.each(["zh-CN", "en"] as const)("按项目身份与实际环境 ID 选择，键盘可关闭菜单并返回焦点（%s）", async locale => {
+    const { i18n } = createI18nInstance();
+    i18n.global.locale.value = locale;
+    const options = [{ key: "first", name: "QA" }, { key: "second", name: "QA" }];
+    expect(environmentIdForLegacyName(options, "QA")).toBeUndefined();
+    const select = vi.fn();
+    const environment = { owner: "project-a", options, value: "second", select };
+    const wrapper = mount(ProjectStatusBar, { attachTo: document.body, props: { environment, owner: environment.owner }, global: { plugins: [i18n] } });
+    const trigger = wrapper.get('[data-testid="project-environment"]');
+    expect(trigger.text()).toContain("QA · second");
+    expect(wrapper.find('[data-testid="project-execution-location"]').exists()).toBe(false);
+    await trigger.trigger("keydown", { key: "ArrowDown" });
+    await flushPromises();
+    const item = document.querySelector<HTMLElement>('[data-testid="project-env-option-second"]')!;
+    expect(item.getAttribute("aria-checked")).toBe("true");
+    item.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(document.activeElement).toBe(trigger.element);
+    await trigger.trigger("click"); await flushPromises();
+    const stale = document.querySelector<HTMLElement>('[data-testid="project-env-option-first"]')!;
+    await wrapper.setProps({ owner: "project-b", environment: { ...environment, owner: "project-b", options: [] } });
+    expect(trigger.text()).toContain(i18n.global.t("environmentShortcut.unavailable"));
+    stale.click(); await flushPromises();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("保留已撤权代理并提供执行详情，换地点必须由用户选择", async () => {
+    const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
+    execution.selectLocation({ kind: "agent", agentId: "removed" });
+    const { i18n } = createI18nInstance();
+    const environment = { owner: "online-1", options: [], value: null, select: vi.fn() };
+    const wrapper = mount(ProjectStatusBar, { attachTo: document.body, props: { environment, execution, owner: environment.owner }, global: { plugins: [i18n] } });
+    const trigger = wrapper.get('[data-testid="project-execution-location"]');
+    expect(trigger.attributes("aria-label")).toContain(i18n.global.t("projectWorkbench.agentMissing"));
+    await trigger.trigger("click"); await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="project-execution-details-entry"]')!.click();
+    expect(wrapper.emitted("details")).toEqual([[]]);
+    expect(execution.location).toEqual({ kind: "agent", agentId: "removed" });
+    await trigger.trigger("click"); await flushPromises();
+    document.querySelector<HTMLElement>('[data-testid="project-location-local"]')!.click();
+    expect(execution.location).toEqual({ kind: "local" });
   });
 });
 

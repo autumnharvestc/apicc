@@ -5,7 +5,7 @@
 // M8 布局层级改造：九平铺视图收敛为「图标导航栏（ModuleRail）→ 树面板（带模块标题
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
-import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
+import { ref, shallowRef, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
 import { EllipsisOutlined } from "@ant-design/icons-vue";
 import { useI18n } from "vue-i18n";
 import {
@@ -41,13 +41,16 @@ import HomeView from "./components/HomeView.vue";
 import TestView from "./components/TestView.vue";
 import TestSidebar from "./components/TestSidebar.vue";
 import ModuleRail from "./components/ModuleRail.vue";
+import ProjectStatusBar from "./components/ProjectStatusBar.vue";
 import ActionMenu from "./components/ActionMenu.vue";
 import { debugEnvironmentSelection } from "./debugEnvironment.js";
+import { environmentIdForLegacyName, legacyEnvironmentName } from "./projectEnvironment.js";
 import SideTree from "./components/SideTree.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import OnlineLoginDialog from "./components/OnlineLoginDialog.vue";
 import OnlineApiEditor from "./components/OnlineApiEditor.vue";
 import OnlineProjectAssets from "./components/online/OnlineProjectAssets.vue";
+import OnlineExecutionDetails from "./components/online/OnlineExecutionDetails.vue";
 import OnlineProjectUpdates from "./components/online/OnlineProjectUpdates.vue";
 import WorkspaceDiskUpdates from "./components/WorkspaceDiskUpdates.vue";
 import CollaborationPanel from './components/online/CollaborationPanel.vue';
@@ -111,7 +114,6 @@ import { createBindIndexLoader, type WfBindIndex } from "./wf/wfBindings.js";
 import {
   isViewDisabled,
   isApiSubViewDisabled,
-  SWITCH_VIEWS,
   API_SUB_VIEWS,
   type SwitchView,
   type ApiSubView,
@@ -262,6 +264,7 @@ const pendingCollaborationSource = ref<CollaborationLocalSource | null>(null), c
 function chooseCollaborationTarget(source: CollaborationLocalSource) { pendingCollaborationSource.value = source; collaborationTargetId.value = ''; }
 async function prepareLocalCollaboration() { const source = pendingCollaborationSource.value!; const context = online.executionContext(collaborationTargetId.value)!; pendingCollaborationSource.value = null; collaboration.visible = true; await collaboration.selectLocal(context, source, t('collaboration.localReport')); }
 async function shareOnlineLocal(value: { context: OnlineExecutionContext; source: CollaborationLocalSource }) { collaboration.visible = true; await collaboration.selectLocal(value.context, value.source, t('collaboration.localReport')); }
+const onlineAssetsView = ref<InstanceType<typeof OnlineProjectAssets>>();
 const onlineProjectAdapter = createOnlineProjectAdapter(online.execution, apicc, () => !online.execution.context || !online.canEdit(`${online.execution.context.scope.projectId}/project.yaml`), () => window.confirm(t('testing.discardConfirm')));
 // —— AI store（M6-C 任务 1 装配）：同一组合根一次性创建；挂载后读持久化配置与 key
 // 状态（init 全程不抛）。对话框/抽屉本体在组合根渲染，接口头部入口按钮只置显隐/拉取。 ——
@@ -311,8 +314,13 @@ const tabs = createTabsStore({
   onProjectActivated: restoreLastApiForTab,
   confirmWorkflowDraft,
   discardWorkflowDraft: () => workflowDesign.unload(),
-  confirmTestingDraft: () => testing.confirmLeave(false),
-  leaveTestingAfterConfirmation: () => testing.leave(true),
+  confirmTestingDraft: () => (onlineAssetsView.value?.confirmLeave() ?? true) && testing.confirmLeave(false) && onlineProjectAdapter.testing.confirmLeave(false)
+    && (!onlineProjectAdapter.workflowDesign.dirty || window.confirm(t("wf.discardConfirm"))),
+  leaveTestingAfterConfirmation: async () => {
+    if (onlineProjectAdapter.workflowDesign.workflow) onlineProjectAdapter.workflowDesign.unload();
+    if (onlineProjectAdapter.testing.dirty) await onlineProjectAdapter.testing.leave(true);
+    return testing.leave(true);
+  },
   beginProjectTransition: () => {
     projectTransitionCount.value += 1;
     return () => { projectTransitionCount.value -= 1; };
@@ -376,6 +384,7 @@ function openFreeRequestTab(saveParent?: ApiParentLocator | null): void {
   requestProjectContext = { ...context.locator };
   try {
     const tabId = requestTabs.open({ kind: "free", project: { ...context.locator }, draftId: crypto.randomUUID(), saveParent });
+    debug.requestTabState(requestTabs.tabs[tabId]!).projectEnvironmentAdopted = true;
     void activateRequestTab(tabId).then(() => {
       if (saveParent === undefined || requestTabs.activeId !== tabId || localProjectToolsKey.value !== projectSessionKey(context.root, context.locator)) return;
       if (directoryOverlay.value) directoryOpen.value = false;
@@ -394,7 +403,9 @@ async function loadApiIntoEditor(locator: ApiLocator, isCurrent: () => boolean =
     const project = projectOfLocator(expected);
     requestContextRoot = root;
     requestProjectContext = project;
+    const generationBeforeOpen = requestTabs.generation;
     const tabId = requestTabs.open({ kind: "asset", locator: expected });
+    if (requestTabs.generation !== generationBeforeOpen) debug.requestTabState(requestTabs.tabs[tabId]!).projectEnvironmentAdopted = true;
     onRequestActivated?.(requestTabs.tabs[tabId]!);
     await activateRequestTab(tabId, false, isCurrent);
     return;
@@ -490,10 +501,6 @@ onMounted(async () => {
   await tabs.restore();
 });
 
-// —— 视图切换（M8 模块化）：ModuleRail v-model:view；接口模块子视图独立状态 ——
-// 门控语义（viewSwitch 单测钉住）：在线模式全部禁用（含 plugins）；plugins 管理类
-// 视图恒可用；其余工作区级；压测接口级。
-const VIEWS: SwitchView[] = SWITCH_VIEWS;
 const SUB_VIEWS: ApiSubView[] = API_SUB_VIEWS;
 // 项目模块保持原状态；主页/项目页面选择只由 tabs.selectedPage 控制。
 const view = ref<SwitchView>("api");
@@ -502,7 +509,9 @@ const workbenchBody = ref<HTMLElement>();
 const workbenchWidth = ref(window.innerWidth);
 const workbenchHeight = ref(window.innerHeight - 46);
 const directoryOpen = ref(false);
-const apiDirectory = computed(() => !isHome.value && (onlineMode.value || view.value === "api"));
+const apiDirectory = computed(() => !isHome.value && view.value === "api");
+const onlineMaterialsOpen = ref(false);
+const onlineExecutionDetailsOpen = ref(false);
 const compactDirectory = computed(() => workbenchWidth.value < 1024);
 const directoryOverlay = computed(() => apiDirectory.value && (workbenchWidth.value < 900
   || workbenchWidth.value - (compactDirectory.value ? 264 : 312) < 600));
@@ -682,8 +691,15 @@ function canMigrateWorkspace() {
 const railGate = computed(() => ({
   workspaceOpened: workspace.opened,
   onlineActive: onlineMode.value,
+  onlineProjectAvailable: !!online.execution.project && onlineProjectContextAvailable.value && !online.execution.projectAccessLost,
   apiSelected: !!editor.apiId || !!editor.activeFreeSession,
 }));
+watch(() => activeOnlineProjectTab.value?.tabId, (tab, previous) => {
+  if (tab && tab !== previous) view.value = "api";
+}, { flush: "sync" });
+watch(railGate, gate => {
+  if (gate.onlineActive && isViewDisabled(view.value, gate)) view.value = "api";
+});
 const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId || !!editor.activeFreeSession }));
 const homeOpenLocalProjectKeys = computed(() => new Set(
   tabs.tabs.filter(isLocalProjectTab).map((tab) => projectSessionKey(tab.workspaceRef.dir, tab.projectLocator)),
@@ -783,13 +799,15 @@ function cancelOnlineDirectoryDraft() {
   restoreOnlineDirectoryFocus();
 }
 let onlineActivation = 0;
+let activeOnlineLoad: Promise<void> = Promise.resolve();
 watch(() => JSON.stringify([isHome.value, onlineMode.value, homeActiveOnlineProjectId.value, online.activeBaseUrl, online.user?.id]), async () => {
   const activation = ++onlineActivation;
   const context = online.executionContext(homeActiveOnlineProjectId.value);
   online.execution.activate(context);
   online.execution.setVisible(!isHome.value && onlineMode.value && context !== null);
   if (context && online.execution.visible) {
-    await online.execution.load();
+    activeOnlineLoad = online.execution.load();
+    await activeOnlineLoad;
     if (activation !== onlineActivation || JSON.stringify(onlineDirectoryContext.value) !== JSON.stringify(context)) return;
     const selected = findOnlineDirectoryNode(onlineDirectoryRoot.value, node => node.key === onlineDirectory.tree.value.selected);
     if (!online.editorPath && (selected?.kind === 'api' || selected?.kind === 'file')) {
@@ -1483,6 +1501,10 @@ const projectToolItems = computed(() => [
     { key: "mock", label: t("mockPanel.title"), testId: "project-mock-entry" },
   ] : []),
   ...(syncScope.value ? [{ key: "sync", label: t("sync.title"), testId: "sync-entry" }] : []),
+  ...(syncScope.value?.kind === "online" && !online.execution.projectAccessLost ? [
+    ...(online.execution.project ? [{ key: "materials", label: t("onlineExecution.panes.materials"), testId: "project-materials-entry" }] : []),
+    { key: "collaboration", label: t("collaboration.title"), testId: "collaboration-entry" },
+  ] : []),
   ...(projectOnlineTarget.value ? [
     ...(online.profiles.some((profile) => profile.baseUrl === projectOnlineTarget.value?.baseUrl) ? [
       { key: "account", label: t("home.connectionAccount"), testId: "project-connection-account" },
@@ -1508,6 +1530,8 @@ function selectProjectTool(action: string) {
     return;
   }
   if (action === "sync") openSyncPanel();
+  if (action === "materials") onlineMaterialsOpen.value = true;
+  if (action === "collaboration" && online.execution.context) void collaboration.activate(online.execution.context).catch(reportError);
   const target = projectOnlineTarget.value;
   if (!target) return;
   if (action === "account") online.openConnectionAccount(target.baseUrl);
@@ -1525,6 +1549,8 @@ function closeSyncPanel(restoreToProject = false) {
 }
 watch(syncScopeKey, () => {
   closeSyncPanel(true);
+  onlineMaterialsOpen.value = false;
+  onlineExecutionDetailsOpen.value = false;
   synchronization.activate(syncScope.value);
 }, { immediate: true, flush: "sync" });
 watch(projectToolsKey, () => {
@@ -1586,13 +1612,53 @@ function apiParentPath(locator: ApiParentLocator): string {
   }
   return path.join(" / ");
 }
-const showDebugEnvironment = computed(() => !isHome.value && !onlineMode.value && view.value === "api" && apiSubView.value === "debug");
-const environmentSelection = computed(() => {
-  if (!showDebugEnvironment.value || !selectedProjectContext.value || selectedProjectContext.value.root !== workspace.root) return null;
-  const locator = editor.locator;
-  if (!activeRequestTab.value && (!locator || !sameProjectLocator(locator, selectedProjectContext.value.locator))) return null;
-  return debugEnvironmentSelection(editor, debug, activeRequestTab.value);
+const localEnvironmentByProject = reactive(new Map<string, string | null>());
+const localEnvironmentOptions = computed(() => (localProjectTools.value?.project.envs ?? []).map(env => ({ key: env.id, name: env.name })));
+const oldEnvironmentId = computed(() => {
+  const tab = activeRequestTab.value;
+  if (!tab || localProjectToolsKey.value !== projectSessionKey(tab.root, tab.project) || !debugEnvironmentSelection(editor, debug, tab)) return undefined;
+  const state = debug.requestTabState(tab);
+  const id = state.selectedEnvironmentId;
+  return !state.projectEnvironmentAdopted && id && localEnvironmentOptions.value.some(option => option.key === id) ? id : undefined;
 });
+watch([localProjectToolsKey, oldEnvironmentId, localEnvironmentOptions], ([key, legacyId, options]) => {
+  if (!key || localEnvironmentByProject.has(key)) return;
+  const legacyName = debug.envByProject[key];
+  const id = legacyId ?? environmentIdForLegacyName(options, legacyName ?? null);
+  if (id) localEnvironmentByProject.set(key, id);
+  else if (legacyName) localEnvironmentByProject.set(key, `unresolved-name:${legacyName}`);
+  else if (activeRequestTab.value && debugEnvironmentSelection(editor, debug, activeRequestTab.value)) localEnvironmentByProject.set(key, null);
+}, { immediate: true });
+const projectEnvironmentId = computed(() => localEnvironmentByProject.get(localProjectToolsKey.value) ?? null);
+const projectEnvironmentName = computed(() => projectEnvironmentId.value === null ? null : legacyEnvironmentName(localEnvironmentOptions.value, projectEnvironmentId.value));
+const projectEnvironment = computed(() => {
+  const owner = localProjectToolsKey.value;
+  if (!owner) return undefined;
+  return {
+    owner, value: projectEnvironmentId.value, options: localEnvironmentOptions.value,
+    select(value: string | null) {
+      if (owner !== localProjectToolsKey.value || projectTransitionPending.value) return;
+      if (value !== null && !localEnvironmentOptions.value.some(option => option.key === value)) return;
+      localEnvironmentByProject.set(owner, value);
+    },
+  };
+});
+const onlineProjectEnvironment = computed(() => {
+  const context = onlineDirectoryContext.value;
+  if (!context || JSON.stringify(context) !== JSON.stringify(online.execution.context) || !online.execution.project || onlineProjectAccessLost.value) return undefined;
+  const owner = JSON.stringify(context);
+  const options = online.execution.project.environments.map(env => ({ key: env.id, name: env.name }));
+  return {
+    owner, value: online.execution.environmentId ?? null, options,
+    select(value: string | null) {
+      if (owner !== JSON.stringify(onlineDirectoryContext.value) || owner !== JSON.stringify(online.execution.context) || projectTransitionPending.value) return;
+      if (value !== null && !online.execution.project?.environments.some(env => env.id === value)) return;
+      online.execution.environmentId = value ?? undefined;
+      online.execution.invalidateStressConfirmation();
+    },
+  };
+});
+const footerEnvironment = computed(() => onlineMode.value ? onlineProjectEnvironment.value : projectEnvironment.value);
 const historyNavigationGeneration = ref(0);
 watch(
   () => JSON.stringify([
@@ -1905,6 +1971,22 @@ function openOnlineProjectFromHome(projectId: string) {
   );
 }
 
+async function openRelatedOnlineProject(workspaceId: string, projectId: string): Promise<boolean> {
+  const source = onlineDirectoryContext.value;
+  const session = online.sessions[workspaceId];
+  const project = session?.projects.find(item => item.id === projectId);
+  if (!source || session?.workspace.id !== source.scope.workspaceId || !project || project.myRole === "NONE") return false;
+  const expected = online.executionContext(projectId);
+  if (!expected || expected.serverId !== source.serverId || expected.ownerId !== source.ownerId) return false;
+  await tabs.openProjectTab({ kind: "online", workspaceId, name: session.workspace.name, baseUrl: session.baseUrl }, { id: projectId, name: project.name });
+  await nextTick();
+  await activeOnlineLoad;
+  if (JSON.stringify(onlineDirectoryContext.value) !== JSON.stringify(expected) || !online.execution.project || online.execution.projectAccessLost) return false;
+  view.value = "run";
+  await nextTick();
+  return true;
+}
+
 // —— 测试模块（M11）：压测上下文 + 场景清单 + 侧栏选接口载入编辑器 ——
 const testStressOpen = ref(false);
 let testStressIntent = 0;
@@ -1937,17 +2019,17 @@ async function onTestStress(caseId: string) {
   if (!testApiReady.value || !locator || !project) return;
   const intent = ++testStressIntent;
   const targetKey = apiSessionKey(project.root, locator);
-  const environmentName = debug.selectedEnvName;
-  const environment = editor.envs.find((env) => env.name === environmentName)?.id;
+  const environment = projectEnvironmentId.value;
+  if (environment && !localEnvironmentOptions.value.some(option => option.key === environment)) { reportError(new Error(t("environmentShortcut.unavailable"))); return; }
   stress.form.caseId = caseId;
-  stress.form.envName = debug.selectedEnvName; // 与调试共享项目环境选中态
+  stress.form.envName = projectEnvironmentName.value ?? null;
   try {
     await stress.openWorkbench(project.locator, { kind: 'case', collectionId: locator.collectionId, apiId: locator.apiId, caseId });
     const plan = stress.plan;
     const planned = plan?.target;
     if (!plan || intent !== testStressIntent || view.value !== "test" || !testApiReady.value || targetKey !== editor.activeKey
       || planned?.kind !== "case" || planned.collectionId !== locator.collectionId || planned.apiId !== locator.apiId || planned.caseId !== caseId) return;
-    if (environmentName) plan.environmentId = environment;
+    if (environment && !stress.savedPlanId) plan.environmentId = environment;
     testStressOpen.value = !!stress.planOwner;
   } catch (e) { reportError(e); }
 }
@@ -2157,6 +2239,12 @@ function openDebugHistory(trigger?: HTMLElement) {
   historyOpen.value = true;
 }
 
+function openProjectDebugRecord(historyId: string) {
+  const navigation = historyNavigationGeneration.value;
+  openDebugHistory();
+  void debugHistory.openRecord(historyId, () => historyOpen.value && historyNavigationGeneration.value === navigation);
+}
+
 function closeDebugHistory() {
   historyOpen.value = false;
 }
@@ -2269,14 +2357,11 @@ function focusDebugSection(section: HTMLElement | undefined) {
         </div>
       </a-modal>
       <div :ref="setWorkbenchBody" class="body" :inert="projectTransitionPending" :class="{ 'form-workbench': (view === 'envs' || view === 'test') && !isHome && !onlineMode }">
-        <!-- 图标导航栏（M11 五项）：v-model:view + 门控上下文；主页不显示；
-             在线模式全禁用 -->
+        <!-- 两种项目共用模块导航。旧格式在线项目仍可浏览目录。 -->
         <ModuleRail
           v-if="!isHome"
           :view="view"
           :gate="railGate"
-          :environment="environmentSelection"
-          :environment-loading="showDebugEnvironment && !!activeRequestTab && !environmentSelection"
           :directory-overlay="directoryOverlay"
           :directory-open="directoryOpen"
           @update:view="(v: SwitchView) => (view = v)"
@@ -2290,9 +2375,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             </ActionMenu>
           </template>
         </ModuleRail>
-        <!-- API 栏（M11 按模块专用）：接口=树；测试=用例/场景导航；运行/工作流/环境与主页隐藏。
-             在线模式侧栏必须可见（回归修复：M11 的 !online.activeWorkspace 条件把在线树整个藏死，
-             导致在线工作区无任何项目入口——在线时 treeRoot 已切在线树，侧栏跟随显示） -->
+        <!-- 目录绑定活动项目。本地和在线共用展开、隐藏与窄窗入口。 -->
         <div
           v-show="directoryVisible"
           id="workbench-directory"
@@ -2420,14 +2503,17 @@ function focusDebugSection(section: HTMLElement | undefined) {
           <div v-else-if="onlineProjectAccessLost" class="panel-view online-context-unavailable" role="alert" data-testid="online-project-access-lost">
             <p>{{ t(online.execution.projectReadIssue === 'online-project-identity-changed' ? 'onlineProjectUpdate.identityChanged' : 'onlineProjectUpdate.accessLost') }}</p>
           </div>
-          <OnlineProjectAssets v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects"
+          <OnlineProjectAssets ref="onlineAssetsView" v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects"
+            :view="view" :materials-open="onlineMaterialsOpen" :open-project="openRelatedOnlineProject"
+            @close-materials="onlineMaterialsOpen = false" @update:view="view = $event"
+            @create-api="onlineDirectoryRoot && startOnlineDirectoryAction('api', onlineDirectoryRoot)"
+            :title-path="onlineSavedApiPath"
             :blank="isOnlineDirectoryBlank(online.execution.view)" :directory-writable="onlineDirectory.writable.value" :directory-draft="!!onlineDirectory.draft.value"
-            @collaboration="context => collaboration.activate(context).catch(reportError)" @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome" @api-selected="showOnlineDirectoryPath">
+            @collaboration-result="value => shareOnlineLocal(value).catch(reportError)" @published="openOnlineProjectFromHome">
             <template #draft>
               <OnlineApiEditor :online="online" :draft="onlineDirectory.draft.value" :targets="onlineDirectoryTargets" :draft-writable="onlineDirectory.writable.value"
                 @save-draft="onlineDirectory.save()" @verify-draft="onlineDirectory.save(true)" @cancel-draft="cancelOnlineDirectoryDraft" />
             </template>
-            <OnlineApiEditor :online="online" :title-path="onlineSavedApiPath" />
           </OnlineProjectAssets>
           <OnlineApiEditor v-else-if="onlineMode && onlineProjectContextAvailable" class="panel-view" :online="online" />
           <div v-else-if="onlineMode" class="panel-view online-context-unavailable">
@@ -2475,8 +2561,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
                   :models="assets.models"
                   :project-locator="activeRequestTab?.project ?? null"
                   :request-tab="activeRequestTab"
-                  :environment-selection="environmentSelection"
-                  :environment-loading="!!activeRequestTab && !environmentSelection"
+                  :project-environment="projectEnvironment"
                   :request-path="requestPath"
                   :view-model="localProjectTools ? viewProjectModel : undefined"
                   :view-project-asset="localProjectTools ? locateProjectAsset : undefined"
@@ -2557,8 +2642,14 @@ function focusDebugSection(section: HTMLElement | undefined) {
             v-else-if="view === 'run'"
             class="panel-view"
             :run="run"
+            :api="localApi"
+            :project-locator="selectedProjectLocator"
+            :environment-id="projectEnvironmentId"
+            :editor="editor" :debug="debug" :cases="cases" :testing="testing"
+            :workflow-design="workflowDesign" :stress="stress" :read-only="localContext().readOnly"
             :workspace="workspace"
             :selected-collection-locator="selectedCollectionLocator"
+            @open-debug-record="openProjectDebugRecord"
             :report-error="reportError"
             @locate-evidence="locateExecutionEvidence"
             @collaboration="chooseCollaborationTarget"
@@ -2594,6 +2685,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
               class="panel-view"
               :editor="editor"
               :interface-ready="testApiReady"
+              :project-environment="projectEnvironment"
               :can-operate="canOperateTestCase"
               :interface-loading="!!testApiTarget && testApiLoad?.key === apiSessionKey(workspace.root, testApiTarget) && testApiLoad.loading"
               :interface-error="testApiTarget && testApiLoad?.key === apiSessionKey(workspace.root, testApiTarget) ? testApiLoad.error : ''"
@@ -2614,6 +2706,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             :ai="ai"
             v-else
             class="wf-view"
+            :project-environment="projectEnvironment"
             :workflow-design="workflowDesign"
             :wf-list="wfList"
             :workspace="workspace"
@@ -2626,6 +2719,11 @@ function focusDebugSection(section: HTMLElement | undefined) {
         </div>
         </div>
       </div>
+      <ProjectStatusBar v-if="!isHome && footerEnvironment" :owner="footerEnvironment.owner"
+        :environment="footerEnvironment" :disabled="projectTransitionPending" :execution="onlineMode ? online.execution : undefined"
+        @details="onlineExecutionDetailsOpen = true" />
+      <OnlineExecutionDetails v-if="onlineExecutionDetailsOpen && onlineProjectEnvironment" :execution="online.execution"
+        :open="onlineExecutionDetailsOpen" @close="onlineExecutionDetailsOpen = false" />
     <!-- 侧树切换工作流的 dirty 丢弃确认（审查 I1）：a-modal 传送门渲染于 body -->
     <ConfirmDialog :open="!!resolvingDiskConflict" :title="t(resolvingDiskConflict?.reason === 'deleted' ? 'diskRefresh.discardRemoved' : 'diskRefresh.restore')" @confirm="finishDiskConflictResolution(true)" @cancel="finishDiskConflictResolution(false)">
       <p>{{ t(resolvingDiskConflict?.reason === "deleted" ? "diskRefresh.confirmDiscardRemoved" : "diskRefresh.confirmRestore", { name: resolvingDiskConflict?.name }) }}</p>

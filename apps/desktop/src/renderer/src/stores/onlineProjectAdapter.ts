@@ -197,7 +197,14 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     credentialPut: async input => CredentialMutationResultSchema.parse(await credentialAction("put", input.ref, input.value)),
     credentialRemove: async input => CredentialMutationResultSchema.parse(await credentialAction("remove", input.ref)),
   };
-  const bridge = new Proxy({} as ApiccApi, { get: (_target, name: keyof ApiccApi) => operations[name] ?? (async () => { throw new Error("online-editor-operation-unavailable"); }) });
+  const bridge = new Proxy({} as ApiccApi, {
+    get(target, name: keyof ApiccApi) {
+      if (Object.hasOwn(operations, name)) return operations[name];
+      // Framework reflection (including promise detection) must see an ordinary object.
+      if (!(name in api)) return Reflect.get(target, name);
+      return async () => { throw new Error("online-editor-operation-unavailable"); };
+    },
+  });
   const workspace = useWorkspaceStore(bridge);
   const getContext = () => ({ root: editorRoot(), readOnly: readOnly() });
   const envs = useEnvsStore(bridge, getContext);
@@ -205,13 +212,16 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
   const workflowDesign = useWorkflowDesignStore(bridge, getContext); const wfList = useWfListStore(bridge, getContext);
   const editor = useEditorStore(bridge, getContext); const cases = useCasesStore(bridge, editor);
   const stop = watch(() => [editorRoot(), execution.project, readOnly()], () => {
+    const root = editorRoot();
+    if (editor.activeKey && editor.sessions[editor.activeKey]?.root !== root) editor.activeKey = null;
     if (!execution.project) { workspace.reset(); return; }
     workspace.root = editorRoot(); workspace.opened = true; workspace.readOnly = readOnly();
     (workspace as unknown as { workspace: ContractWorkspace | null }).workspace = facade(); workspace.name = project().name;
     const tree = toTreeNode(facade()); if (tree.kind === "root") workspace.tree = tree;
-    void envs.load(locator()).catch(error => { execution.error = error.message; });
-    void testing.activate(editorRoot(), locator(), readOnly()).catch(error => { execution.error = error.message; });
-    void wfList.load(editorRoot(), locator()).catch(error => { execution.error = error.message; });
+    const reportCurrentError = (error: Error) => { if (root === editorRoot()) execution.error = error.message; };
+    void envs.load(locator()).catch(reportCurrentError);
+    void testing.activate(root, locator(), readOnly()).catch(reportCurrentError);
+    void wfList.load(root, locator()).catch(reportCurrentError);
   }, { immediate: true });
   const stopRebase = watch(() => execution.appliedUpdate, () => {
     if (!execution.project || !execution.view) return;
