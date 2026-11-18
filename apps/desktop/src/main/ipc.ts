@@ -27,11 +27,12 @@ import { CollaborationResultSchema, type CollaborationInput } from '../shared/on
 import { handleOnlineScheduling } from './online/scheduling.js';
 import { parseOnlineSchedulingResult, type OnlineSchedulingInput } from '../shared/online/scheduling.js';
 import { createSystemSecretStore, defaultCredentialPrivateRoot } from "@apicc/core";
-import { OnlineExecutionResultSchema, OnlineLocalResultSchema, type OnlineExecutionInput, type OnlineExecutionContext, type OnlineLocalResult } from "../shared/online/execution.js";
+import { OnlineExecutionResultSchema, OnlineLocalResultSchema, type OnlineExecutionInput, type OnlineExecutionContext } from "../shared/online/execution.js";
 import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
 import type { TokenStore } from "./online/tokenStore.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
+import { previewCollectionLaunch, type CollectionLaunchInput } from "../shared/collection-launch.js";
 import { createDebugController } from "./debugController.js";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { listRuns, readRun, readScopedStressRun, listScopedStressRuns } from "./runs.js";
@@ -217,7 +218,8 @@ export function createIpcDeps(options: IpcDepsOptions) {
     localStore: () => options.credentials?.secretStore ?? createSystemSecretStore({ privateRoot: options.credentials?.credentialPrivateRoot ?? defaultCredentialPrivateRoot() }),
   }) : null;
   const collaborationReports = new WeakMap<object, { context: ReturnType<Session['captureDraftWriteContext']>; project: ProjectLocator; report: RunResult; digest: string }>();
-  const collaborationOnlineResults = new WeakMap<object, { context: OnlineExecutionContext; result: OnlineLocalResult; binding: ReturnType<OnlineSession['captureExecution']> }>();
+  type OnlinePublicationBinding = { context: OnlineExecutionContext; binding: ReturnType<OnlineSession['captureExecution']> };
+  const collaborationOnlineResults = new WeakMap<object, Map<string, OnlinePublicationBinding>>();
   async function rememberCollaborationReport(owner: object | undefined, context: ReturnType<Session['captureDraftWriteContext']>, project: ProjectLocator, report: RunResult, displayed: unknown) {
     if (!owner) return;
     try { const digest = await aiReportDigest(displayed); session.assertDraftWriteContext(context); collaborationReports.set(owner, { context: { ...context }, project: structuredClone(project), report: structuredClone(report), digest }); }
@@ -226,7 +228,16 @@ export function createIpcDeps(options: IpcDepsOptions) {
   const onlineCollaboration = online ? createCollaborationHost({ session: online, localSession: session, fetch: options.online?.fetch,
     readDebugHistory: (id, key) => requireDebugHistory().getOwned(id, key),
     readCurrentReport: owner => collaborationReports.get(owner),
-    readOnlineResult: owner => { const value = collaborationOnlineResults.get(owner); if (!value) return; try { value.binding.assertCurrent(); return value; } catch { return; } },
+    readOnlineResult: async (owner, runId) => {
+      const receipt = collaborationOnlineResults.get(owner)?.get(runId);
+      if (!receipt) return;
+      try {
+        receipt.binding.assertCurrent();
+        const result = OnlineLocalResultSchema.safeParse(await onlineExecution?.handle({ context: receipt.context, operation: 'report', location: { kind: 'local' }, runId }));
+        receipt.binding.assertCurrent();
+        if (result.success && result.data.runId === runId) return { context: receipt.context, result: result.data };
+      } catch { return; }
+    },
     writeClipboard: async text => { const { clipboard } = await import('electron'); clipboard.writeText(text); },
   }) : null;
   function requireOnline(): OnlineSession {
@@ -753,10 +764,18 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const result = await sendDebug(session, a[0] as DebugInput, () => pluginsRuntime.registry(), credentials, debug, requireOwner(owner));
         return result satisfies DebugOutput;
       }
-      case IpcChannel.DebugStart:
-        return startDebug(requireOwner(owner), a[0]) satisfies IpcResultMap[typeof IpcChannel.DebugStart];
-      case IpcChannel.DebugWait:
-        return await debug.wait(requireOwner(owner), (a[0] as { runId: string }).runId) satisfies IpcResultMap[typeof IpcChannel.DebugWait];
+      case IpcChannel.DebugStart: {
+        const [invocation, context] = a as IpcArgsMap[typeof IpcChannel.DebugStart];
+        if (context) {
+          if (invocation.mode !== "case") throw new Error("Invalid saved case invocation");
+          session.assertTestingContext(context, invocation.locator);
+        }
+        return startDebug(requireOwner(owner), invocation) satisfies IpcResultMap[typeof IpcChannel.DebugStart];
+      }
+      case IpcChannel.DebugWait: {
+        const [input] = a as IpcArgsMap[typeof IpcChannel.DebugWait];
+        return await debug.wait(requireOwner(owner), input.runId, input.includeHistoryId) satisfies IpcResultMap[typeof IpcChannel.DebugWait];
+      }
       case IpcChannel.DebugCancel:
         return debug.cancel(requireOwner(owner), (a[0] as { runId: string }).runId) satisfies IpcResultMap[typeof IpcChannel.DebugCancel];
       case IpcChannel.DebugCookiesList:
@@ -854,6 +873,13 @@ export function createIpcDeps(options: IpcDepsOptions) {
         await aiSources?.rememberReport(owner, context, { workspaceId, groupId, projectId }, run, run);
         await rememberCollaborationReport(owner, context, { workspaceId, groupId, projectId }, run, run);
         return run satisfies RunResult;
+      }
+      case IpcChannel.PreviewCollection: {
+        const input = a[0] as CollectionLaunchInput;
+        if (session.root !== input.root) throw new Error("run-launch-preview-changed");
+        const located = session.locateCollection(input.locator);
+        if (!located) throw new Error("run-launch-target-unavailable");
+        return previewCollectionLaunch(located.project, input.locator.collectionId, input.environmentId);
       }
       case IpcChannel.RunsList: {
         if (!session.root) throw new Error("尚未打开工作区");
@@ -1220,7 +1246,12 @@ export function createIpcDeps(options: IpcDepsOptions) {
         const input = a[0] as OnlineExecutionInput;
         const result = OnlineExecutionResultSchema.parse(await onlineExecution.handle(input));
         const local = OnlineLocalResultSchema.safeParse(result);
-        if (owner && input.operation === 'run' && local.success) collaborationOnlineResults.set(owner, { context: structuredClone(input.context), result: local.data, binding: requireOnline().captureExecution(input.context) });
+        if (owner && input.operation === 'run' && local.success) {
+          const history = collaborationOnlineResults.get(owner) ?? new Map<string, OnlinePublicationBinding>();
+          history.set(local.data.runId, { context: structuredClone(input.context), binding: requireOnline().captureExecution(input.context) });
+          if (history.size > 100) history.delete(history.keys().next().value!);
+          collaborationOnlineResults.set(owner, history);
+        }
         return result;
       }
       case IpcChannel.OnlineCollaboration:

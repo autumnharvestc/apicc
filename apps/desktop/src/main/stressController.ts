@@ -259,6 +259,7 @@ export function createStressControllerWithHost(
 
   function runPlan(input: StressPlanRunInput, owner?: object): Promise<StressPlanRunOutput> {
     if (active) return Promise.reject(new Error("已有压测进行中"));
+    if (input.previewRevision && session.revision !== input.previewRevision) throw new Error("run-launch-preview-changed");
     const projectLocator = structuredClone(input.projectLocator), plan = StressPlanSchema.parse(input.plan), confirmedTargetOrigins = [...(input.confirmedTargetOrigins ?? [])];
     const located = session.locateProject(projectLocator); if (!located || !session.root) throw new Error("未找到压测项目");
     const root = realpathSync(session.root);

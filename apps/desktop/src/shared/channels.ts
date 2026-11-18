@@ -72,6 +72,7 @@ export const IpcChannel = {
   DebugHistoryRestore: "debug:history:restore",
   DebugHistoryReplay: "debug:history:replay",
   RunCollection: "run:collection",
+  PreviewCollection: "run:preview-collection",
   RunsList: "runs:list",
   RunsGet: "runs:get",
   ImportPreview: "import:preview",

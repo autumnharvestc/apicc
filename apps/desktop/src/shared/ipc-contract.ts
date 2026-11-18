@@ -5,7 +5,7 @@ import { CollaborationInputSchema } from './online/collaboration.js';
 import { OnlineSchedulingInputSchema } from './online/scheduling.js';
 import { StressPlanSaveInputSchema, StressCompareInputSchema, StressExportInputSchema, StressReportFileSchema } from "./types.js";
 import { StressPlanSchema } from "@apicc/core/schema";
-import { EvidenceInvocationSchema, TestingReadInputSchema, DatasetSaveInputSchema, SuiteSaveInputSchema, TestingDeleteInputSchema, DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema } from "./testing.js";
+import { EvidenceInvocationSchema, TestingContextSchema, TestingReadInputSchema, DatasetSaveInputSchema, SuiteSaveInputSchema, TestingDeleteInputSchema, DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema } from "./testing.js";
 import {
   ApiAssetSchema,
   ApiRequestSchema,
@@ -189,7 +189,7 @@ const LegacyStressRunInputSchema = z.object({
   connectionMode: z.enum(["pooled", "fresh"]).optional(),
   confirmedTargetOrigins: StressOriginListSchema.optional(),
 }).strict();
-const StressRunInputSchema = z.union([LegacyStressRunInputSchema, z.object({ kind: z.literal("plan"), root: z.string().min(1), invocationId: z.string().uuid(), projectLocator: ProjectLocatorSchema, plan: StressPlanSchema, confirmedTargetOrigins: StressOriginListSchema.optional() }).strict()]);
+const StressRunInputSchema = z.union([LegacyStressRunInputSchema, z.object({ kind: z.literal("plan"), previewRevision: z.string().min(1).optional(), root: z.string().min(1), invocationId: z.string().uuid(), projectLocator: ProjectLocatorSchema, plan: StressPlanSchema, confirmedTargetOrigins: StressOriginListSchema.optional() }).strict()]);
 const ImportPreviewInputSchema = z.object({ fileName: z.string(), content: z.string() }).strict();
 const ImportPlanInputSchema = z.discriminatedUnion("mode", [
   z.object({ previewToken: z.string().uuid(), mode: z.literal("project"), target: GroupLocatorSchema, name: z.string() }).strict(),
@@ -285,8 +285,8 @@ export const IpcArgsSchemas = {
   [IpcChannel.MockProjectClose]: z.tuple([MockProjectCloseInputSchema]),
   [IpcChannel.AssetReferences]: z.tuple([ProjectLocatorSchema, z.string()]),
   [IpcChannel.DebugSend]: z.tuple([z.object({ locator: ApiLocatorSchema, caseId: z.string(), envName: z.string().nullish() }).strict()]),
-  [IpcChannel.DebugStart]: z.tuple([DebugInvocationSchema]),
-  [IpcChannel.DebugWait]: z.tuple([z.object({ runId: z.string().min(1) }).strict()]),
+  [IpcChannel.DebugStart]: z.union([z.tuple([DebugInvocationSchema]), z.tuple([DebugInvocationSchema, TestingContextSchema])]),
+  [IpcChannel.DebugWait]: z.tuple([z.object({ runId: z.string().min(1), includeHistoryId: z.literal(true).optional() }).strict()]),
   [IpcChannel.DebugCancel]: z.tuple([z.object({ runId: z.string().min(1) }).strict()]),
   [IpcChannel.DebugCookiesList]: z.tuple([z.object({ locator: ApiLocatorSchema, environmentId: z.string().min(1).optional() }).strict()]),
   [IpcChannel.DebugCookiesClear]: z.tuple([z.object({ locator: ApiLocatorSchema, environmentId: z.string().min(1).optional() }).strict()]),
@@ -307,7 +307,9 @@ export const IpcArgsSchemas = {
     z.string().uuid(),
     z.object({ historyId: z.string().uuid(), project: ProjectLocatorSchema }).strict(),
   ])]),
-  [IpcChannel.RunCollection]: z.tuple([z.object({ locator: CollectionLocatorSchema, envName: z.string().nullish() }).strict()]),
+  [IpcChannel.RunCollection]: z.tuple([z.object({ locator: CollectionLocatorSchema, envName: z.string().nullish(),
+    preview: z.object({ root: z.string().min(1), revision: z.string().min(1), environmentId: z.string().optional() }).strict().optional() }).strict()]),
+  [IpcChannel.PreviewCollection]: z.tuple([z.object({ root: z.string().min(1), locator: CollectionLocatorSchema, environmentId: z.string().optional() }).strict()]),
   [IpcChannel.RunsList]: z.tuple([]),
   [IpcChannel.RunsGet]: z.tuple([z.string()]),
   [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
@@ -326,7 +328,7 @@ export const IpcArgsSchemas = {
   [IpcChannel.WfSave]: z.tuple([WorkflowLocatorSchema, WorkflowSchema]),
   [IpcChannel.WfSetStatus]: z.tuple([WorkflowLocatorSchema, WorkflowStatusSchema]),
   [IpcChannel.WfImpact]: z.tuple([WorkflowImpactLocatorSchema]),
-  [IpcChannel.WfRun]: z.tuple([z.object({ locator: WorkflowLocatorSchema, envName: z.string().nullish(), strict: z.boolean().optional(), invocationId: z.string().uuid().optional(), root: z.string().min(1).optional(), inputs: StringRecordSchema(JsonValueSchema).optional() }).strict()]),
+  [IpcChannel.WfRun]: z.tuple([z.object({ previewRevision: z.string().min(1).optional(), locator: WorkflowLocatorSchema, envName: z.string().nullish(), strict: z.boolean().optional(), invocationId: z.string().uuid().optional(), root: z.string().min(1).optional(), inputs: StringRecordSchema(JsonValueSchema).optional() }).strict()]),
   [IpcChannel.WfCancel]: z.tuple([z.object({ locator: WorkflowLocatorSchema, invocationId: z.string().uuid(), root: z.string().min(1) }).strict()]),
   [IpcChannel.StressRun]: z.tuple([StressRunInputSchema]),
   [IpcChannel.StressPlansList]: z.tuple([ProjectLocatorSchema]),
@@ -471,6 +473,7 @@ const resultMethodByChannel = {
   [IpcChannel.DebugHistoryRestore]: "debugHistoryRestore",
   [IpcChannel.DebugHistoryReplay]: "debugHistoryReplay",
   [IpcChannel.RunCollection]: "runCollection",
+  [IpcChannel.PreviewCollection]: "previewCollection",
   [IpcChannel.RunsList]: "runsList",
   [IpcChannel.RunsGet]: "runsGet",
   [IpcChannel.ImportPreview]: "importPreview",

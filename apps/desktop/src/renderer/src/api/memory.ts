@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { runCollection as runMemoryCollection } from "../../../main/debug.js";
+import { previewCollectionLaunch } from "../../../shared/collection-launch.js";
 import {
   renderDocumentHtml,
   renderDocumentMarkdown,
@@ -196,7 +198,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   let problems: LoadProblem[] = [];
   // 运行历史内存样例（新→旧，与主进程 listRuns 排序一致）：runCollection 产出，
   // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
-  const runs: Array<{ file: string; result: RunResult }> = [];
+  const runs: Array<{ file: string; result: RunResult & { archiveProject?: ProjectLocator } }> = [];
   const memoryDebugInvocations = new Map<string, { invocation: DebugInvocation; startedAt: string }>();
   let runSeq = 0;
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
@@ -405,6 +407,10 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   const testingRegistry = createDefaultRegistry();
   for (const name of ["http", "websocket", "soap"] as const) testingRegistry.registerProtocol({ name, canHandle: (request) => request.protocol === name, execute: (request, context) => stressClient.execute(request, context) });
   const testing = createTestingController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, value) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: value }); return { value }; }, render: false });
+  function testingReadContext<T extends { root: string }>(context: T): T {
+    if (!session.root || context.root !== root) throw new Error("Testing root context changed");
+    return { ...context, root: session.root };
+  }
   const workflowRuns = createWorkflowController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, result) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result }); return {}; } });
   let workflowEpoch = 0;
   const workflowContexts = new Map<string, { logicalRoot: string; epoch: number }>();
@@ -453,6 +459,16 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   return {
     async synchronization() { throw new Error('SYNC_HOST_UNAVAILABLE'); },
     ...testing,
+    async listTestingAssets(input) {
+      const view = await testing.listTestingAssets(testingReadContext(input));
+      return { ...view, context: { ...view.context, root: input.root } };
+    },
+    async previewSuite(input) { return testing.previewSuite({ ...input, context: testingReadContext(input.context) }); },
+    async runSuite(input) {
+      const output = await testing.runSuite({ ...input, context: testingReadContext(input.context) });
+      return { ...output, context: { ...output.context, root: input.context.root } };
+    },
+    async cancelSuite(input) { return testing.cancelSuite({ ...input, context: testingReadContext(input.context) }); },
     setImportPreviewCandidate(token: string, project: ContractProject): void {
       const preview = memoryPreviews.get(token);
       if (!preview) throw new Error("Unknown memory import preview token");
@@ -977,8 +993,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       return { run, outcome };
     },
 
-    async debugStart(input: DebugInvocation) {
+    async debugStart(input: DebugInvocation, context) {
       await ensureReady();
+      if (context && input.mode === "case") session.assertTestingContext(testingReadContext(context), input.locator);
       const runId = randomUUID();
       memoryDebugInvocations.set(runId, { invocation: structuredClone(input), startedAt: new Date().toISOString() });
       return { runId };
@@ -1091,12 +1108,26 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       throw new Error("Debug history is only available in the desktop main process.");
     },
 
+    async previewCollection(input) {
+      await ensureReady();
+      if (root !== input.root) throw new Error("run-launch-preview-changed");
+      const location = session.locateCollection(input.locator);
+      if (!location) throw new Error("run-launch-target-unavailable");
+      return previewCollectionLaunch(location.project, input.locator.collectionId, input.environmentId);
+    },
     // 集合运行（任务 6）：语义对齐 session——未命中集合抛「未找到」；不走真实网络，
     // 固定返回单用例成功结果并记入运行历史（runs list/get 的内存样例由此产出）。
-    async runCollection(input: RunCollectionInput): Promise<RunResult> {
+    async runCollection(input: RunCollectionInput): Promise<RunResult & { archiveFile?: string }> {
       await ensureReady();
       const location = session.locateCollection(input.locator);
       if (!location) throw new Error(`Collection not found at complete locator: ${JSON.stringify(input.locator)}`);
+      if (input.preview) {
+        if (root !== input.preview.root) throw new Error("run-launch-preview-changed");
+        const { workspaceId, groupId, projectId } = input.locator;
+        return runMemoryCollection(session, { ...input, preview: { ...input.preview, root: session.root! } }, testingRegistry,
+          createCredentialHost(session, () => secretStore), (file, result) => runs.unshift({ file, result: { ...result, archiveProject: {workspaceId, groupId, projectId} } }));
+
+      }
       const firstApi = (container: ContractCollection | ContractFolder): ApiAsset | undefined => {
         const direct = container.apis[0];
         if (direct) return direct;
@@ -1118,7 +1149,9 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         assertions: [],
       };
       const startedAt = new Date().toISOString();
-      const run: RunResult = {
+      const { workspaceId, groupId, projectId } = input.locator;
+      const run = {
+        projectId, archiveProject: { workspaceId, groupId, projectId },
         collectionId: collection.id,
         collectionName: collection.name,
         ...(input.envName == null ? {} : { envName: input.envName }),
@@ -1129,14 +1162,16 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         failed: 0,
         cases: [outcome],
       };
-      runs.unshift({ file: `run-memory-${String(++runSeq).padStart(4, "0")}.json`, result: run });
-      return run;
+      const archiveFile = `run-memory-${String(++runSeq).padStart(4, "0")}.json`;
+      runs.unshift({ file: archiveFile, result: run });
+      return { ...run, archiveFile };
     },
 
     async runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>> {
       const collectionRows: RunSummaryDTO[] = runs.map(({ file, result }) => ({
         kind: result.suite ? "suite" : result.workflowId ? "workflow" : result.kind ?? "collection",
         projectId: result.projectId ?? result.suite?.projectId,
+        archiveProject: result.archiveProject,
         file,
         collectionName: result.collectionName,
         startedAt: result.startedAt,
@@ -1156,6 +1191,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         ok: report.ok,
         failed: report.failed,
         projectId: report.projectId,
+        archiveProject: stressRunOwners.get(file)?.scope,
         rps: isStressReportV2(report) ? report.rps.availability === "available" ? report.rps.value : null : report.rps,
         ...(isStressReportV2(report) ? { formatVersion: 2 as const, verdict: report.verdict.status, target: report.target, completeness: report.completeness, rpsMetric: report.rps } : {}),
       }));
@@ -1172,6 +1208,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     // 正式 controller 负责 locator 捕获、凭据准备、worker/session、计时和确认策略；内存替身
     // 只提供假 transport 与内存历史。历史/返回报告彼此分离，避免调用方改写历史内容。
     stressRun: createStressRunInvoker(async (input: StressRunInput): Promise<StressRunResult> => {
+      if ("kind" in input && input.previewRevision && input.previewRevision !== session.revision) throw new Error("run-launch-preview-changed");
       if (stressActive) throw new Error("已有压测进行中");
       await ensureReady();
       const controller = stressController;
@@ -1449,6 +1486,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     },
 
     async wfRun(input: WfRunInput): Promise<WorkflowRunResult> {
+      if (input.previewRevision && input.previewRevision !== session.revision) throw new Error("run-launch-preview-changed");
       await ensureReady();
       if (input.root !== undefined && input.root !== root) throw new Error("Workflow workspace context changed");
       const loc = findWorkflow(input.locator);

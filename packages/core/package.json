@@ -23,6 +23,14 @@
       "types": "./dist/ai/contractView.d.ts",
       "default": "./dist/ai/contractView.js"
     },
+    "./testing/selection": {
+      "types": "./dist/testing/selection.d.ts",
+      "default": "./dist/testing/selection.js"
+    },
+    "./domain/execution-selection": {
+      "types": "./dist/domain/executionSelection.d.ts",
+      "default": "./dist/domain/executionSelection.js"
+    },
     "./assets/context": {
       "types": "./dist/assets/context.d.ts",
       "default": "./dist/assets/context.js"

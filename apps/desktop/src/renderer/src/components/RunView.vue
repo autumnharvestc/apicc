@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button as AButton, Select as ASelect, Table as ATable, Tag as ATag } from "ant-design-vue";
+import { Button as AButton, Table as ATable, Tag as ATag } from "ant-design-vue";
 import type { CaseOutcome } from "@apicc/core";
 import type { CollectionLocator, ProjectLocator } from "../../../shared/locations.js";
-import type { useRunStore } from "../stores/run.js";
-import type { useWorkspaceStore } from "../stores/workspace.js";
+import type { LocalLaunchProps } from "../execution/localLaunch.js";
+import { useLaunchMessages } from "../execution/launchMessages.js";
+import { projectSessionKey } from "../stores/localIdentity.js";
+import LocalRunLaunch from "./LocalRunLaunch.vue";
+import LocalRunRecords from "./LocalRunRecords.vue";
 import EmptyState from "./EmptyState.vue";
-import RunsHistory from "./RunsHistory.vue";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import RunSummaryView from "./RunSummaryView.vue";
 import type { EvidenceIdentity } from "@apicc/core";
@@ -15,74 +17,33 @@ import { reportingUnits, reportEntryEvidence } from "@apicc/core/report/units";
 import type { AiStore } from '../stores/ai.js';
 import { caseEvidenceIdentity } from '../ai/evidenceNavigation.js';
 import { aiReportDigest } from '../../../shared/ai/reportDigest.js';
-const emit = defineEmits<{ (event: "locate-evidence", identity: EvidenceIdentity): void; (event: 'collaboration', source: import('../../../shared/online/collaboration.js').CollaborationLocalSource): void }>();
+const emit = defineEmits<{ (event: "open-debug-record", id: string): void; (event: "locate-evidence", identity: EvidenceIdentity): void; (event: 'collaboration', source: import('../../../shared/online/collaboration.js').CollaborationLocalSource): void }>();
 
-/**
- * 运行视图（任务 6）：集合/环境 a-select（集合选项来自树 DTO；环境选项 = 选中集合
- * 所属项目的 envs，按环境名引用——runCollection 入参与 DebugInput 同语义）+「运行」
- * 按钮（loading=running）+ 结果 a-table（接口/用例/数据行/结果 Tag/耗时，断言与错误
- * 经行展开查看）+ 汇总文本 + 运行历史抽屉（RunsHistory）。
- * store 经 props 注入（组合根一次装配；组件内部禁止重复调用工厂）；selectedCollectionId
- * 由组合根随树选中集合下发（仅作默认值，选择仍在组件内），链路拒绝统一转报
- * 组合根错误通道（reportError）。
- */
-const props = defineProps<{
-  run: ReturnType<typeof useRunStore>;
-  workspace: ReturnType<typeof useWorkspaceStore>;
-  selectedCollectionLocator: CollectionLocator | null;
-  reportError: (e: unknown) => void;
-  ai?: AiStore;
-}>();
+const props = defineProps<LocalLaunchProps & { ai?: AiStore }>();
 const { t } = useI18n();
-
-// —— 集合/环境选项（均派生自树 DTO） ——
-function projectLocator(locator: CollectionLocator): ProjectLocator {
+const label = useLaunchMessages();
+const pane = ref<"launch" | "records">("launch"), file = ref(""), recordsVisited = ref(false);
+watch(pane, value => { if (value === "records") recordsVisited.value = true; else file.value = ""; });
+const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
+const selectedCollectionLocator = computed(() => props.run.target && projectSessionKey(props.run.targetRoot ?? "", props.run.target) === projectKey.value ? props.run.target : null);
+const collectionValue = (locator: CollectionLocator | null) => locator ? JSON.stringify(locator) : "";
+function projectOfCollection(locator: CollectionLocator): ProjectLocator {
   return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
 }
-async function shareReport() { emit('collaboration', { kind: 'current', project: projectLocator(selectedCollectionLocator.value!), expectedReportDigest: await aiReportDigest(props.run.result) }); }
-
-const collectionEntries = computed(() => {
-  const result: Array<{ label: string; locator: CollectionLocator }> = [];
-  for (const group of props.workspace.tree?.children ?? []) if (group.kind === "group") for (const project of group.children ?? []) {
-    if (project.kind !== "project") continue;
-    for (const collection of project.children ?? []) if (collection.kind === "collection") {
-      result.push({ label: collection.label, locator: { ...collection.locator } });
-    }
+watch(projectKey, () => {
+  pane.value = "launch"; file.value = ""; recordsVisited.value = false;
+  if (!selectedCollectionLocator.value) {
+    const where = props.selectedCollectionLocator;
+    void props.run.setTarget(props.workspace.root, where && projectSessionKey(props.workspace.root, where) === projectKey.value ? where : null);
   }
-  return result;
-});
-const collectionValue = (locator: CollectionLocator | null) => locator ? JSON.stringify(locator) : "";
-const collectionOptions = computed(() => collectionEntries.value.map((entry) => ({ label: entry.label, value: collectionValue(entry.locator) })));
-const selectedCollectionLocator = ref<CollectionLocator | null>(props.selectedCollectionLocator ? { ...props.selectedCollectionLocator } : null);
-watch(() => props.selectedCollectionLocator, (locator) => { selectedCollectionLocator.value = locator ? { ...locator } : null; }, { deep: true });
-watch([() => props.workspace.root, selectedCollectionLocator], ([root, locator]) => props.run.setTarget(root || null, locator), { immediate: true, deep: true });
-
-/** Resolve environments from the exact selected collection's project, not the first matching id. */
-const projectOfSelected = computed(() => selectedCollectionLocator.value ? props.workspace.findProject(projectLocator(selectedCollectionLocator.value)) : null);
-
-// 环境按名称引用（run:collection 入参 envName），首项「无环境」= 不传 envName。
-const selectedEnv = ref("");
-// 环境列表随选中集合所属项目而变：项目切换后原选中环境名在新项目中不存在（残留失效值
-// 会被主进程「未找到环境」显式拒绝），故 projectOfSelected 变化即重置回「无环境」；
-// 同项目内切换集合不触发（computed 引用未变），环境列表不变可保留选中。
-watch(() => selectedCollectionLocator.value ? JSON.stringify(projectLocator(selectedCollectionLocator.value)) : null, () => {
-  selectedEnv.value = "";
-});
-const envOptions = computed(() => [
-  { label: t("run.envNone"), value: "" },
-  ...(projectOfSelected.value?.envs ?? []).map((e) => ({ label: e.name, value: e.name })),
-]);
-
-// —— 运行 ——
-async function onRun() {
-  const locator = selectedCollectionLocator.value;
-  if (!locator) return;
-  try {
-    await props.run.runCollection(props.workspace.root, locator, selectedEnv.value || undefined);
-  } catch (e) {
-    props.reportError(e);
-  }
+}, { immediate: true });
+async function shareReport() {
+  const selected = selectedCollectionLocator.value, displayed = props.run.result;
+  if (!selected || !displayed) return;
+  const expectedReportDigest = await aiReportDigest(displayed);
+  if (displayed === props.run.result && selected === selectedCollectionLocator.value) emit("collaboration", { kind: "current", project: projectOfCollection(selected), expectedReportDigest });
 }
+function openRecord(target: string) { file.value = target; pane.value = "records"; }
 
 // —— 结果表 ——
 const columns = computed(() => [
@@ -112,7 +73,7 @@ function analyzeReport() {
   const displayed = props.run.result, locator = selectedCollectionLocator.value, root = props.workspace.root;
   if (!displayed || !locator || !props.ai) return;
   const key = collectionValue(locator);
-  void props.ai.prepareReportAnalysis({ source: { kind: 'local', project: projectLocator(locator) }, displayed,
+  void props.ai.prepareReportAnalysis({ source: { kind: 'local', project: projectOfCollection(locator) }, displayed,
     isCurrent: () => props.run.result === displayed && props.workspace.root === root && collectionValue(selectedCollectionLocator.value) === key,
     canLocateEvidence: (evidence, authorised) => !!caseEvidenceIdentity(evidence, authorised, displayed.cases),
     locateEvidence: (evidence, authorised) => {
@@ -128,7 +89,7 @@ async function selectObservation(record: Record<string, any>) {
   const displayed = props.run.result!, collection = selectedCollectionLocator.value!, root = props.workspace.root;
   const proof = observationLocator(record)!;
   const expectedReportDigest = await aiReportDigest(displayed);
-  props.ai!.selectAssertionObservation({ target: { ...projectLocator(collection), ...proof, folderIds: [...proof.folderIds] },
+  props.ai!.selectAssertionObservation({ target: { ...projectOfCollection(collection), ...proof, folderIds: [...proof.folderIds] },
     basis: { kind: 'observation', report: { kind: 'current', expectedReportDigest }, caseIndex: displayed.cases.indexOf(record as CaseOutcome) },
     isCurrent: () => props.run.result === displayed && props.workspace.root === root });
 }
@@ -136,29 +97,17 @@ async function selectObservation(record: Record<string, any>) {
 
 <template>
   <section class="run-view" data-testid="run-view">
-    <EmptyState v-if="!workspace.tree" :text="t('run.empty')" />
+    <EmptyState v-if="!workspace.tree || !props.projectLocator" :text="t('run.empty')" />
     <template v-else>
-      <div class="toolbar">
-        <a-select
-          class="collection-select"
-          :value="collectionValue(selectedCollectionLocator) || undefined"
-          :options="collectionOptions"
-          :placeholder="t('run.collectionPlaceholder')"
-          data-testid="run-collection-select"
-          @update:value="(value) => (selectedCollectionLocator = collectionEntries.find((entry) => collectionValue(entry.locator) === value)?.locator ?? null)"
-        />
-        <a-select
-          class="env-select"
-          v-model:value="selectedEnv"
-          :options="envOptions"
-          :placeholder="t('run.envPlaceholder')"
-          data-testid="run-env-select"
-        />
-        <a-button type="primary" :loading="run.running" :disabled="!selectedCollectionLocator" data-testid="run-btn" @click="onRun">
-          {{ t("run.runBtn") }}
-        </a-button>
-        <a-button data-testid="runs-history-btn" @click="run.historyOpen = true">{{ t("run.history") }}</a-button>
-      </div>
+      <h1 class="run-heading">{{ t("nav.run") }}</h1>
+      <nav class="run-tabs" :aria-label="t('nav.run')">
+        <button type="button" :aria-current="pane === 'launch' ? 'page' : undefined" data-testid="run-launch-tab" @click="pane = 'launch'">{{ label('launch') }}</button>
+        <button type="button" :aria-current="pane === 'records' ? 'page' : undefined" data-testid="runs-history-btn" @click="pane = 'records'">{{ label('records') }}</button>
+      </nav>
+      <LocalRunLaunch v-show="pane === 'launch'" v-bind="props" @records="openRecord" @open-debug-record="id => emit('open-debug-record', id)" />
+      <LocalRunRecords v-if="recordsVisited && props.projectLocator" v-show="pane === 'records'" :run="run" :workspace="workspace" :project="props.projectLocator" :file="file"
+        :ai="ai" :report-error="reportError" @launch="pane = 'launch'" @locate-evidence="emit('locate-evidence', $event)" @collaboration="emit('collaboration', $event)" />
+      <template v-if="pane === 'launch' && selectedCollectionLocator">
       <div v-if="run.result" class="summary" data-testid="run-summary">
         <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
         <a-button v-if="selectedCollectionLocator" data-testid="collaboration-publish-current" @click="shareReport">{{ t('collaboration.publishToProject') }}</a-button>
@@ -212,8 +161,8 @@ async function selectObservation(record: Record<string, any>) {
           </div>
         </template>
       </a-table>
+      </template>
     </template>
-    <RunsHistory :run="run" :project="selectedCollectionLocator ? projectLocator(selectedCollectionLocator) : undefined" :report-error="reportError" @collaboration="source => emit('collaboration', source)" />
   </section>
 </template>
 
@@ -226,22 +175,10 @@ async function selectObservation(record: Record<string, any>) {
   flex-direction: column;
   gap: 14px;
 }
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.collection-select {
-  min-width: 180px;
-  flex: 1 1 240px;
-  max-width: 420px;
-}
-.env-select {
-  min-width: 140px;
-  flex: 1 1 160px;
-  max-width: 280px;
-}
+.run-heading { font-size: 20px; margin: 0; }
+.run-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); }
+.run-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); padding: 6px 12px; cursor: pointer; font: inherit; }
+.run-tabs button[aria-current] { color: var(--accent); border-bottom-color: currentColor; }
 .summary {
   color: var(--text);
 }

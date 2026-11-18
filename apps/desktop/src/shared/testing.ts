@@ -18,7 +18,7 @@ export const TestingDeleteInputSchema = z.object({ context: TestingContextSchema
 ]) }).strict();
 export type TestingDeleteInput = z.infer<typeof TestingDeleteInputSchema>;
 const OverridesSchema = z.object({ environmentId: z.string().optional(), datasetId: z.string().uuid().optional(), failFast: z.boolean().optional(), allowDraft: z.boolean().optional(), reporters: z.array(z.enum(["json", "html", "junit"])).optional() }).strict();
-export const SuiteInvocationSchema = z.object({ context: TestingContextSchema, locator: SuiteLocatorSchema, overrides: OverridesSchema.optional(), evidenceMode: z.enum(["none", "failures", "all"]).optional(), invocationId: z.string().uuid() }).strict();
+export const SuiteInvocationSchema = z.object({ context: TestingContextSchema, locator: SuiteLocatorSchema, overrides: OverridesSchema.optional(), expectedDataDigest: z.string().min(1).optional(), evidenceMode: z.enum(["none", "failures", "all"]).optional(), invocationId: z.string().uuid() }).strict();
 export type SuiteInvocation = z.infer<typeof SuiteInvocationSchema>;
 export const EvidenceIdentitySchema = z.object({ projectId: z.string(), definitionRevision: z.string(), locator: z.object({ collectionId: z.string().uuid(), folderIds: z.array(z.string().uuid()), apiId: z.string().uuid(), caseId: z.string(), scope: z.string() }).strict().optional(),
   invocationId: z.string().optional(), parentInvocationId: z.string().optional(), nodeVisitId: z.string().optional(), attempt: z.number().int().min(1).max(5).optional(),
@@ -40,7 +40,7 @@ export interface TestingAssets {
   workflows: Array<{ id: string; name: string; status: string }>;
 }
 export interface AssertionOperatorDTO { op: string; descriptor?: AssertOperatorDescriptor }
-export interface SuiteOutput { invocationId: string; context: TestingContext; result: RunResult }
+export interface SuiteOutput { archiveFile?: string; invocationId: string; context: TestingContext; result: RunResult }
 export interface TestingApi {
   inspectEvidence(input: EvidenceInvocation): Promise<EvidenceTarget>;
   rerunEvidence(input: EvidenceInvocation): Promise<RunResult>;
@@ -52,7 +52,7 @@ export interface TestingApi {
   deleteTestingAsset(input: TestingDeleteInput): Promise<TestingAssets>;
   importDataset(input: z.infer<typeof DatasetExchangeInputSchema>): Promise<Pick<DatasetAsset, "columns" | "rows">>;
   exportDataset(input: z.infer<typeof DatasetExportInputSchema>): Promise<string>;
-  previewSuite(input: SuiteInvocation): Promise<SuitePreview>;
+  previewSuite(input: SuiteInvocation): Promise<SuitePreview & { dataDigest?: string }>;
   runSuite(input: SuiteInvocation): Promise<SuiteOutput>;
   cancelSuite(input: SuiteInvocation): Promise<boolean>;
 }

@@ -22,6 +22,7 @@ import WfResultDrawer from "../../../src/renderer/src/components/WfResultDrawer.
 import type { WorkflowRunResult } from "@apicc/core";
 import RunsHistory from "../../../src/renderer/src/components/RunsHistory.vue";
 import { useRunStore } from "../../../src/renderer/src/stores/run.js";
+import { localLaunchProps } from "../../helpers/localLaunchProps.js";
 import RunView from "../../../src/renderer/src/components/RunView.vue";
 import { workflowToRunResult } from "@apicc/core/workflow/adapter";
 import { VueFlow } from "@vue-flow/core";
@@ -412,7 +413,9 @@ describe("WfDesigner 装配", () => {
     const api = createMemoryApi(); api.seedWorkspace();
     const workspace = useWorkspaceStore(api); await workspace.open(root);
     const run = useRunStore(api);
-    const runView = mount(RunView, { props: { run, workspace, selectedCollectionLocator: null, reportError: () => {} }, global: { plugins: [i18n] } });
+    const launchProps = localLaunchProps(api, workspace);
+    const runView = mount(RunView, { props: { ...launchProps, run, workspace, selectedCollectionLocator: null, reportError: () => {} }, global: { plugins: [i18n] } });
+    run.setTarget(workspace.root, { ...launchProps.projectLocator, collectionId: "collection" });
     run.result = workflowToRunResult(result);
     await nextTick();
     expect(runView.get('[data-testid="run-logical-summary"]').text()).toContain("共 1 条 · 通过 1 · 失败 0 · 跳过 0");

@@ -1,4 +1,5 @@
 import { createExecutionEvidenceCollector, createProjectSnapshot, compileWorkflowPlan, workflowPlanRequests, parseDatasetContent, prepareTestData, resolveSuitePlan, suiteCaseRequests, suiteToRunResult, SuiteRunner, validateSuiteData, validateSuiteExecution, type PluginRegistry } from "@apicc/core";
+import { writeRunScope } from "./runs.js";
 import { join } from "node:path";
 import { CollectionRunner, WorkflowRunner, createEventBus, createHttpSession, testDataSelectionsForRequests, resolveExecutionEnvironment, selectEffectiveCases, type CredentialRequestSelection, type RunResult } from "@apicc/core";
 import { EvidenceInvocationSchema, type EvidenceInvocation } from "../shared/testing.js";
@@ -85,7 +86,7 @@ export function createTestingController(session: ReturnType<typeof createSession
       if (!dataset) throw new Error("Dataset not found");
       return exportDatasetContent(dataset, input.format);
     },
-    async previewSuite(raw) { const prepared = await prepare(SuiteInvocationSchema.parse(raw)); return plain(prepared.preview); },
+    async previewSuite(raw) { const prepared = await prepare(SuiteInvocationSchema.parse(raw)); return { ...plain(prepared.preview), dataDigest: prepared.data.digest }; },
     runSuite: (input) => runSuite(input),
     cancelSuite: (input) => cancelSuite(input),
   };
@@ -98,6 +99,7 @@ export function createTestingController(session: ReturnType<typeof createSession
     let boundary = createExecutionOutputBoundary([]);
     try {
       const { snapshot, plan, data, registry, ensureCurrent } = await prepare(input);
+      if (input.expectedDataDigest && input.expectedDataDigest !== data.digest) throw new Error("run-launch-preview-changed");
       if (abort.signal.aborted) throw new Error("Suite invocation cancelled");
       const prepared = await credentials.prepareRunForRequests(input.context.project, snapshot, suiteCaseRequests(snapshot, plan), { workspaceRoot: input.context.root, environmentId: plan.environmentId, signal: abort.signal });
       boundary = createExecutionOutputBoundary(prepared.markers);
@@ -106,16 +108,17 @@ export function createTestingController(session: ReturnType<typeof createSession
       const result = await new SuiteRunner({ registry }).run({ ...prepared.run, preparedTestData: data }, plan, { workspaceRoot: input.context.root, signal: abort.signal,
         observeCaseExecution: (execution, identity) => evidence.observe(execution, { ...identity, workflowId: plan.entries.find((entry) => entry.id === identity.entryId)?.workflowId }) });
       ensureCurrent();
-      const safe = evidence.projectRun(suiteToRunResult(result));
+      const safe = { ...evidence.projectRun(suiteToRunResult(result)), archiveProject: input.context.project };
       const outDir = join(input.context.root, ".apicc", "runs");
       const persisted = storage ? storage.persist(join(outDir, `suite-run-${result.suiteRunId}.json`), safe) : persistExecutionJson(join(outDir, `suite-run-${result.suiteRunId}.json`), safe, boundary, () => "安全 JSON 报告保存失败");
+      if (!storage && !persisted.warning) writeRunScope(input.context.root, `suite-run-${result.suiteRunId}.json`, input.context.project);
       if (persisted.warning) { safe.reportFailure = true; safe.warnings = [...(safe.warnings ?? []), persisted.warning]; }
       else if (storage?.render !== false) for (const format of plan.reporters) if (format !== "json") {
         try { const reporter = registry.getReporter(format); if (!reporter) throw new Error("报告格式未注册"); await reporter.render(safe, outDir, { alreadyProjected: true }); }
         catch { safe.reportFailure = true; safe.warnings = [...(safe.warnings ?? []), `${format} 报告渲染失败；安全 JSON 已保留`]; }
       }
       ensureCurrent();
-      return { invocationId: input.invocationId, context: input.context, result: safe };
+      return { invocationId: input.invocationId, context: input.context, result: safe, ...(persisted.warning ? {} : { archiveFile: `suite-run-${result.suiteRunId}.json` }) };
     } catch (error) { throw boundary.error(error); }
     finally { active.delete(input.invocationId); }
   }

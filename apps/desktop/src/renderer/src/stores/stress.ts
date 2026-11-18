@@ -6,6 +6,14 @@ import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
 import { stressTargetIdentity, type ApiccApi, type DesktopStressReport, type StressRunInput, type StressProgressDTO, type StressRunSummaryDTO } from "../../../shared/types.js";
 import { apiSessionKey, projectSessionKey } from "./localIdentity.js";
 
+export interface SavedStressLaunch {
+  root: string;
+  scope: ProjectLocator;
+  id: string;
+  revision: string;
+  plan: StressPlan;
+}
+
 export interface PendingStressConfirmation {
   origin: string;
   locator: ApiLocator;
@@ -117,7 +125,7 @@ export function createStressStore(deps: {
       comparisonError: null as string | null,
       planConfirmedOrigins: [] as string[],
       planPendingOrigin: null as string | null,
-      planConfirmation: null as { plan: StressPlan; generation: number } | null,
+      planConfirmation: null as { plan: StressPlan; generation: number; saved?: SavedStressLaunch } | null,
       historyRequest: 0,
       comparisonRequest: 0,
       planReadRequest: 0,
@@ -210,10 +218,17 @@ export function createStressStore(deps: {
         if (!owner || !this.planFile || !this.planCurrent(owner)) return;
         return api.stressExport(clone(owner.scope), { file: this.planFile, ...(this.baselineFile ? { baselineFile: this.baselineFile } : {}), format });
       },
-      async startPlan(retry = false) {
+      async startPlan(retry = false, saved?: SavedStressLaunch) {
+        if (this.running || activePlan) return;
+        if (saved) {
+          const scope = contextScope(), root = deps.getContext().root;
+          if (!scope || ownerKey(root, scope) !== ownerKey(saved.root, saved.scope)) throw new Error("run-launch-preview-changed");
+          if (!this.planCurrent()) { this.clear(); this.planOwner = { root, scope: clone(scope) }; }
+        }
         const owner = this.planOwner, generation = this.generation;
-        if (this.running || activePlan || !this.plan || !owner || !this.planCurrent(owner, generation)) return;
-        const plan = StressPlanSchema.parse(clone(retry && this.planConfirmation ? this.planConfirmation.plan : this.plan));
+        const selected = saved?.plan ?? this.plan;
+        if (!selected || !owner || !this.planCurrent(owner, generation)) return;
+        const plan = StressPlanSchema.parse(clone(retry && this.planConfirmation ? this.planConfirmation.plan : selected));
         this.planReadRequest++;
         if (!retry) this.planConfirmedOrigins = [];
         this.planPendingOrigin = null; this.planConfirmation = null;
@@ -237,11 +252,11 @@ export function createStressStore(deps: {
           else if (value.state !== "finished") this.planState = value.state === "stopping" ? "stopping" : value.phase === "warmup" ? "warmup" : value.phase === "drain" || value.phase === "vu-teardown" || value.phase === "teardown" ? "draining" : value.state === "running" ? "running" : "preparing";
         });
         try {
-          const out = await api.stressRun({ kind: "plan", root: run.root, invocationId: run.invocationId, projectLocator: run.scope, plan, ...(this.planConfirmedOrigins.length ? { confirmedTargetOrigins: [...this.planConfirmedOrigins] } : {}) });
+          const out = await api.stressRun({ kind: "plan", root: run.root, invocationId: run.invocationId, projectLocator: run.scope, plan, ...(saved ? { previewRevision: saved.revision } : {}), ...(this.planConfirmedOrigins.length ? { confirmedTargetOrigins: [...this.planConfirmedOrigins] } : {}) });
           if (!current()) return;
           if (!out.ok) {
             if (out.error.code === "target_confirmation_required" && out.error.targetOrigin && !run.cancelled) {
-              this.planPendingOrigin = out.error.targetOrigin; this.planConfirmation = { plan, generation };
+              this.planPendingOrigin = out.error.targetOrigin; this.planConfirmation = { plan, generation, ...(saved ? { saved: clone(saved) } : {}) };
             } else { this.error = out.error.message; this.planConfirmedOrigins = []; }
             return;
           }
@@ -249,6 +264,7 @@ export function createStressStore(deps: {
             || JSON.stringify(stressTargetIdentity(out.report.target)) !== JSON.stringify(stressTargetIdentity(run.target))) throw new Error("压测结果身份不匹配");
           this.planReport = out.report; this.planFile = out.file ?? null; this.planConfirmedOrigins = [];
           await this.compareBaseline();
+          return out;
         } catch (e) {
           if (current()) { this.error = e instanceof Error ? e.message : String(e); this.planConfirmedOrigins = []; throw e; }
         } finally {
@@ -256,14 +272,14 @@ export function createStressStore(deps: {
           if (activePlan === run) { activePlan = null; this.running = false; this.planState = this.planCurrent(owner, generation) ? "finished" : "idle"; }
         }
       },
-      async confirmPlanTarget(trust: boolean) {
+      async confirmPlanTarget(trust: boolean, savedId?: string) {
         const pending = this.planConfirmation, owner = this.planOwner, origin = this.planPendingOrigin;
-        if (!pending || !origin || !owner || this.confirmationInFlight || !this.planCurrent(owner, pending.generation)) return;
+        if (!pending || pending.saved?.id !== savedId || !origin || !owner || this.confirmationInFlight || !this.planCurrent(owner, pending.generation)) return;
         this.confirmationInFlight = true;
         try {
           if (trust) { if (!deps.trustOrigin) throw new Error("缺少项目目标信任持久化能力"); await deps.trustOrigin(clone(owner.scope), origin); }
           if (!this.planCurrent(owner, pending.generation) || pending !== this.planConfirmation) return;
-          this.planConfirmedOrigins.push(origin); await this.startPlan(true);
+          this.planConfirmedOrigins.push(origin); return await this.startPlan(true, pending.saved);
         } finally { this.confirmationInFlight = false; }
       },
       denyPlanTarget() { this.planPendingOrigin = null; this.planConfirmation = null; this.planConfirmedOrigins = []; },

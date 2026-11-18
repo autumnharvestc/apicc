@@ -233,6 +233,7 @@ describe("typed preload contract", () => {
       { invoke: () => api.mockProjectClose({ root: "C:/fixture", locator: projectLocator }), channel: IpcChannel.MockProjectClose, payload: [{ root: "C:/fixture", locator: projectLocator }] },
       { invoke: () => api.assetReferences(projectLocator, IDS.model), channel: IpcChannel.AssetReferences, payload: [projectLocator, IDS.model] },
       { invoke: () => api.debugSend({ locator: apiLocator, caseId: testCase.id, envName: null }), channel: IpcChannel.DebugSend, payload: [{ locator: apiLocator, caseId: testCase.id, envName: null }] },
+      { invoke: () => api.previewCollection({root:"C:/fixture",locator:collectionLocator}), channel: IpcChannel.PreviewCollection, payload:[{root:"C:/fixture",locator:collectionLocator}] },
       { invoke: () => api.runCollection({ locator: collectionLocator, envName: null }), channel: IpcChannel.RunCollection, payload: [{ locator: collectionLocator, envName: null }] },
       { invoke: () => api.importPlan(importPlan), channel: IpcChannel.ImportPlan, payload: [importPlan] },
       { invoke: () => api.importApply(importApply), channel: IpcChannel.ImportApply, payload: [importApply] },
@@ -266,7 +267,7 @@ describe("typed preload contract", () => {
       await test.invoke();
       expect(electron.invoke).toHaveBeenLastCalledWith(test.channel, ...test.payload);
     }
-    expect(cases).toHaveLength(64);
+    expect(cases).toHaveLength(65);
   });
 
   it("validates stress results at the actual preload boundary", async () => {

@@ -221,18 +221,22 @@ export interface EnvCreateInput {
 export interface ResponseSnapshot { status: number; headers: Record<string, string>; bodyText: string; timeMs: number }
 export interface DebugOutput { run: RunResult; outcome: CaseOutcome; response?: ResponseSnapshot }
 /** run:collection 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
-export interface RunCollectionInput { locator: CollectionLocator; envName?: string | null }
+export interface RunCollectionInput {
+  locator: CollectionLocator;
+  envName?: string | null;
+  preview?: { root: string; revision: string; environmentId?: string };
+}
 /**
  * runs:list 行摘要（集合运行）：与 src/main/runs.ts 同名接口结构同构（IPC 结构化克隆传输，
  * 字段变更需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
  * kind 必填（M2-D3 任务 1）：运行历史按 kind 区分集合/压测两类报告（规格 §2 D11）。
  */
-export interface RunSummaryDTO { kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"]; reportingMode?: RunResult["reportingMode"]; logicalVerdict?: "passed" | "failed" | "aborted" }
+export interface RunSummaryDTO { archiveProject?: ProjectLocator; kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"]; reportingMode?: RunResult["reportingMode"]; logicalVerdict?: "passed" | "failed" | "aborted" }
 /**
  * runs:list 行摘要（压测，M2-D3 任务 1）：startedAt 为 report.startedAt（epoch ms）格式化的
  * ISO 字符串，与集合行的 startedAt 同口径排序。
  */
-export interface StressRunSummaryDTO { kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number | null;
+export interface StressRunSummaryDTO { archiveProject?: ProjectLocator; kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number | null;
   formatVersion?: 2; verdict?: import("@apicc/core").StressReportV2["verdict"]["status"]; target?: import("@apicc/core").StressTarget; completeness?: import("@apicc/core").StressCompleteness; rpsMetric?: import("@apicc/core").StressNumericMetric }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
@@ -249,7 +253,7 @@ export interface LegacyStressRunInput {
   /** Explicit, canonical origins approved only for this run. */
   confirmedTargetOrigins?: string[];
 }
-export interface StressPlanRunInput { kind: "plan"; root: string; invocationId: string; projectLocator: ProjectLocator; plan: import("@apicc/core").StressPlan; confirmedTargetOrigins?: string[] }
+export interface StressPlanRunInput { previewRevision?: string; kind: "plan"; root: string; invocationId: string; projectLocator: ProjectLocator; plan: import("@apicc/core").StressPlan; confirmedTargetOrigins?: string[] }
 export type StressRunInput = LegacyStressRunInput | StressPlanRunInput;
 export interface StressStopInput { runId: string; root: string; projectLocator: ProjectLocator }
 export type StressTargetIdentity = { kind: "case"; collectionId: string; apiId: string; caseId: string } | { kind: "workflow"; workflowId: string };
@@ -380,7 +384,7 @@ export interface WfSetStatusResult { workflow: Workflow; errors: string[]; warni
 /** wf:impact 入参：按用例/接口 id 反查工作流引用（规格 §3.1 影响分析）。 */
 export type WfImpactInput = WorkflowImpactLocator;
 /** wf:run 入参：envName 按环境名引用（与 DebugInput 同语义，规格 §6）。 */
-export interface WfRunInput { locator: WorkflowLocator; envName?: string | null; strict?: boolean; invocationId?: string; root?: string; inputs?: Readonly<Record<string, import("@apicc/core").JsonValue>> }
+export interface WfRunInput { previewRevision?: string; locator: WorkflowLocator; envName?: string | null; strict?: boolean; invocationId?: string; root?: string; inputs?: Readonly<Record<string, import("@apicc/core").JsonValue>> }
 export interface WfCancelInput { locator: WorkflowLocator; invocationId: string; root: string }
 
 export interface ApiccApi extends TestingApi {
@@ -430,8 +434,8 @@ export interface ApiccApi extends TestingApi {
   mockProjectClose(input: MockProjectCloseInput): Promise<void>;
   assetReferences(locator: ProjectLocator, assetId: string): Promise<import("@apicc/core").AssetDiagnostic[]>;
   debugSend(input: DebugInput): Promise<DebugOutput>;
-  debugStart(input: DebugStartInput): Promise<DebugStartResult>;
-  debugWait(input: DebugRunIdInput): Promise<DebugResult>;
+  debugStart(input: DebugStartInput, context?: import("./testing.js").TestingContext): Promise<DebugStartResult>;
+  debugWait(input: DebugRunIdInput & { includeHistoryId?: true }): Promise<DebugResult & { historyId?: string }>;
   debugCancel(input: DebugRunIdInput): Promise<DebugCancelResult>;
   debugCookiesList(input: DebugCookieInput): Promise<DebugCookieSummary[]>;
   debugCookiesClear(input: DebugCookieInput): Promise<void>;
@@ -445,7 +449,8 @@ export interface ApiccApi extends TestingApi {
   debugHistoryPreferencesUpdate(preferences: DebugHistoryPreferences): Promise<DebugHistoryPreferences>;
   debugHistoryRestore(input: DebugHistoryRestoreInput): Promise<DebugHistoryRestoreResult>;
   debugHistoryReplay(input: DebugHistoryReplayInput): Promise<DebugHistoryReplayResult>;
-  runCollection(input: RunCollectionInput): Promise<RunResult>;
+  runCollection(input: RunCollectionInput): Promise<RunResult & { archiveFile?: string }>;
+  previewCollection(input: import("./collection-launch.js").CollectionLaunchInput): Promise<import("./collection-launch.js").CollectionLaunchPreview>;
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
   runsGet(file: string): Promise<RunResult | StressReportDTO | null>;
   /** stress:run（M2-D3 任务 1）：main 进程执行压测，返回最终报告 + 落盘文件名；单活动约束（「已有压测进行中」）。 */
@@ -501,7 +506,7 @@ export interface ApiccApi extends TestingApi {
   wfSetStatus(locator: WorkflowLocator, next: WorkflowStatus): Promise<WfSetStatusResult>;
   wfImpact(input: WfImpactInput): Promise<WorkflowImpactEntryDTO[]>;
   /** wf:run：draft 拒绝（「工作流为草稿，请先发布启用」）；结果由主进程落盘 .apicc/runs。 */
-  wfRun(input: WfRunInput): Promise<WorkflowRunResult>;
+  wfRun(input: WfRunInput): Promise<WorkflowRunResult & { archiveFile?: string }>;
   wfCancel(input: WfCancelInput): Promise<boolean>;
   // —— 在线频道（M3-B 任务 1，规格 §2 D9 / §3）：main 进程 onlineClient 的 IPC 出口 ——
   /** 注册（不建立登录态）。 */

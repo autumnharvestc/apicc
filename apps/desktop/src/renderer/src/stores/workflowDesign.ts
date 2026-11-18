@@ -173,29 +173,32 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
           throw error;
         }
       },
-      async run(envName?: string, inputs?: Readonly<Record<string, JsonValue>>) {
-        if (this.running || !this.workflow || !this.locator) return;
-        this.assertCurrentRoot();
-        if (this.dirty || this.saving) {
+      async run(envName?: string, inputs?: Readonly<Record<string, JsonValue>>, saved?: { root: string; locator: WorkflowLocator; workflow: Workflow; revision: string }) {
+        const workflow = saved?.workflow ?? this.workflow;
+        const target = saved?.locator ?? this.locator;
+        const root = saved?.root ?? this.root;
+        if (this.running || !workflow || !target || !root) return;
+        this.assertCurrentRoot(root);
+        if (root === this.root && sameLocator(this.locator, target) && (this.dirty || this.saving)) {
           this.validationErrors = ["工作流有未保存修改，请先保存"];
           return;
         }
-        if (this.workflow.status === "draft") {
+        if (workflow.status === "draft") {
           this.validationErrors = ["工作流为草稿，请先发布启用"];
           return;
         }
         const epoch = this.loadEpoch;
-        const root = this.root!;
-        const locator = copyLocator(this.locator);
+        const locator = copyLocator(target);
         const invocationId = crypto.randomUUID();
         this.activeRun = { locator, root, invocationId, epoch };
         this.running = true;
         this.stopping = false;
         try {
-          const result = await api.wfRun({ locator, envName, invocationId, root, ...(inputs ? { inputs: JSON.parse(JSON.stringify(inputs)) } : {}) });
+          const result = await api.wfRun({ locator, envName, invocationId, root, ...(saved ? { previewRevision: saved.revision } : {}), ...(inputs ? { inputs: JSON.parse(JSON.stringify(inputs)) } : {}) });
           this.runHistory.push({ locator, root, invocationId, result });
           if (this.runHistory.length > RUN_HISTORY_LIMIT) this.runHistory.splice(0, this.runHistory.length - RUN_HISTORY_LIMIT);
           if (epoch === this.loadEpoch && getContext().root === root && sameLocator(this.locator, locator)) this.runResult = result;
+          return result;
         } finally {
           if (this.activeRun?.invocationId === invocationId) {
             this.running = false;

@@ -1,4 +1,4 @@
-import type { ApiAsset, CaseOutcome, Environment, PluginRegistry, Project, ProjectSnapshot, RunResult } from "@apicc/core";
+import type { CaseOutcome, Environment, PluginRegistry, Project, RunResult } from "@apicc/core";
 import { createExecutionEvidenceCollector, CollectionRunner, createDefaultRegistry, createEventBus, createHttpSession, createProjectSnapshot, resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -10,7 +10,9 @@ import { createDesktopCredentialHost, type PreparedDesktopExecutionRun } from ".
 import type { DebugCredentialHost } from "./credentialHost.js";
 import type { DebugInput } from "../shared/types.js";
 import type { ResponseSnapshot } from "../shared/types.js";
+import { writeRunScope } from "./runs.js";
 import { createDebugController } from "./debugController.js";
+import { selectCollectionCases } from "../shared/collection-launch.js";
 
 type Session = ReturnType<typeof createSession>;
 
@@ -33,7 +35,8 @@ export async function runCollection(
   input: import("../shared/types.js").RunCollectionInput,
   registrySource: RegistrySource = defaultRegistry,
   credentials: Pick<ReturnType<typeof createDesktopCredentialHost>, "prepareRunForRequests"> = createDesktopCredentialHost(session),
-): Promise<RunResult> {
+  memoryArchive?: (file: string, result: RunResult) => void,
+): Promise<RunResult & { archiveFile?: string }> {
   const captured = {
     locator: { ...input.locator },
     envName: input.envName ?? undefined,
@@ -42,14 +45,18 @@ export async function runCollection(
   if (!loc) throw new Error(`未找到集合: ${JSON.stringify(captured.locator)}`);
   const root = session.root!;
   const snapshot = createProjectSnapshot(loc.project);
+  if (input.preview && (root !== input.preview.root || snapshot.definitionRevision !== input.preview.revision)) {
+    throw new Error("run-launch-preview-changed");
+  }
   const collection = snapshot.project.collections.find((candidate) => candidate.id === captured.locator.collectionId);
   if (!collection) throw new Error(`未找到集合: ${JSON.stringify(captured.locator)}`);
   const env = resolveSnapshotEnvironment(snapshot.project, captured.envName);
-  const executionEnvironment = resolveExecutionEnvironment(snapshot.project, collection.id, env?.id);
-  const selectedAssets = collectCollectionApis(collection).filter((asset) =>
-    selectEffectiveCases(asset.cases, executionEnvironment.chain).length > 0);
-  const credentialSelections = selectedAssets.flatMap((asset) =>
-    selectEffectiveCases(asset.cases, executionEnvironment.chain).map((testCase) => ({ asset, testCase })));
+  if (input.preview && env?.id !== input.preview.environmentId) throw new Error("run-launch-preview-changed");
+  const credentialSelections = selectCollectionCases(snapshot, collection, env?.id)
+    .flatMap(({ asset, cases }) => cases.map(testCase => ({
+      asset: asset as import("@apicc/core").ApiAsset, testCase,
+    })));
+  if (input.preview && !credentialSelections.length) throw new Error("run-launch-no-cases");
   let prepared: PreparedDesktopExecutionRun;
   try {
     prepared = await credentials.prepareRunForRequests({
@@ -77,16 +84,23 @@ export async function runCollection(
       observeCaseExecution: evidence.observe,
     });
     const filename = `run-${collection.id}-${randomUUID()}.json`;
-    const safe = evidence.projectRun(result);
+    const { workspaceId, groupId, projectId } = captured.locator;
+    const safe = { ...evidence.projectRun(result), projectId };
     // Keep the existing collection-vs-stress IPC discrimination for old consumers.
     delete safe.kind;
+    if (memoryArchive) {
+      const value = boundary.value(safe);
+      memoryArchive(filename, value);
+      return { ...value, archiveFile: filename };
+    }
     const persisted = persistExecutionJson(
       join(workspaceRunsDir(root), filename),
       safe,
       boundary,
       (error) => `集合运行报告落盘失败（${join(workspaceRunsDir(root), filename)}）: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return persisted.value;
+    if (!persisted.warning) writeRunScope(root, filename, { workspaceId, groupId, projectId });
+    return persisted.warning ? { ...persisted.value, warnings: [...(persisted.value.warnings ?? []), persisted.warning] } : { ...persisted.value, archiveFile: filename };
   } catch (error) {
     if (error && typeof error === "object" && "partialResult" in error) error.partialResult = evidence.projectRun(error.partialResult as RunResult);
     throw createExecutionOutputBoundary(evidence.markers()).error(error);
@@ -94,18 +108,6 @@ export async function runCollection(
     await httpSession.close();
   }
 }
-function collectCollectionApis(collection: ProjectSnapshot["project"]["collections"][number]): ApiAsset[] {
-  const result = [...collection.apis] as ApiAsset[];
-  const visit = (folders: typeof collection.folders): void => {
-    for (const folder of folders) {
-      result.push(...folder.apis as ApiAsset[]);
-      visit(folder.folders);
-    }
-  };
-  visit(collection.folders);
-  return result;
-}
-
 /**
  * 按环境名解析项目环境（审查修复）：envName 为 undefined/空 = 无环境运行；
  * 提供了 envName 却未命中时显式抛「未找到环境」——静默降级为无环境运行会让用户

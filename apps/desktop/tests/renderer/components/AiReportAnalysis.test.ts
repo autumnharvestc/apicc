@@ -6,6 +6,7 @@ import AiSuggestionsDrawer from '../../../src/renderer/src/components/AiSuggesti
 import AiReportAnalysis from '../../../src/renderer/src/components/ai/AiReportAnalysis.vue';
 import { aiFactRows } from '../../../src/renderer/src/ai/presentation.js';
 import { caseEvidenceIdentity } from '../../../src/renderer/src/ai/evidenceNavigation.js';
+import { localLaunchProps } from "../../helpers/localLaunchProps.js";
 import RunView from '../../../src/renderer/src/components/RunView.vue';
 import { useRunStore } from '../../../src/renderer/src/stores/run.js';
 import { createI18nInstance } from '../../../src/renderer/src/i18n/index.js';
@@ -311,7 +312,7 @@ it('final B I4 actual outbound drawer offers evidence and default-off body selec
 it('final B I3 actual report details offer the exact saved case as observation basis without execution', async () => {
   const { ai, api, workspace, editor, started } = await seedAiBusinessFixture(), run = useRunStore(api), locator = editor.locator!, saved = editor.api!.cases[0]!;
   const { apiId: _api, folderIds: _folders, ...collection } = locator;
-  const panel = mount(RunView, { props: { run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
+  const panel = mount(RunView, { props: { ...localLaunchProps(api, workspace, collection), run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
   run.result = { collectionId: collection.collectionId, collectionName: 'saved report', total: 1, passed: 0, failed: 1, cases: [
     { apiId: locator.apiId, apiName: 'saved API', caseId: saved.id, caseName: saved.name, locator: { ...locator, caseId: saved.id, scope: saved.scope }, passed: false, durationMs: 1, assertions: [],
       evidence: { identity: { projectId: locator.projectId, definitionRevision: 'fixture-definition', locator: { ...locator, caseId: saved.id, scope: saved.scope } }, state: 'collected', scriptDiagnostics: 'not-collected', truncated: false, response: { status: 503, headers: { text: '', truncated: false }, body: { text: '', truncated: false } } } },
@@ -323,7 +324,7 @@ it('final B I3 actual report details offer the exact saved case as observation b
 it.each(['missing', 'missing-scope', 'missing-folderIds'] as const)('final B I3 unlocated report rows have a readable disabled observation entry: %s', async kind => {
   const { ai, api, workspace, editor } = await seedAiBusinessFixture(), run = useRunStore(api), locator = editor.locator!, saved = editor.api!.cases[0]!;
   const { apiId: _api, folderIds: _folders, ...collection } = locator;
-  const panel = mount(RunView, { props: { run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
+  const panel = mount(RunView, { props: { ...localLaunchProps(api, workspace, collection), run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
   run.result = { collectionId: collection.collectionId, collectionName: 'saved report', total: 1, passed: 0, failed: 1, startedAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:00:01Z',
     cases: [{ apiId: locator.apiId, apiName: 'API', caseId: saved.id, caseName: saved.name, passed: false, durationMs: 1, assertions: [],
       ...(kind === 'missing' ? {} : { locator: (kind === 'missing-scope' ? { ...locator, caseId: saved.id } : { ...locator, folderIds: undefined, caseId: saved.id, scope: saved.scope }) as never }) }] };
@@ -362,7 +363,7 @@ it('final B UI explicit evidence and body changes invalidate preview and require
 it('final B UI report-row selection reaches exact saved observation in CasePanel without running', async () => {
   const { ai, api, workspace, editor, prepared, started } = await seedAiBusinessFixture(), run = useRunStore(api), locator = editor.locator!, saved = editor.api!.cases[0]!;
   const { apiId: _api, folderIds: _folders, ...collection } = locator;
-  const panel = mount(RunView, { props: { run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
+  const panel = mount(RunView, { props: { ...localLaunchProps(api, workspace, collection), run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
   run.result = { collectionId: collection.collectionId, collectionName: 'saved report', total: 1, passed: 0, failed: 1, startedAt: '2026-11-01T00:00:00Z', finishedAt: '2026-11-01T00:00:01Z',
     cases: [{ apiId: locator.apiId, apiName: 'API', caseId: saved.id, caseName: saved.name, locator: { ...locator, caseId: saved.id, scope: saved.scope }, passed: false, durationMs: 1, assertions: [] }] };
   await flushPromises(); await panel.find('[data-testid="ai-select-observation"]').trigger('click'); await flushPromises();
@@ -434,7 +435,7 @@ it('T11 separates conclusion program facts hypotheses evidence and limitations w
 it('T11 exposes report analysis in the existing RunView', async () => {
   const { ai, api, workspace, editor } = await seedAiBusinessFixture(); const run = useRunStore(api);
   const { apiId: _api, folderIds: _folders, ...collection } = editor.locator!;
-  const panel = mount(RunView, { props: { run, workspace, selectedCollectionLocator: collection, reportError() {}, ai } as never, global: { plugins: [createI18nInstance().i18n] } });
+  const panel = mount(RunView, { props: { ...localLaunchProps(api, workspace, collection), run, workspace, selectedCollectionLocator: collection, reportError() {}, ai } as never, global: { plugins: [createI18nInstance().i18n] } });
   run.result = { collectionId: collection.collectionId, collectionName: 'fixture report', total: 0, passed: 0, failed: 0, cases: [], startedAt: '2026-10-31T01:00:00.000Z', finishedAt: '2026-10-31T01:00:00.001Z' };
   await flushPromises(); expect(panel.text()).toContain('AI 分析报告');
 });
@@ -443,7 +444,7 @@ it('T11 exposes report analysis in the existing RunView', async () => {
 it('T11 refuses confirming a RunView report after the displayed public result is replaced', async () => {
   const { ai, api, workspace, editor } = await seedAiBusinessFixture(); const run = useRunStore(api);
   const { apiId: _api, folderIds: _folders, ...collection } = editor.locator!;
-  const panel = mount(RunView, { props: { run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
+  const panel = mount(RunView, { props: { ...localLaunchProps(api, workspace, collection), run, workspace, selectedCollectionLocator: collection, reportError() {}, ai }, global: { plugins: [createI18nInstance().i18n] } });
   run.result = { collectionId: collection.collectionId, collectionName: 'A', total: 0, passed: 0, failed: 0, cases: [], startedAt: '2026-10-31T01:00:00.000Z', finishedAt: '2026-10-31T01:00:00.001Z' };
   await flushPromises(); await panel.get('[data-testid="ai-analyze-report"]').trigger('click'); await flushPromises();
   const started: unknown[] = [], start = api.aiStart; api.aiStart = async input => { started.push(input); return start(input); };

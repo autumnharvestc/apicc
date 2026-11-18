@@ -6,6 +6,7 @@ import { createI18nInstance } from '../../../src/renderer/src/i18n/index.js';
 import { createMemoryApi } from '../../../src/renderer/src/api/memory.js';
 import { useWorkspaceStore } from '../../../src/renderer/src/stores/workspace.js';
 import { useRunStore } from '../../../src/renderer/src/stores/run.js';
+import { localLaunchProps } from "../../helpers/localLaunchProps.js";
 import RunView from '../../../src/renderer/src/components/RunView.vue';
 import CaseEvidencePanel from '../../../src/renderer/src/components/CaseEvidencePanel.vue';
 import ResponseViewer from '../../../src/renderer/src/components/ResponseViewer.vue';
@@ -23,8 +24,11 @@ async function runView(result: RunResult) {
   const api = createMemoryApi(); api.seedWorkspace();
   const workspace = useWorkspaceStore(api); await workspace.open(await api.wsPickDirectory());
   const run = useRunStore(api), i18n = language();
-  const wrapper = mount(RunView, { props: { run, workspace, selectedCollectionLocator: null, reportError: () => {} }, global: { plugins: [i18n] } });
-  await flushPromises(); run.result = result; await flushPromises();
+  const launchProps = localLaunchProps(api, workspace);
+  const wrapper = mount(RunView, { props: { ...launchProps, run, workspace, selectedCollectionLocator: null, reportError: () => {} }, global: { plugins: [i18n] } });
+  await flushPromises(); const project = launchProps.projectLocator;
+  run.setTarget(workspace.root, { ...project, collectionId: "collection" });
+  run.result = result; await flushPromises();
   return { wrapper, run, i18n };
 }
 const preview = (text: string) => ({ text, truncated: false });

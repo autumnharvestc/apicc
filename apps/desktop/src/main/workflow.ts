@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { writeRunScope } from "./runs.js";
+import { basename, join } from "node:path";
 import { compileWorkflowPlan, workflowPlanRequests, validateWorkflowRunOptions, createExecutionEvidenceCollector, createHttpSession, createProjectSnapshot, WorkflowRunner, type PluginRegistry, type WorkflowRunResult } from "@apicc/core";
 import type { createSession } from "./session.js";
 import type { DebugCredentialHost } from "./credentialHost.js";
@@ -13,10 +14,11 @@ export function createWorkflowController(session: ReturnType<typeof createSessio
   onReport?: (owner: object | undefined, context: ReturnType<typeof session.captureDraftWriteContext>, project: import("../shared/locations.js").ProjectLocator, native: import("@apicc/core").RunResult, dto: WorkflowRunResult) => Promise<void>) {
   const defaultOwner = {};
   const active = new Map<string, { owner: object; input: WfRunInput; context: ReturnType<typeof session.captureDraftWriteContext>; abort: AbortController }>();
-  async function run(raw: WfRunInput, owner = defaultOwner): Promise<WorkflowRunResult> {
+  async function run(raw: WfRunInput, owner = defaultOwner): Promise<WorkflowRunResult & { archiveFile?: string }> {
     const input = structuredClone(raw); const id = input.invocationId ?? randomUUID();
     const context = session.captureDraftWriteContext();
     if (input.root !== undefined && input.root !== context.root) throw new Error("Workflow workspace context changed");
+    if (input.previewRevision && session.revision !== input.previewRevision) throw new Error("run-launch-preview-changed");
     const found = session.locateWorkflow(input.locator);
     if (!found) throw new Error(`未找到工作流: ${JSON.stringify(input.locator)}`);
     if (found.workflow.status === "draft") throw new Error("工作流为草稿，请先发布启用");
@@ -50,11 +52,12 @@ export function createWorkflowController(session: ReturnType<typeof createSessio
       const result = evidence.projectWorkflow(rawResult);
       output = createExecutionOutputBoundary(evidence.markers());
       const path = join(context.root, ".apicc", "runs", `workflow-${result.workflowId}-${randomUUID()}.json`);
-      const persisted = storage ? storage.persist(path, result.report!) : persistExecutionJson(path, result.report!, output, () => "工作流安全 JSON 报告保存失败");
+      const archive = { ...result.report!, projectId, archiveProject: { workspaceId, groupId, projectId } };
+      const persisted = storage ? storage.persist(path, archive) : persistExecutionJson(path, archive, output, () => "工作流安全 JSON 报告保存失败");
+      if (!storage && !persisted.warning) writeRunScope(context.root, basename(path), archive.archiveProject);
       const { report: _report, ...dto } = result;
-      const publicResult = output.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto);
+      const publicResult = { ...output.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto), ...(persisted.warning ? {} : { archiveFile: basename(path) }) };
       if (onReport) {
-        const { workspaceId, groupId, projectId } = input.locator;
         try { await onReport(owner === defaultOwner ? undefined : owner, context, { workspaceId, groupId, projectId }, output.value(result.report!), publicResult); }
         catch { /* AI source availability cannot change a completed execution. */ }
       }

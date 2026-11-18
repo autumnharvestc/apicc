@@ -4,7 +4,8 @@ import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDefaultRegistry } from "@apicc/core";
 import { createSession } from "../../src/main/session.js";
-import { sendDebug } from "../../src/main/debug.js";
+import { previewCollectionLaunch } from "../../src/shared/collection-launch.js";
+import { runCollection, sendDebug } from "../../src/main/debug.js";
 import { createDebugController } from "../../src/main/debugController.js";
 import type { DebugCredentialHost, PreparedDesktopExecutionRun } from "../../src/main/credentialHost.js";
 import { findApi, IDS, makeWorkspace, makeTempRoot, persistWorkspace, projectOne } from "./helpers/contract-assets.js";
@@ -100,6 +101,36 @@ async function setupProjectWithoutCollections() {
 }
 
 describe("sendDebug", () => {
+  it("B01 previews nested effective cases and skipped APIs without sending, then records the actual data rows", async () => {
+    const root = await makeTempRoot("apicc-launch-scope-"); roots.push(root);
+    const workspace = makeWorkspace(), project = projectOne(workspace), collection = project.collections[0]!;
+    collection.preOperations = [];
+    const direct = findApi(project, IDS.sharedApi)!, nested = findApi(project, IDS.deepApi)!;
+    direct.cases = [{ ...direct.cases[0]!, scope: "base", name: "baseline" }, { ...direct.cases[0]!, scope: "dev", name: "development" },
+      { ...direct.cases[0]!, id: "case-other", scope: "base", name: "different case" }];
+    nested.cases = [{ ...nested.cases[0]!, scope: "dev" }];
+    const datasetId = "10000000-0000-4000-8000-000000000099";
+    project.datasets = [{ formatVersion: 1, id: datasetId, name: "two rows", columns: ["n"], rows: [{n:1},{n:2}] }];
+    nested.cases[0]!.dataDriver = { kind: "dataset", datasetId };
+    for (const asset of [direct,nested]) { asset.contract.request.baseUrl = baseUrl; asset.contract.request.auth = {kind:"none"}; }
+    await persistWorkspace(root.path,workspace);
+    const session = createSession(); await session.open(root.path);
+    const saved = session.locateProject({workspaceId:IDS.workspace,groupId:IDS.groupOne,projectId:project.id})!.project;
+    const locator = {workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: project.id, collectionId: collection.id};
+    const before = serverHits, baseline = previewCollectionLaunch(saved, collection.id);
+    expect(baseline.cases.map(c => c.caseName)).toEqual(["baseline","different case"]);
+    expect(baseline.skipped).toEqual([expect.objectContaining({apiId:nested.contract.id})]);
+    const dev = previewCollectionLaunch(saved,collection.id,IDS.environment);
+    expect(dev.cases.map(c => c.caseName)).toEqual(["development","different case",nested.cases[0]!.name]);
+    expect(dev.cases[2]).toMatchObject({folderIds:[IDS.folderOne,IDS.folderTwo],dataDriven:true});
+    await expect(runCollection(session,{locator, envName:"dev", preview:{root:root.path, revision:"obsolete", environmentId:IDS.environment}})).rejects.toThrow("run-launch-preview-changed");
+    expect(serverHits).toBe(before);
+    const result = await runCollection(session,{locator,envName:"dev",preview:{root:root.path,revision:dev.revision,environmentId:IDS.environment}});
+    expect(serverHits-before).toBe(4);
+    expect(result.cases.map(row => row.caseName)).toEqual(["development","different case",nested.cases[0]!.name,nested.cases[0]!.name]);
+    expect(result.archiveFile).toMatch(/^run-.+\.json$/);
+    expect(JSON.parse(readFileSync(join(root.path,".apicc","runs",result.archiveFile! + ".scope"), "utf8")).scope).toEqual({workspaceId:IDS.workspace,groupId:IDS.groupOne,projectId:project.id});
+  });
   it("B1 desktop debug prepares selected project data and retains single row identity", async () => {
     const { session, locator, api } = await setup({ dataset: true });
     const result = await sendDebug(session, { locator, caseId: api.cases[0]!.id });
@@ -251,8 +282,9 @@ describe("debug controller", () => {
       }),
     };
     const persisted: unknown[] = [];
+    const historyId = "10000000-0000-4000-8000-000000000044";
     const history = {
-      append: async (result: unknown) => { persisted.push(result); },
+      append: async (result: unknown) => { persisted.push(result); return {historyId}; },
     };
     const controller = createDebugController(session, () => createDefaultRegistry(), credentials, history as never);
     const owner = {};
@@ -275,6 +307,8 @@ describe("debug controller", () => {
     expect(persisted).toHaveLength(1);
     expect(persisted[0]).toBe(result);
     expect(repeated).toBe(result);
+    expect(result).not.toHaveProperty("historyId");
+    expect(await controller.wait(owner, started.runId, true)).toMatchObject({runId:started.runId, historyId});
   });
 
   it("keeps the completed network result when private history writing fails", async () => {

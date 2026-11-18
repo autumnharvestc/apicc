@@ -1,15 +1,13 @@
 // @vitest-environment jsdom
-// 注：渲染层组件测试用文件级 pragma 指定 jsdom 环境；a-drawer 传送门渲染于
-// document.body（同 EnvPanel.test 的 a-modal 约定），抽屉内元素用 body 作用域查询；
-// a-select 下拉展开在 jsdom 中不稳定，统一经组件实例 update:value 驱动（chooseSelect）。
 import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from "vitest";
-import { mount, flushPromises, enableAutoUnmount, DOMWrapper } from "@vue/test-utils";
+import { mount, flushPromises, enableAutoUnmount } from "@vue/test-utils";
+import { StressPlanSchema } from "@apicc/core/schema";
 import type { RunResult } from "@apicc/core";
-import type { CollectionLocator } from "../../../src/shared/locations.js";
 import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 import { useRunStore } from "../../../src/renderer/src/stores/run.js";
+import { localLaunchProps } from "../../helpers/localLaunchProps.js";
 import RunView from "../../../src/renderer/src/components/RunView.vue";
 import CaseEvidencePanel from "../../../src/renderer/src/components/CaseEvidencePanel.vue";
 import { runReport } from '../../../../../packages/core/tests/collaboration/fixtures.js';
@@ -39,18 +37,8 @@ afterAll(() => { window.getComputedStyle = jsdomComputedStyle; });
 
 enableAutoUnmount(afterEach);
 
-function bodyFind(testid: string): DOMWrapper<Element> | null {
-  const el = document.body.querySelector(`[data-testid="${testid}"]`);
-  return el ? new DOMWrapper(el) : null;
-}
-
-/** a-select 交互适配：经组件实例发 update:value（v-model 通道），见文件头说明。 */
-function chooseSelect(wrapper: ReturnType<typeof mount>, testid: string, value: string): void {
-  const select = wrapper
-    .findAllComponents({ name: "ASelect" })
-    .find((c) => c.attributes("data-testid") === testid);
-  if (!select) throw new Error(`ASelect 未找到: ${testid}`);
-  select.vm.$emit("update:value", value);
+function chooseModule(wrapper: ReturnType<typeof mount>, collectionId: string) {
+  return wrapper.get(`input[type="radio"][value="${collectionId}"]`).setValue(true);
 }
 
 /** 显式装配辅助（组合根约定的测试形态）：store 一次性创建，经 props 注入被测组件。 */
@@ -69,7 +57,7 @@ async function mountRunView(props: Record<string, unknown> = {}) {
   const run = useRunStore(api);
   const { i18n } = createI18nInstance();
   const wrapper = mount(RunView, {
-    props: { run, workspace, selectedCollectionLocator: null, reportError: () => {}, ...props },
+    props: { ...localLaunchProps(api, workspace), run, workspace, selectedCollectionLocator: null, reportError: () => {}, ...props },
     global: { plugins: [i18n] },
   });
   await flushPromises();
@@ -78,18 +66,13 @@ async function mountRunView(props: Record<string, unknown> = {}) {
 
 describe("RunView", () => {
   it('T9 offers the selected current report as a digest descriptor without putting its raw result in the event', async () => {
-    const { wrapper, run, collectionNode } = await mountRunView(); await wrapper.setProps({ selectedCollectionLocator: collectionNode.locator }); await flushPromises(); run.result = runReport(); await flushPromises(); expect(wrapper.text()).toContain('2');
+    const { wrapper, run, collectionNode } = await mountRunView(); run.setTarget(wrapper.props("workspace").root, collectionNode.locator); run.result = runReport(); await flushPromises(); expect(wrapper.text()).toContain('2');
     const digest = holdRealReportDigest();
     try {
       await wrapper.get('[data-testid="collaboration-publish-current"]').trigger('click'); await flushPromises(); expect(digest.spy).toHaveBeenCalledTimes(1); expect(wrapper.emitted('collaboration')).toBeUndefined();
       await digest.settle(); await flushPromises(); const source = wrapper.emitted('collaboration')?.[0]?.[0] as any;
       expect(source).toEqual({ kind: 'current', project: { workspaceId: collectionNode.locator.workspaceId, groupId: collectionNode.locator.groupId, projectId: collectionNode.locator.projectId }, expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }); expect(source.report).toBeUndefined();
     } finally { try { await digest.settle(); await flushPromises(); } finally { digest.restore(); } }
-  });
-  it('T9 chooses exactly the selected stress file without opening another history body', async () => {
-    const { wrapper, api, run, collectionNode } = await mountRunView(); await wrapper.setProps({ selectedCollectionLocator: collectionNode.locator }); const summary = { kind: 'stress' as const, projectId: collectionNode.locator.projectId, file: 'selected-stress.json', startedAt: '2026-11-01T00:00:00Z', totalRequests: 2, ok: 1, failed: 1, rps: 1 }; api.runsList = async () => [summary]; const read = vi.spyOn(api, 'runsGet');
-    run.historyOpen = true; await flushPromises(); expect(bodyFind('history-row')?.text()).toContain(collectionNode.locator.projectId);
-    await bodyFind('collaboration-publish-stress')!.trigger('click'); await flushPromises(); expect(wrapper.emitted('collaboration')?.[0]?.[0]).toEqual({ kind: 'stress', file: 'selected-stress.json', project: { workspaceId: collectionNode.locator.workspaceId, groupId: collectionNode.locator.groupId, projectId: collectionNode.locator.projectId } }); expect(read).not.toHaveBeenCalled();
   });
   it("C1 Fix1 reserves rerun preparation synchronously and navigation awaits the captured cleanup", async () => {
     const { api, run, workspace, project, collectionNode } = await mountRunView();
@@ -172,7 +155,7 @@ describe("RunView", () => {
     const { wrapper, run, collectionNode } = await mountRunView();
     const runBtn = wrapper.find('[data-testid="run-btn"]');
     expect(runBtn.attributes("disabled")).toBeDefined();
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
+    await chooseModule(wrapper, collectionNode.id);
     await flushPromises();
     expect(runBtn.attributes("disabled")).toBeUndefined();
     await runBtn.trigger("click");
@@ -198,7 +181,7 @@ describe("RunView", () => {
       ],
     };
     api.runCollection = async () => mixed;
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
+    await chooseModule(wrapper, collectionNode.id);
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();
@@ -229,7 +212,7 @@ describe("RunView", () => {
         ] },
     };
     api.runCollection = async () => mixed;
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
+    await chooseModule(wrapper, collectionNode.id);
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();
@@ -250,66 +233,102 @@ describe("RunView", () => {
     expect(mixed.suite!.entries!.map(entry => entry.suiteRow)).toEqual([0, 1, undefined]);
   });
 
-  it("历史抽屉：运行后打开列出 history-row，点击读回完整结果并收起", async () => {
-    const { wrapper, run, collectionNode } = await mountRunView();
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
-    await flushPromises();
-    await wrapper.find('[data-testid="run-btn"]').trigger("click");
-    await flushPromises();
-    run.result = null; // 清掉现场，验证历史回填
-    await wrapper.find('[data-testid="runs-history-btn"]').trigger("click");
-    await flushPromises();
-    expect(run.historyOpen).toBe(true);
-    const row = bodyFind("history-row");
-    expect(row).not.toBeNull();
-    expect(row!.text()).toContain("示例集合");
-    expect(row!.text()).toContain("逻辑报告单位 1"); expect(row!.text()).toContain("非请求诊断 0");
-    await row!.trigger("click");
-    await flushPromises();
-    expect(run.historyOpen).toBe(false);
-    expect(run.result).not.toBeNull();
-    expect(run.result!.collectionName).toBe("示例集合");
+  it("限制为当前项目，跨项目切换后空模块显示零用例并禁止运行", async () => {
+    const { wrapper, workspace, api, group, collectionNode } = await mountRunView();
+    const second = await api.nodeCreate({kind: "project", parent: group.locator, name: "another"});
+    if (second.kind !== "project") throw new Error("missing project");
+    const empty = await api.nodeCreate({kind: "collection", parent: second.locator, name: collectionNode.label});
+    if (empty.kind !== "collection") throw new Error("missing collection");
+    await workspace.refresh(); await flushPromises();
+    expect(wrapper.find(`input[value="${empty.id}"]`).exists()).toBe(false);
+    await wrapper.setProps({projectLocator: second.locator}); await flushPromises();
+    expect(wrapper.find(`input[value="${collectionNode.id}"]`).exists()).toBe(false);
+    await chooseModule(wrapper, empty.id); await flushPromises();
+    expect(wrapper.get('[data-testid="module-scope"]').text()).toContain("0 个用例");
+    expect(wrapper.text()).toContain("当前环境没有可运行的用例");
+    expect(wrapper.get('[data-testid="run-btn"]').attributes("disabled")).toBeDefined();
   });
 
-  it("跨项目切换集合：环境下拉残留的失效环境名重置回「无环境」", async () => {
-    const { wrapper, api, run, workspace, group, project: projectA, collectionNode } = await mountRunView();
-    // 项目 A 建环境 dev；另建项目 B 及其集合（跨项目切换场景）
-    await api.envCreate({ locator: projectA.locator, name: "dev" });
-    const p2 = await api.nodeCreate({ kind: "project", parent: group.locator, name: "p2" });
-    if (p2.kind !== "project") throw new Error("Memory project creation did not return a project node");
-    const c2 = await api.nodeCreate({ kind: "collection", parent: p2.locator, name: "c2" });
-    if (c2.kind !== "collection") throw new Error("Memory collection creation did not return a collection node");
-    await workspace.refresh();
-    await flushPromises();
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
-    chooseSelect(wrapper, "run-env-select", "dev");
-    await flushPromises();
-    // 切到项目 B 的集合：残留的 dev 在项目 B 不存在（会被主进程「未找到环境」拒绝），应重置回无环境
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(c2.locator));
-    await flushPromises();
-    const envSelect = wrapper
-      .findAllComponents({ name: "ASelect" })
-      .find((c) => c.attributes("data-testid") === "run-env-select")!;
-    expect((envSelect.vm.$props as { value: unknown }).value).toBe("");
-    // 行为面断言：运行入参不再携带残留 envName
-    const captured: { current: { locator: CollectionLocator; envName?: string | null } | null } = { current: null };
-    const original = api.runCollection.bind(api);
-    api.runCollection = async (input) => {
-      captured.current = { ...input };
-      return original(input);
-    };
-    await wrapper.find('[data-testid="run-btn"]').trigger("click");
-    await flushPromises();
-    expect(captured.current?.locator).toEqual(c2.locator);
-    expect(captured.current?.envName).toBeUndefined();
-    expect(run.result).not.toBeNull();
+  it("previews single cases without loading an editor, fences old scope and captures exactly one explicit start", async () => {
+    const { wrapper, api, workspace, project, collectionNode } = await mountRunView();
+    const editor = wrapper.props("editor"), before = editor.activeKey;
+    const debugStart = vi.spyOn(api, "debugStart");
+    await wrapper.get('[data-testid="launch-kind"]').setValue("case"); await flushPromises();
+    await wrapper.get('[data-testid="launch-target"]').setValue(true); await flushPromises();
+    expect(debugStart).toHaveBeenCalledTimes(0);
+    expect(editor.activeKey).toBe(before);
+    await api.envCreate({ locator: project.locator, name: "added after preview" });
+    const button = wrapper.get('[data-testid="run-btn"]');
+    await button.trigger("click"); await flushPromises();
+    expect(debugStart).toHaveBeenCalledTimes(0); expect(wrapper.text()).toContain("请核对更新后的预览");
+    await Promise.all([button.trigger("click"), button.trigger("click")]); await flushPromises();
+    expect(debugStart).toHaveBeenCalledTimes(1);
+    const [invocation, context] = debugStart.mock.calls[0]!;
+    expect(invocation).toMatchObject({mode:"case",locator:{collectionId:collectionNode.id},case:{scope:"base"}});
+    expect(context).toMatchObject({project:project.locator,root:workspace.root});
+    expect(editor.activeKey).toBe(before);
+  });
+
+  it("previews and launches a saved suite while keeping another suite draft intact", async () => {
+    const { wrapper, api, workspace, project } = await mountRunView();
+    const testing = wrapper.props("testing");
+    await testing.activate(workspace.root, project.locator);
+    await testing.newSuite("Saved suite"); testing.suite!.selection = {kind:"query"}; await testing.save();
+    const id = testing.suite!.id;
+    await testing.newSuite("Unrelated draft");
+    await workspace.refresh(); await flushPromises();
+    const run = vi.spyOn(api,"runSuite").mockImplementation(async input => ({context:input.context, invocationId:input.invocationId, result:runReport(), archiveFile:"suite-run-captured.json"}));
+    await wrapper.get('[data-testid="launch-kind"]').setValue("suite");
+    await chooseModule(wrapper, id); await flushPromises();
+    expect(wrapper.text()).toContain("1 个套件条目"); expect(run).toHaveBeenCalledTimes(0);
+    await wrapper.get('[data-testid="run-btn"]').trigger("click"); await flushPromises();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]![0]).toMatchObject({locator:{suiteId:id},overrides:{allowDraft:false},expectedDataDigest:expect.stringMatching(/^sha256:/)});
+    expect(testing.suite?.name).toBe("Unrelated draft"); expect(testing.dirty).toBe(true);
+    expect(wrapper.get('[data-testid="launch-open-record"]').text()).toBe("查看本次运行");
+  });
+
+  it("runs an input workflow from its saved revision, and requires fresh origin consent after switching the load-test environment", async () => {
+    const { wrapper, api, workspace, project } = await mountRunView();
+    const first = await api.wfCreate({locator:project.locator,name:"Checkout",executionVersion:2});
+    if (first.executionVersion !== 2) throw new Error("missing workflow v2");
+    const where = {...project.locator,workflowId:first.id};
+    await api.wfSave(where,{...first,inputs:{customer:{required:true}},nodes:[{id:"visit",kind:"noop"}]});
+    await api.wfSetStatus(where,"published"); await api.wfSetStatus(where,"enabled");
+    const other = await api.wfCreate({locator:project.locator,name:"Designer"});
+    const design = wrapper.props("workflowDesign");
+    await design.load(workspace.root,{...project.locator,workflowId:other.id});
+    design.update({...design.workflow!,name:"Unsaved designer name"});
+    const plan = StressPlanSchema.parse({formatVersion:1,target:{kind:"workflow",workflowId:first.id,inputs:{customer:"saved"}},load:{kind:"constant-vus",vus:1},termination:{maxIterations:1}});
+    const saved = await api.stressPlansSave(project.locator,{name:"Saved checkout plan",plan});
+    const env = await api.envCreate({locator:project.locator,name:"dev"});
+    await workspace.refresh(); await flushPromises();
+    const submit = vi.spyOn(api,"wfRun"), kind = wrapper.get('[data-testid="launch-kind"]'), button = wrapper.get('[data-testid="run-btn"]');
+    await kind.setValue("workflow"); await chooseModule(wrapper,first.id); await flushPromises();
+    expect(wrapper.text()).toContain("请输入 customer"); expect(button.attributes("disabled")).toBeDefined();
+    await wrapper.get('.run-inputs input').setValue('"Alice"'); await flushPromises();
+    await button.trigger("click"); await vi.waitFor(() => expect(design.running).toBe(false));
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0]![0]).toMatchObject({locator:where,inputs:{customer:"Alice"},root:workspace.root,previewRevision:expect.any(String)});
+    expect(design.workflow?.name).toBe("Unsaved designer name"); expect(design.dirty).toBe(true);
+    await kind.setValue("stress"); await flushPromises(); await chooseModule(wrapper,saved.id); await flushPromises();
+    const stress = vi.spyOn(api,"stressRun").mockResolvedValue({ok:false,error:{code:"target_confirmation_required",message:"requires consent",targetOrigin:"http://127.0.0.1:8123"}});
+    await button.trigger("click"); await flushPromises();
+    expect(stress).toHaveBeenCalledTimes(1); expect(wrapper.text()).toContain("http://127.0.0.1:8123");
+    await wrapper.setProps({environmentId:env.id}); await flushPromises();
+    expect(wrapper.text()).not.toContain("http://127.0.0.1:8123");
+    await button.trigger("click"); await flushPromises();
+    expect(stress).toHaveBeenCalledTimes(2);
+    expect(stress.mock.calls[1]![0]).toMatchObject({kind:"plan",plan:{environmentId:env.id,target:plan.target},previewRevision:expect.any(String)});
+    expect(stress.mock.calls[1]![0]).not.toHaveProperty("confirmedTargetOrigins");
+    expect((await api.stressPlansGet(project.locator,saved.id))?.plan).toEqual(saved.plan);
   });
 
   it("运行链路拒绝时经 reportError 上报（宽审查 I1 同款收口）", async () => {
     const errors: unknown[] = [];
     const { wrapper, api, collectionNode } = await mountRunView({ reportError: (e: unknown) => { errors.push(e); } });
     api.runCollection = async () => { throw new Error("boom"); };
-    chooseSelect(wrapper, "run-collection-select", JSON.stringify(collectionNode.locator));
+    await chooseModule(wrapper, collectionNode.id);
     await flushPromises();
     await wrapper.find('[data-testid="run-btn"]').trigger("click");
     await flushPromises();

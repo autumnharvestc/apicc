@@ -237,17 +237,19 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       try { const value = await api.previewSuite(input); if (token === generation && store.current) { store.preview = value; store.error = ""; } }
       catch (error) { if (token === generation) { store.preview = null; store.error = message(error); } throw error; }
     },
-    async run(overrides: SuiteRunOverrides = {}) {
+    async run(overrides: SuiteRunOverrides = {}, saved?: { context: TestingAssets["context"]; suiteId: string; expectedDataDigest?: string }) {
       if (activeRun || changing) return;
-      const input = suiteInput(overrides); const token = generation;
+      const input = suiteInput(overrides, saved); const token = generation;
+      let output: SuiteOutput | undefined;
       const execution = { input, completion: Promise.resolve(), cancel: () => api.cancelSuite(clone(input)) };
       activeRun = execution; store.running = true; store.result = null;
       execution.completion = (async () => {
-        try { const result = await api.runSuite(input); if (token === generation && store.current) { store.result = result; store.error = ""; } }
+        try { output = await api.runSuite(input); if (token === generation && store.current && store.suite?.id === input.locator.suiteId) { store.result = output; store.error = ""; } }
         catch (error) { if (token === generation && store.current) store.error = message(error); throw error; }
         finally { if (activeRun === execution) { activeRun = null; store.running = false; } }
       })();
-      return execution.completion;
+      await execution.completion;
+      return output;
     },
     async cancel() {
       if (activeRun && store.current && store.view && key(store.view.context.root, store.view.context.project) === key(activeRun.input.context.root, activeRun.input.context.project)) await stopRun();
@@ -290,10 +292,12 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
   }
   function message(error: unknown) { return error instanceof Error ? error.message : String(error); }
   function writable() { if (!store.current || readonlyOverride || store.view?.readOnly || options.getActive?.()?.readOnly) throw new Error("Testing project is read-only"); }
-  function suiteInput(overrides: SuiteRunOverrides): SuiteInvocation {
-    if (!store.current || !store.view || !store.suite || store.dirty) throw new Error("Save suite before preview/run");
+  function suiteInput(overrides: SuiteRunOverrides, saved?: { context: TestingAssets["context"]; suiteId: string; expectedDataDigest?: string }): SuiteInvocation {
+    const context = saved?.context ?? store.view?.context, suiteId = saved?.suiteId ?? store.suite?.id;
+    if (!store.current || !context || !suiteId || key(context.root, context.project) !== activeKey
+      || (store.suite?.id === suiteId && store.dirty)) throw new Error("Save suite before preview/run");
     const { reporters, ...values } = overrides;
-    return clone({ context: store.view.context, locator: { ...store.view.context.project, suiteId: store.suite.id }, evidenceMode: store.evidenceMode, overrides: { ...values, ...(reporters ? { reporters: [...reporters] } : {}) }, invocationId: crypto.randomUUID() });
+    return clone({ context, locator: { ...context.project, suiteId }, ...(saved?.expectedDataDigest ? {expectedDataDigest: saved.expectedDataDigest} : {}), evidenceMode: store.evidenceMode, overrides: { ...values, ...(reporters ? { reporters: [...reporters] } : {}) }, invocationId: crypto.randomUUID() });
   }
   return store;
 }

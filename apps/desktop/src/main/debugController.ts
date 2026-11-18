@@ -31,6 +31,7 @@ interface DebugJob {
   readonly startedAt: string;
   readonly abort: AbortController;
   readonly completion: Promise<DebugResult>;
+  historyId?: string;
   settled: boolean;
 }
 
@@ -102,10 +103,11 @@ export function createDebugController(
       if (!history) return result;
       if (!historyOwnerKey) return { ...result, warnings: [...result.warnings, "本机历史归属无法校验，本次结果未保存。"] };
       try {
-        await history.append(result, {
+        const record = await history.append(result, {
           ownerKey: historyOwnerKey,
           ...(invocation.parentHistoryId === undefined ? {} : { parentHistoryId: invocation.parentHistoryId }),
         });
+        if (record && typeof record === "object" && "historyId" in record && typeof record.historyId === "string") entry.historyId = record.historyId;
         return result;
       } catch {
         return { ...result, warnings: [...result.warnings, "调试结果已完成，但本机历史写入或清理未完整成功。"] };
@@ -202,10 +204,10 @@ export function createDebugController(
     return { runId };
   }
 
-  function wait(ownerValue: unknown, runId: string): Promise<DebugResult> {
+  function wait(ownerValue: unknown, runId: string, includeHistoryId = false): Promise<DebugResult & { historyId?: string }> {
     const entry = findJob(ownerValue, runId);
     if (!entry) throw new Error("Debug run not found for this renderer owner.");
-    return entry.completion;
+    return includeHistoryId ? entry.completion.then(result => entry.historyId ? { ...result, historyId: entry.historyId } : result) : entry.completion;
   }
 
   function cancel(ownerValue: unknown, runId: string): DebugCancelResult {

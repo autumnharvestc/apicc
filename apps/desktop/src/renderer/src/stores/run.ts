@@ -1,6 +1,8 @@
 import { createPinia, defineStore } from "pinia";
-import type { EvidenceIdentity, RunResult } from "@apicc/core";
-import type { CollectionLocator } from "../../../shared/locations.js";
+import type { DebugInvocation, EvidenceIdentity, RunResult } from "@apicc/core";
+import type { CollectionLocator, ProjectLocator } from "../../../shared/locations.js";
+import type { TestingContext } from "../../../shared/testing.js";
+import type { RunCollectionInput } from "../../../shared/types.js";
 import type { ApiccApi, RunSummaryDTO, StressReportDTO, StressRunSummaryDTO } from "../../../shared/types.js";
 
 function copyLocator(locator: CollectionLocator): CollectionLocator {
@@ -11,6 +13,9 @@ function copyLocator(locator: CollectionLocator): CollectionLocator {
 export function useRunStore(api: ApiccApi) {
   type EvidenceExecution = { input?: import("../../../shared/testing.js").EvidenceInvocation; cancelled: boolean; completion: Promise<void>; cleanup?: Promise<void> };
   let activeEvidence: EvidenceExecution | null = null;
+  type SavedCaseAttempt = { root: string; invocation: Extract<DebugInvocation, { mode: "case" }>; runId?: string; cancelled: boolean };
+  let activeCase: SavedCaseAttempt | null = null;
+  let collectionInFlight = false;
   let cleanup: Promise<void> = Promise.resolve();
   const stopEvidence = () => {
     const captured = activeEvidence; if (!captured) return cleanup;
@@ -22,6 +27,9 @@ export function useRunStore(api: ApiccApi) {
   return defineStore("run", {
     state: () => ({
       running: false,
+      caseRunning: false,
+      caseOwner: null as { root: string; project: ProjectLocator } | null,
+      caseRunId: null as string | null,
       result: null as RunResult | null,
       summaries: [] as Array<RunSummaryDTO | StressRunSummaryDTO>,
       historyOpen: false,
@@ -39,22 +47,54 @@ export function useRunStore(api: ApiccApi) {
         this.targetRoot = root;
         this.target = next;
         this.result = null;
-        this.running = activeEvidence !== null;
+        this.running = activeEvidence !== null || collectionInFlight;
         return stopped;
       },
-      async runCollection(root: string, locator: CollectionLocator, envName?: string) {
-        if (this.running || activeEvidence) return;
+      async runCollection(root: string, locator: CollectionLocator, envName?: string, preview?: RunCollectionInput["preview"]) {
+        if (this.running || activeEvidence || collectionInFlight) return;
         const target = copyLocator(locator);
         this.setTarget(root, target);
         const generation = this.generation;
+        collectionInFlight = true;
         this.running = true;
         try {
           await cleanup; if (generation !== this.generation) return;
-          const result = await api.runCollection({ locator: target, envName });
+          const result = await api.runCollection({ locator: target, envName, ...(preview ? { preview } : {}) });
           if (generation === this.generation) this.result = result;
+          return result;
         } finally {
-          if (generation === this.generation) this.running = false;
+          collectionInFlight = false;
+          this.running = activeEvidence !== null;
         }
+      },
+      async runSavedCase(invocation: Extract<DebugInvocation, { mode: "case" }>, context: TestingContext) {
+        if (activeCase) return;
+        const attempt: SavedCaseAttempt = { root: context.root, invocation, cancelled: false };
+        activeCase = attempt;
+        this.caseRunning = true;
+        this.caseOwner = {root: context.root, project: {...context.project}};
+        this.caseRunId = null;
+        try {
+          const { runId } = await api.debugStart(invocation, context);
+          attempt.runId = runId;
+          this.caseRunId = runId;
+          if (attempt.cancelled) await api.debugCancel({ runId });
+          return await api.debugWait({ runId, includeHistoryId: true });
+        } finally {
+          if (activeCase === attempt) {
+            activeCase = null;
+            this.caseRunId = null;
+            this.caseRunning = false;
+            this.caseOwner = null;
+          }
+        }
+      },
+      async cancelSavedCase(root: string, project: import("../../../shared/locations.js").ProjectLocator) {
+        const attempt = activeCase;
+        if (!attempt || attempt.root !== root || attempt.invocation.locator.workspaceId !== project.workspaceId
+          || attempt.invocation.locator.groupId !== project.groupId || attempt.invocation.locator.projectId !== project.projectId) return;
+        attempt.cancelled = true;
+        if (attempt.runId) await api.debugCancel({ runId: attempt.runId });
       },
       async loadHistory() {
         const generation = this.generation; const values = await api.runsList();
@@ -70,14 +110,20 @@ export function useRunStore(api: ApiccApi) {
         else this.result = run;
         return run;
       },
-      async inspectEvidence(identity: EvidenceIdentity) {
-        if (!this.target || !this.targetRoot || identity.projectId !== this.target.projectId) throw new Error("历史证据不属于当前项目");
-        const view = await api.listTestingAssets({ root: this.targetRoot, project: { workspaceId: this.target.workspaceId, groupId: this.target.groupId, projectId: this.target.projectId } });
+      readArchiveList() { return api.runsList(); },
+      readArchive(file: string) { return api.runsGet(file); },
+      compareArchivedStress(project: ProjectLocator, baseFile: string, candidateFile: string) { return api.stressCompare(project, { baseFile, candidateFile }); },
+      exportArchivedStress(project: ProjectLocator, file: string, baselineFile?: string) { return api.stressExport(project, { file, baselineFile, format: 'html' }); },
+      async inspectEvidence(identity: EvidenceIdentity, archive?: { root: string; project: ProjectLocator }) {
+        const project = archive?.project ?? this.target, root = archive?.root ?? this.targetRoot;
+        if (!project || !root || identity.projectId !== project.projectId) throw new Error("历史证据不属于当前项目");
+        const view = await api.listTestingAssets({ root, project: { workspaceId: project.workspaceId, groupId: project.groupId, projectId: project.projectId } });
         return api.inspectEvidence({ context: view.context, identity, invocationId: crypto.randomUUID() });
       },
-      async rerunEvidence(identity: EvidenceIdentity) {
-        if (this.running || activeEvidence || !this.target || !this.targetRoot || identity.projectId !== this.target.projectId) return;
-        const token = this.generation; const root = this.targetRoot; const target = copyLocator(this.target); const priorCleanup = cleanup;
+      async rerunEvidence(identity: EvidenceIdentity, archive?: { root: string; project: ProjectLocator }) {
+        const target = archive?.project ?? this.target, root = archive?.root ?? this.targetRoot;
+        if (this.running || activeEvidence || !target || !root || identity.projectId !== target.projectId) return;
+        const token = this.generation; const priorCleanup = cleanup;
         const capturedIdentity = { ...identity, ...(identity.locator ? { locator: { ...identity.locator, folderIds: [...identity.locator.folderIds] } } : {}) };
         const execution: EvidenceExecution = { cancelled: false, completion: Promise.resolve() };
         activeEvidence = execution;
@@ -90,7 +136,7 @@ export function useRunStore(api: ApiccApi) {
             if (!current()) return;
             execution.input = { context: view.context, identity: capturedIdentity, invocationId: crypto.randomUUID() };
             const value = await api.rerunEvidence(execution.input);
-            if (current()) this.result = value;
+            if (current() && !archive) this.result = value;
           } finally { if (activeEvidence === execution) { activeEvidence = null; this.running = false; } }
         })();
         return execution.completion;
