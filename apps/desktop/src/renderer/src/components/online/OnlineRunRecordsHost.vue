@@ -15,7 +15,7 @@ import OnlineExecutionPanel from "./OnlineExecutionPanel.vue";
 import OnlineSchedulesPanel from "./OnlineSchedulesPanel.vue";
 import OnlineNotificationsPanel from "./OnlineNotificationsPanel.vue";
 const props = withDefaults(defineProps<{ online: ReturnType<typeof createOnlineStore>; adapter: ReturnType<typeof createOnlineProjectAdapter>;
-  ai?: AiStore; readOnly?: boolean; pane: OnlineRunPane; active?: boolean; reportError: (e: unknown) => void;
+  ai?: AiStore; readOnly?: boolean; dirtyStressPlanId?: string | null; pane: OnlineRunPane; active?: boolean; reportError: (e: unknown) => void;
   openProject?: (workspaceId: string, projectId: string) => Promise<boolean> }>(), { active: true });
 const emit = defineEmits<{ "update:pane": [pane: OnlineRunPane]; collaboration: [v: {context: OnlineExecutionContext; source: CollaborationLocalSource}] }>();
 const { t, te, locale } = useI18n();
@@ -34,7 +34,11 @@ function code(value?: string) { return value ? te("onlineExecution.states."+valu
 function go(pane: OnlineRunPane) { issue.value = ""; intent++; emit("update:pane", pane); }
 watch(() => [props.active, e.value.context, e.value.visible, props.pane, schedules.value.selected], () => { intent++; issue.value = ""; }, { flush: "sync" });
 watch(() => e.value.context, () => { hideDetail.value = false; position.value = null; });
-watch(() => props.active, active => { if (!active) schedules.value.navigationIntent++; else hideDetail.value = false; });
+watch(() => props.active, active => {
+  if (active) { hideDetail.value = false; return; }
+  schedules.value.navigationIntent++;
+  schedules.value.returnTo = null; schedules.value.restorePosition = null; schedules.value.paneRequest = null;
+}, { flush: "sync" });
 watch(() => selectedKey.value, key => { if (key) hideDetail.value=false; });
 watch(() => schedules.value.paneRequest, request => {
   if (request && props.active && scopesMatch(e.value.context, request.context)) { hideDetail.value = false; emit("update:pane", request.pane); }
@@ -122,9 +126,12 @@ async function backToNotification() {
   const store=schedules.value, ref=store.returnTo;
   if (!ref) return;
   const n=++store.navigationIntent;
-  if (!await switchProject(ref.context,ref.context.scope.projectId)) { issue.value=msg("unavailable"); return; }
-  if (n!==store.navigationIntent) return;
-  store.restorePosition=ref.position; store.paneRequest={context:ref.context,pane:"notifications"}; store.returnTo=null;
+  try {
+    const opened = await switchProject(ref.context,ref.context.scope.projectId);
+    if (n!==store.navigationIntent) return;
+    if (!opened) { issue.value=msg("unavailable"); return; }
+    store.restorePosition=ref.position; store.paneRequest={context:ref.context,pane:"notifications"}; store.returnTo=null;
+  } catch { if (n===store.navigationIntent) issue.value=msg("unavailable"); }
 }
 function changePane(pane: OnlineRunPane) { schedules.value.navigationIntent++; schedules.value.returnTo=null; schedules.value.paneRequest=null; position.value=null; go(pane); }
 function returnList() { hideDetail.value=true; nextTick(() => list.value?.querySelector<HTMLElement>('button[aria-current="true"]')?.focus()); }
@@ -136,7 +143,7 @@ const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing
     <button v-if="canReturn" class="return" data-testid="return-notification" @click="backToNotification">{{ msg("returnNotifications") }}</button>
     <button v-else-if="position && pane==='records'" class="return" @click="position=null;go('schedules')">{{ msg("returnSchedule") }}</button>
     <p v-if="issue" role="alert">{{ issue }}</p>
-    <OnlineRunLaunch v-if="pane==='launch'" :execution="e" :adapter="adapter" :read-only="readOnly" :report-error="reportError" @records="inspectLaunch" />
+    <OnlineRunLaunch v-if="pane==='launch'" :execution="e" :adapter="adapter" :read-only="readOnly" :dirty-stress-plan-id="dirtyStressPlanId" :report-error="reportError" @records="inspectLaunch" />
     <div v-show="pane==='records'" class="records-layout" data-testid="online-run-records"><aside ref="list" class="record-list">
       <h3>{{ msg("records") }}</h3><p>{{ msg("recent") }}</p><p>{{ msg("session") }}</p>
       <div class="record-actions"><button @click="e.refresh()">{{ t("onlineExecution.refreshNow") }}</button><details><summary>{{ msg("settings") }}</summary><label>{{ t("onlineExecution.refresh") }} <input type="number" min="1" max="2147483647" :value="e.statusRefreshMs" @change="event => { try {e.setRefreshMs(Number((event.target as HTMLInputElement).value))} catch(err){reportError(err)} }" /> ms</label></details></div>

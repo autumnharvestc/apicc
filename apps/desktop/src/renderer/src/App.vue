@@ -694,11 +694,21 @@ const railGate = computed(() => ({
   onlineProjectAvailable: !!online.execution.project && onlineProjectContextAvailable.value && !online.execution.projectAccessLost,
   apiSelected: !!editor.apiId || !!editor.activeFreeSession,
 }));
+let relatedRunTarget: OnlineExecutionContext | null = null;
+function openingRelatedRunTab() {
+  const tab = activeOnlineProjectTab.value;
+  return !!relatedRunTarget && !!tab && view.value === "run"
+    && tab.projectId === relatedRunTarget.scope.projectId && tab.workspaceRef.workspaceId === relatedRunTarget.scope.workspaceId
+    && JSON.stringify(online.executionContext(tab.projectId)) === JSON.stringify(relatedRunTarget);
+}
 watch(() => activeOnlineProjectTab.value?.tabId, (tab, previous) => {
+  if (openingRelatedRunTab()) return;
+  relatedRunTarget = null;
   if (tab && tab !== previous) view.value = "api";
 }, { flush: "sync" });
+watch(view, module => { if (module !== "run") relatedRunTarget = null; }, { flush: "sync" });
 watch(railGate, gate => {
-  if (gate.onlineActive && isViewDisabled(view.value, gate)) view.value = "api";
+  if (gate.onlineActive && isViewDisabled(view.value, gate) && !openingRelatedRunTab()) view.value = "api";
 });
 const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId || !!editor.activeFreeSession }));
 const homeOpenLocalProjectKeys = computed(() => new Set(
@@ -1978,13 +1988,20 @@ async function openRelatedOnlineProject(workspaceId: string, projectId: string):
   if (!source || session?.workspace.id !== source.scope.workspaceId || !project || project.myRole === "NONE") return false;
   const expected = online.executionContext(projectId);
   if (!expected || expected.serverId !== source.serverId || expected.ownerId !== source.ownerId) return false;
-  await tabs.openProjectTab({ kind: "online", workspaceId, name: session.workspace.name, baseUrl: session.baseUrl }, { id: projectId, name: project.name });
-  await nextTick();
-  await activeOnlineLoad;
-  if (JSON.stringify(onlineDirectoryContext.value) !== JSON.stringify(expected) || !online.execution.project || online.execution.projectAccessLost) return false;
-  view.value = "run";
-  await nextTick();
-  return true;
+  relatedRunTarget = expected;
+  try {
+    await tabs.openProjectTab({ kind: "online", workspaceId, name: session.workspace.name, baseUrl: session.baseUrl }, { id: projectId, name: project.name });
+    await nextTick();
+    await activeOnlineLoad;
+    return relatedRunTarget === expected && view.value === "run"
+      && JSON.stringify(onlineDirectoryContext.value) === JSON.stringify(expected)
+      && !!online.execution.project && !online.execution.projectAccessLost;
+  } finally {
+    if (relatedRunTarget === expected) {
+      relatedRunTarget = null;
+      if (railGate.value.onlineActive && isViewDisabled(view.value, railGate.value)) view.value = "api";
+    }
+  }
 }
 
 // —— 测试模块（M11）：压测上下文 + 场景清单 + 侧栏选接口载入编辑器 ——

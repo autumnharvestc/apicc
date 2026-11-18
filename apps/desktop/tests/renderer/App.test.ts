@@ -48,7 +48,9 @@ import { useEditorStore } from '../../src/renderer/src/stores/editor.js';
 import { debugHistory as collaborationDebugFixture, runReport as collaborationRunFixture } from '../../../../packages/core/tests/collaboration/fixtures.js';
 import { workspaceFixture } from '../../../../packages/core/tests/helpers/contractFixtures.js';
 import { ApiAssetSchema, ContractProjectSchema, ContractWorkspaceSchema, DebugHistoryRecordSchema } from '@apicc/core/schema';
-import { defaultPolicyConfig } from '@apicc/execution/contract';
+import { defaultPolicyConfig, NotificationPageSchema } from '@apicc/execution/contract';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { holdRealReportDigest } from '../helpers/realReportDigest.js';
 import { onlineTreeToDto } from '../../src/main/online/session.js';
 import type { useWorkspaceStore } from "../../src/renderer/src/stores/workspace.js";
@@ -865,6 +867,79 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
         await vi.waitFor(() => expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true)); await wrapper.get('[data-testid="collaboration-target"]').setValue('33'); await wrapper.get('[data-testid="collaboration-prepare-local"]').trigger('click'); await flushPromises(); expect(api.calls.slice(count)).toHaveLength(1); expect(api.calls.at(-1)).toMatchObject({ operation: 'preview-local', context: { scope }, source: { kind: 'current', expectedReportDigest: expect.stringMatching(/^[a-f0-9]{64}$/) } }); expect((api.calls.at(-1) as any).source.project.projectId).not.toBe('33');
       }
     } finally { wrapper.unmount(); initI18n().setLocale('zh-CN'); for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) }); }
+  });
+  it.each(['return', 'leave'] as const)('C06 follows a notification across real project tabs during a delayed load and honors %s', async action => {
+    const asset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const projects = ['33', '44'].map(id => ({ id, groupId: '22', name: 'Project ' + id, myRole: 'EDITOR' as const }));
+    const view = { workspaceId: '11', name: 'Notification workspace', myRole: 'OWNER' as const, projects,
+      tree: onlineTreeToDto({workspaceId: '11', rootVersion: 1, files: [], projects}, 'Notification workspace') };
+    const fixture = NotificationPageSchema.parse(JSON.parse(readFileSync(resolve('../../server/src/test/resources/notifications/center.json'), 'utf8')));
+    const event = { ...fixture.items[0]!, workspaceId: '11', projectId: '44', link: '/workspaces/11/projects/44/schedules/6',
+      jobId: '701', executionId: '702', scheduleName: 'Original notification' };
+    const names = ['onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution', 'onlineScheduling'] as const;
+    const originals = new Map(names.map(name => [name, failingApi[name]]));
+    const operations: string[] = [];
+    let finishLoad = () => {};
+    const loading = new Promise<void>(resolve => { finishLoad = resolve; });
+    failingApi.onlineLogin = async () => ({ expiresAt: '2099-01-01T00:00:00Z', user: { id: '7', username: 'alice', displayName: 'Member' } });
+    failingApi.onlineWorkspaceList = async () => [{ id: '11', name: view.name, myRole: 'OWNER', createdAt: '2026-11-01T00:00:00Z' }];
+    failingApi.onlineWorkspaceOpen = async () => view;
+    failingApi.onlineWorkspaceActivate = async () => {};
+    failingApi.onlineTreeView = async () => view;
+    failingApi.onlineExecution = async input => {
+      const scope = input.context.scope;
+      operations.push(input.operation + '/' + scope.projectId);
+      if (input.operation === 'assets') {
+        if (scope.projectId === '44') await loading;
+        return { project: asset, problems: [], assets: { ...scope, format: 'contract-files-v1', contractProjectId: asset.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
+      }
+      if (input.operation === 'agents') return { defaultAgentId: null, canManageScripts: false, policy: structuredClone(defaultPolicyConfig), policyVersion: '1', agents: [] };
+      if (input.operation === 'materials') return { credentials: [], attachments: [] };
+      if (input.operation === 'list') return [];
+      if (input.operation === 'status') return { jobId: '701', executionId: '702', agentId: '5', scope, state: 'running', cancelState: 'none', executionReleased: false, canCancel: false, view: 'active-status' };
+      throw new Error(input.operation);
+    };
+    failingApi.onlineScheduling = async input => {
+      operations.push(input.operation + '/' + input.context.scope.projectId);
+      if (input.operation === 'notifications') return { items: [event], nextBeforeId: null };
+      if (input.operation === 'originalJob') {
+        expect([input.context.scope.projectId, input.jobId, input.executionId]).toEqual(['44', '701', '702']);
+        return { jobId: input.jobId, executionId: input.executionId, agentId: '5' };
+      }
+      throw new Error(input.operation);
+    };
+    const wrapper = await mountApp();
+    const online = wrapper.findComponent(OnlineLoginDialog).props('online');
+    try {
+      online.addProfile('http://127.0.0.1:8080', 'Member');
+      await online.login('alice', 'password8'); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
+      await wrapper.findComponent(ProjectTabs).props('tabs').openProjectTab({ kind: 'online', workspaceId: '11', name: view.name }, projects[0]!);
+      await vi.waitFor(() => expect(online.execution.project).toBeTruthy());
+      await wrapper.get('[data-testid="rail-run"]').trigger('click');
+      await wrapper.get('[data-testid="run-pane-notifications"]').trigger('click');
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="notification-run"]').exists()).toBe(true));
+      await wrapper.get('[data-testid="notification-run"]').trigger('click');
+      await vi.waitFor(() => expect(operations).toContain('assets/44'));
+      expect(wrapper.get('[data-testid="rail-run"]').attributes('aria-current')).toBe('page');
+      if (action === 'leave') await wrapper.get('[data-testid="rail-api"]').trigger('click');
+      finishLoad(); await flushPromises();
+      if (action === 'leave') {
+        expect(wrapper.get('[data-testid="rail-api"]').attributes('aria-current')).toBe('page');
+        expect(operations).not.toContain('originalJob/44');
+        expect(online.execution.resultSelection).toBeNull();
+      } else {
+        await vi.waitFor(() => expect(online.execution.resultSelection).toMatchObject({kind:'agent', job:{ jobId:'701', executionId:'702', view:'active-status' }}));
+        expect(wrapper.get('[data-testid="run-pane-records"]').attributes('aria-current')).toBe('true');
+        await wrapper.get('[data-testid="return-notification"]').trigger('click');
+        await vi.waitFor(() => expect(wrapper.get('.notifications article[aria-current="true"]').text()).toContain('Original notification'));
+        expect(online.execution.context?.scope.projectId).toBe('33');
+        expect(wrapper.get('.notifications article[aria-current="true"]').text()).toContain('站内未读');
+      }
+      expect(operations.some(op => /^(run|report|markNotificationRead)\//.test(op))).toBe(false);
+    } finally {
+      finishLoad(); online.execution.setVisible(false); wrapper.unmount();
+      for (const name of names) Object.assign(failingApi, { [name]: originals.get(name) });
+    }
   });
   it('T11 prepares the actual App online member editor through the one shared AI store', async () => {
     const fixture = createAiBusinessFixture(); const names = ['aiSettingsRead', 'aiCatalogReload', 'aiPrepareAssistance', 'aiStart', 'aiCancel', 'onAiProgress', 'aiInspectChoices', 'onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution'] as const;
