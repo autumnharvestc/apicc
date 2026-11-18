@@ -3,7 +3,7 @@ import type { DebugInvocation, EvidenceIdentity, RunResult } from "@apicc/core";
 import type { CollectionLocator, ProjectLocator } from "../../../shared/locations.js";
 import type { TestingContext } from "../../../shared/testing.js";
 import type { RunCollectionInput } from "../../../shared/types.js";
-import type { ApiccApi, RunSummaryDTO, StressReportDTO, StressRunSummaryDTO } from "../../../shared/types.js";
+import type { ApiccApi, ArchiveReadProof, RunSummaryDTO, StressReportDTO, StressRunSummaryDTO } from "../../../shared/types.js";
 
 function copyLocator(locator: CollectionLocator): CollectionLocator {
   return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId, collectionId: locator.collectionId };
@@ -111,7 +111,7 @@ export function useRunStore(api: ApiccApi) {
         return run;
       },
       readArchiveList() { return api.runsList(); },
-      readArchive(file: string) { return api.runsGet(file); },
+      readArchive(file: string, proof?: ArchiveReadProof) { return proof ? api.runsGet(file, proof) : api.runsGet(file); },
       compareArchivedStress(project: ProjectLocator, baseFile: string, candidateFile: string) { return api.stressCompare(project, { baseFile, candidateFile }); },
       exportArchivedStress(project: ProjectLocator, file: string, baselineFile?: string) { return api.stressExport(project, { file, baselineFile, format: 'html' }); },
       async inspectEvidence(identity: EvidenceIdentity, archive?: { root: string; project: ProjectLocator }) {

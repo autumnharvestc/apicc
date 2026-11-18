@@ -2,7 +2,7 @@ import { useI18n } from "vue-i18n";
 
 const messages = {
   en: {
-    launch: "Launch task", records: "Task records", notifications: "Notifications", recent: "Latest 20 agent tasks",
+    refresh: "Refresh tasks", launch: "Launch task", records: "Task records", notifications: "Notifications", recent: "Latest 20 agent tasks",
     session: "This computer’s results are available in this desktop session while cached.",
     pick: "Select a task to see its recorded execution.", settings: "List settings", noRecords: "No tasks recorded in this project.",
     legacy: "Older reports with unverified project ownership", legacyHint: "The project that produced this report could not be verified.",
@@ -16,7 +16,7 @@ const messages = {
     trace: "Workflow trace", target: "Target", position: "Execution location", selection: "Selected task"
   },
   "zh-CN": {
-    launch: "发起任务", records: "任务记录", notifications: "通知", recent: "代理任务 · 最近 20 条",
+    refresh: "刷新任务", launch: "发起任务", records: "任务记录", notifications: "通知", recent: "代理任务 · 最近 20 条",
     session: "本机结果仅在此次桌面会话的缓存保留期间可见。",
     pick: "选择一条任务，查看该次执行的记录。", settings: "列表设置", noRecords: "当前项目还没有任务记录。",
     legacy: "项目归属未确认的旧报告", legacyHint: "无法确认这份报告所属的项目。",

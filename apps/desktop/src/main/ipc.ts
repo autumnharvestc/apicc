@@ -887,7 +887,9 @@ export function createIpcDeps(options: IpcDepsOptions) {
       }
       case IpcChannel.RunsGet: {
         if (!session.root) throw new Error("尚未打开工作区");
-        return readRun(workspaceRunsDir(session.root), a[0] as string);
+        const [file, proof] = a as IpcArgsMap[typeof IpcChannel.RunsGet];
+        if (proof && !session.locateProject(proof.scope)) return null;
+        return readRun(workspaceRunsDir(session.root), file, proof);
       }
       case IpcChannel.StressPlansList: { const scope = a[0] as ProjectLocator; return createStressPlanRepository(stressProject(scope)).list(scope); }
       case IpcChannel.StressRunsList: { const [scope] = a as IpcArgsMap[typeof IpcChannel.StressRunsList]; return listScopedStressRuns(stressProject(scope), scope); }

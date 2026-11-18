@@ -100,7 +100,7 @@ const api: ApiccBridge = {
   runCollection: (input) => invoke(IpcChannel.RunCollection, input),
   previewCollection: (input) => invoke(IpcChannel.PreviewCollection, input),
   runsList: () => invoke(IpcChannel.RunsList),
-  runsGet: (file) => invoke(IpcChannel.RunsGet, file),
+  runsGet: (file, proof) => proof ? invoke(IpcChannel.RunsGet, file, proof) : invoke(IpcChannel.RunsGet, file),
   ...stressApi,
   credentialPut: (input) => ipcRenderer.invoke(IpcChannel.CredentialPut, input).then((result: unknown) => CredentialMutationResultSchema.parse(result)),
   credentialRemove: (input) => ipcRenderer.invoke(IpcChannel.CredentialRemove, input).then((result: unknown) => CredentialMutationResultSchema.parse(result)),

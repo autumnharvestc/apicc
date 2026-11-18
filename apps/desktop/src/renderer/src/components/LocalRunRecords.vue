@@ -20,6 +20,7 @@ const props = defineProps<{ run: ReturnType<typeof useRunStore>; workspace: Retu
 const emit = defineEmits<{ launch: []; collaboration: [source: CollaborationLocalSource]; "locate-evidence": [identity: EvidenceIdentity] }>();
 const { t, te, locale } = useI18n();
 const msg = useRecordMessages();
+const duration = (value: number) => value.toLocaleString(locale.value, { maximumFractionDigits: 2 });
 const source = computed(() => ({ kind: "local" as const, project: props.project }));
 const context = computed(() => JSON.stringify([props.workspace.root, props.project.workspaceId, props.project.groupId, props.project.projectId]));
 const rows = shallowRef<RunSummary[]>([]), selected = shallowRef<RunSummary | null>(null);
@@ -51,7 +52,7 @@ const title = (row: RunSummary) => row.kind === "stress" ? row.target?.kind === 
 const verdict = (row: RunSummary) => label(row.kind === "stress" ? row.verdict : row.logicalVerdict ?? ((row.reportingUnits?.failed ?? row.failed) ? "failed" : "passed"));
 const facts = computed(() => {
   const r = runReport.value, s = stress.value;
-  const env = r?.suite?.environmentId ?? r?.executionIdentity?.environmentId ?? r?.envName ?? (s && 'formatVersion' in s && s.formatVersion === 2 ? s.environmentId : undefined);
+  const env = r?.envName || (r?.suite?.environmentId ?? r?.executionIdentity?.environmentId ?? (s && 'formatVersion' in s && s.formatVersion === 2 ? s.environmentId : undefined));
   const hasBaseEvidence = s && 'formatVersion' in s && s.formatVersion === 2 && s.environmentId === null || !!(r?.executionIdentity || r?.suite);
   return { environment: env || (hasBaseEvidence ? t("run.envNone") : msg("notRecorded")),
     reason: r?.workflow?.entries.find(v => v.error)?.error ?? r?.suite?.entries?.find(v => v.error)?.error ??
@@ -62,9 +63,10 @@ async function open(row: RunSummary) {
   const token = ++detailGeneration;
   selected.value = row; selectedFile.value = row.file; report.value = null; issue.value = ""; rerunTarget.value = null;
   try {
-    const value = await props.run.readArchive(row.file);
+    const proof = row.archiveProject ? { scope: { ...props.project }, digest: row.archiveDigest } : undefined;
+    const value = proof ? await props.run.readArchive(row.file, proof) : await props.run.readArchive(row.file);
     if (token !== detailGeneration) return;
-    if (!value) throw new Error(t("run.fileMissing"));
+    if (!value) throw new Error(proof ? msg("unavailable") : t("run.fileMissing"));
     const owner = value.kind === "stress" ? value.report.projectId : value.projectId ?? value.suite?.projectId;
     if (ownership(row) === "other" || (row.projectId && owner !== row.projectId)) throw new Error(msg("unavailable"));
     report.value = value;
@@ -116,7 +118,7 @@ async function exportStress() { if (selected.value && trusted.value) try { await
 <template>
   <section class="records-layout" data-testid="local-run-records">
     <aside class="record-list">
-      <h3>{{ msg("records") }}</h3><button @click="refresh()" :disabled="loading">{{ t("scheduleCenter.refresh") }}</button>
+      <h3>{{ msg("records") }}</h3><button @click="refresh()" :disabled="loading">{{ msg("refresh") }}</button>
       <template v-if="!loading && !current.length"><p>{{ msg("noRecords") }}</p><button @click="emit('launch')">{{ msg("launch") }}</button></template>
       <button v-for="row in current" :key="row.file" class="record-row" :data-file="row.file" :aria-current="selectedFile === row.file" @click="open(row)">
         <strong :title="title(row)">{{ title(row) }}</strong><small>{{ kind(row) }} · {{ verdict(row) }}</small><small :title="row.startedAt">{{ recordTime(row.startedAt,locale) ?? msg("notRecorded") }}</small>
@@ -147,7 +149,7 @@ async function exportStress() { if (selected.value && trusted.value) try { await
           <RunSummaryView :result="runReport" />
           <details v-if="runReport.trace"><summary>{{ msg("trace") }}</summary><ol><li v-for="(event,i) in runReport.trace.events" :key="i">{{ label(event.type) }} · {{ event.nodeId }} · {{ label(event.state) }} {{ event.message }}</li></ol><p v-if="runReport.trace.truncated">{{ t('wf.control.truncated',{shown:runReport.trace.events.length,total:runReport.trace.totalEvents}) }}</p></details>
           <CaseEvidencePanel v-for="entry in reportingUnits(runReport).diagnostics" :key="JSON.stringify([entry.entryId,entry.suiteRow])" :evidence="reportEntryEvidence(runReport,entry)" :inspect="trusted ? inspect : undefined" :rerun="trusted && !workspace.readOnly ? askRerun : undefined" :disabled="run.running" @locate="emit('locate-evidence',$event)" />
-          <details v-for="(row,index) in runReport.cases" :key="index"><summary>{{ row.apiName }} / {{ row.caseName }} · {{ label(row.skipped ? "skipped" : row.passed ? "passed" : "failed") }} · {{ row.durationMs }} ms</summary><p v-if="row.error || row.skipReason">{{ row.error ?? row.skipReason }}</p><p v-for="(a,i) in row.assertions" :key="i">{{ a.message }}</p>
+          <details v-for="(row,index) in runReport.cases" :key="index"><summary>{{ row.apiName }} / {{ row.caseName }} · {{ label(row.skipped ? "skipped" : row.passed ? "passed" : "failed") }} · {{ duration(row.durationMs) }} ms</summary><p v-if="row.error || row.skipReason">{{ row.error ?? row.skipReason }}</p><p v-for="(a,i) in row.assertions" :key="i">{{ a.message }}</p>
             <CaseEvidencePanel :evidence="row.evidence" :inspect="trusted ? inspect : undefined" :rerun="trusted && !workspace.readOnly ? askRerun : undefined" :disabled="run.running" @locate="emit('locate-evidence',$event)" />
           </details>
           <div v-if="rerunTarget" class="record-actions"><span>{{ msg("confirmRerun") }}</span><button @click="rerun">{{ msg("rerun") }}</button><button @click="rerunTarget=null">{{ msg("cancel") }}</button></div>

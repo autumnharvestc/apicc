@@ -311,7 +311,7 @@ export const IpcArgsSchemas = {
     preview: z.object({ root: z.string().min(1), revision: z.string().min(1), environmentId: z.string().optional() }).strict().optional() }).strict()]),
   [IpcChannel.PreviewCollection]: z.tuple([z.object({ root: z.string().min(1), locator: CollectionLocatorSchema, environmentId: z.string().optional() }).strict()]),
   [IpcChannel.RunsList]: z.tuple([]),
-  [IpcChannel.RunsGet]: z.tuple([z.string()]),
+  [IpcChannel.RunsGet]: z.union([z.tuple([z.string()]), z.tuple([StressReportFileSchema, z.object({ scope: ProjectLocatorSchema, digest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict()])]),
   [IpcChannel.ImportPreview]: z.tuple([ImportPreviewInputSchema]),
   [IpcChannel.ImportPlan]: z.tuple([ImportPlanInputSchema]),
   [IpcChannel.ImportApply]: z.tuple([ImportApplyInputSchema]),

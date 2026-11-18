@@ -103,6 +103,25 @@ const stressReport = {
 };
 
 describe("runs kind 判别", () => {
+  it.each(["collection", "stress"])("binds the listed %s detail to the exact group and unchanged report bytes", kind => {
+    const root = mkdtempSync(join(tmpdir(), "record-proof-")), dir = join(root, ".apicc", "runs");
+    mkdirSync(dir, { recursive: true });
+    const file = "selected.json", scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };
+    const writeScope = kind === "stress" ? writeStressRunScope : writeRunScope;
+    const report = { ...(kind === "stress" ? stressReport : sample), projectId: scope.projectId };
+    writeFileSync(join(dir, file), JSON.stringify(report));
+    writeScope(root, file, scope);
+    const proof = { scope, digest: listRuns(dir)[0]!.archiveDigest! };
+    expect(proof.digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(readRun(dir, file, proof)).toBeTruthy();
+    writeScope(root, file, { ...scope, groupId: IDS.groupTwo });
+    expect(readRun(dir, file, proof)).toBeNull();
+    writeFileSync(join(dir, file), JSON.stringify({ ...report, failed: 0 }));
+    expect(readRun(dir, file, proof)).toBeNull();
+    writeScope(root, file, scope);
+    expect(readRun(dir, file, proof)).toBeNull();
+    expect(readRun(dir, file)).toBeTruthy();
+  });
   it("requires proven root/full-project ownership and rejects changed report bytes", () => {
     const root = mkdtempSync(join(tmpdir(), "f6-scope-")), dir = join(root, ".apicc", "runs"); mkdirSync(dir, { recursive: true });
     const scope = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne };

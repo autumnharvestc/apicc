@@ -1172,6 +1172,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         kind: result.suite ? "suite" : result.workflowId ? "workflow" : result.kind ?? "collection",
         projectId: result.projectId ?? result.suite?.projectId,
         archiveProject: result.archiveProject,
+        archiveDigest: result.archiveProject ? onlineHash(JSON.stringify(result)) : undefined,
         file,
         collectionName: result.collectionName,
         startedAt: result.startedAt,
@@ -1192,16 +1193,23 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         failed: report.failed,
         projectId: report.projectId,
         archiveProject: stressRunOwners.get(file)?.scope,
+        archiveDigest: stressRunOwners.has(file) ? onlineHash(JSON.stringify(report)) : undefined,
         rps: isStressReportV2(report) ? report.rps.availability === "available" ? report.rps.value : null : report.rps,
         ...(isStressReportV2(report) ? { formatVersion: 2 as const, verdict: report.verdict.status, target: report.target, completeness: report.completeness, rpsMetric: report.rps } : {}),
       }));
       return [...collectionRows, ...stressRows].sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
     },
 
-    async runsGet(file: string): Promise<RunResult | StressReportDTO | null> {
+    async runsGet(file, proof): Promise<RunResult | StressReportDTO | null> {
       const collection = runs.find((r) => r.file === file);
-      if (collection) return collection.result;
       const stress = stressRuns.find((r) => r.file === file);
+      if (proof) {
+        const owner = collection?.result.archiveProject ?? stressRunOwners.get(file)?.scope;
+        if (!owner || !session.locateProject(proof.scope) || owner.workspaceId !== proof.scope.workspaceId || owner.groupId !== proof.scope.groupId || owner.projectId !== proof.scope.projectId) return null;
+        const value = collection?.result ?? memoryStressReport(proof.scope, file);
+        if (proof.digest && onlineHash(JSON.stringify(value)) !== proof.digest) return null;
+      }
+      if (collection) return structuredClone(collection.result);
       return stress ? { kind: "stress", report: structuredClone(stress.report) } : null;
     },
 

@@ -231,12 +231,13 @@ export interface RunCollectionInput {
  * 字段变更需双侧同步）；结构漂移由 ipc.ts runs:list 分支的 satisfies 校验兜底。
  * kind 必填（M2-D3 任务 1）：运行历史按 kind 区分集合/压测两类报告（规格 §2 D11）。
  */
-export interface RunSummaryDTO { archiveProject?: ProjectLocator; kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"]; reportingMode?: RunResult["reportingMode"]; logicalVerdict?: "passed" | "failed" | "aborted" }
+export interface ArchiveReadProof { scope: ProjectLocator; digest?: string }
+export interface RunSummaryDTO { archiveProject?: ProjectLocator; archiveDigest?: string; kind: "collection" | "suite" | "workflow"; projectId?: string; file: string; collectionName: string; startedAt: string; total: number; passed: number; failed: number; skipped?: number; reportingUnits?: RunResult["reportingUnits"]; reportingMode?: RunResult["reportingMode"]; logicalVerdict?: "passed" | "failed" | "aborted" }
 /**
  * runs:list 行摘要（压测，M2-D3 任务 1）：startedAt 为 report.startedAt（epoch ms）格式化的
  * ISO 字符串，与集合行的 startedAt 同口径排序。
  */
-export interface StressRunSummaryDTO { archiveProject?: ProjectLocator; kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number | null;
+export interface StressRunSummaryDTO { archiveProject?: ProjectLocator; archiveDigest?: string; kind: "stress"; projectId?: string; file: string; startedAt: string; totalRequests: number; ok: number; failed: number; rps: number | null;
   formatVersion?: 2; verdict?: import("@apicc/core").StressReportV2["verdict"]["status"]; target?: import("@apicc/core").StressTarget; completeness?: import("@apicc/core").StressCompleteness; rpsMetric?: import("@apicc/core").StressNumericMetric }
 export type RunSummary = RunSummaryDTO | StressRunSummaryDTO;
 
@@ -452,7 +453,7 @@ export interface ApiccApi extends TestingApi {
   runCollection(input: RunCollectionInput): Promise<RunResult & { archiveFile?: string }>;
   previewCollection(input: import("./collection-launch.js").CollectionLaunchInput): Promise<import("./collection-launch.js").CollectionLaunchPreview>;
   runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>>;
-  runsGet(file: string): Promise<RunResult | StressReportDTO | null>;
+  runsGet(file: string, proof?: ArchiveReadProof): Promise<RunResult | StressReportDTO | null>;
   /** stress:run（M2-D3 任务 1）：main 进程执行压测，返回最终报告 + 落盘文件名；单活动约束（「已有压测进行中」）。 */
   stressRun: ReturnType<typeof createStressRunInvoker>;
   stressPlansList(scope: ProjectLocator): Promise<import("@apicc/core").SavedStressPlan[]>;
