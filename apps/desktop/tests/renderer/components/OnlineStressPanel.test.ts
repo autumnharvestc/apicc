@@ -130,7 +130,8 @@ describe('online stress plan entry', () => {
     const view=mount(OnlineExecutionPanel,{props:{execution:f.store},global:{plugins:[f.i18n]}});
     expect.soft(view.text()).toContain('逻辑结论: 通过');expect.soft(view.text()).toContain('报告不可用，无法比较');expect.soft(view.text()).toContain(reasonText);
     expect.soft(view.text()).not.toContain('不能视为通过');
-    expect(view.find('textarea').exists()).toBe(false);f.store.setVisible(false);
+    expect(view.find('textarea').exists()).toBe(false);
+    f.store.setVisible(false);
   });
   it('T7 exports the displayed safe report with typed execution facts and formats numeric Core times',async()=>{
     const f=panelFixture({onlineExecution:async()=>[]});f.i18n.global.locale.value='en';
@@ -160,14 +161,25 @@ describe('online stress plan entry', () => {
     f.store.localResult=OnlineLocalResultSchema.parse(JSON.parse(JSON.stringify({location:{kind:'local'},runId:core.runId,snapshotId:'66',manifestHash:'a'.repeat(64),runtimeCompatibilityId:'compatible',scriptTimeoutMs:3000,localStress:{workerCount:1,processBudget:1,runtime},output:{kind:'stress',result:core}})));
     const view=mount(OnlineExecutionPanel,{props:{execution:f.store},global:{plugins:[f.i18n]}});
     expect.soft(view.text()).toContain('执行进程预算: 1');
+    const localBaseline = f.store.localResult;
     const pin=view.find('[data-testid="online-stress-baseline-pin"]');expect(pin.exists()).toBe(true);await pin.trigger('click');
     const reservation={jobs:1,processes:1,vus:1,requestConcurrency:1,maxRps:1000,metricMemoryBytes:67108864};
     const job=OnlineJobSchema.parse({jobId:'99',executionId:'100',agentId:'5',state:'ended',cancelState:'none',executionReleased:true,reportState:'archived',reportKind:'stress',stressMetadata:{location:{kind:'agent',agentId:'5'},executor:{id:'5',name:'Actual selected agent'},workerCount:1,processes:1,resources:{requested:reservation,effective:reservation},runtime,status:{preparation:'ready',execution:'finished',upload:'complete'},contentionHints:[]},task:{protocolVersion:1,jobId:'99',executionId:'100',scope:f.store.context!.scope,submittedByUserId:'7',contractProjectId:f.store.project!.id,snapshotId:'66',manifestHash:'a'.repeat(64),target:{kind:'stress',plan:f.store.project!.stressPlans![0]!.plan},policyVersion:'0',requiredCoreBuildId:'a'.repeat(64),scriptPlanDigest:'c'.repeat(64),executionProfile:'no-script',runtimeCompatibilityId:'compatible',dispatchKind:'dedicated-task',requiredCapabilities:['protocol:http','task:stress','stress:local-workers-v1']}});
     f.store.jobs=[job];f.store.resultSelection={kind:'agent',job};f.store.report={executionId:'100',verdict:'passed',executionFact:'started',output:{kind:'stress',result:core}};await flushPromises();
     expect.soft(view.text()).toContain('执行位置不同');expect.soft(view.text()).toContain('不可直接比较');expect.soft(view.text()).toContain('请求吞吐率');
+    await view.get('[data-testid="online-stress-baseline-pin"]').trigger('click');
+    expect(view.find('[data-testid="online-stress-comparison"]').exists()).toBe(true);
+
     f.store.report={executionId:'100',verdict:'passed',executionFact:'started',reasonCode:'result-capacity-exceeded'};await flushPromises();
     expect.soft(view.text()).toContain('报告不可用，无法比较');expect.soft(view.text()).toContain('结果超出归档预算，完整输出不可用。');
-    expect(view.find('textarea').exists()).toBe(false);f.store.setVisible(false);
+    expect(view.find('textarea').exists()).toBe(false);
+    await f.store.inspect(OnlineJobSchema.parse({jobId:'99',executionId:'100',agentId:'5',scope:f.store.context!.scope,state:'running',cancelState:'none',executionReleased:false,canCancel:false,view:'active-status'}));
+    await flushPromises();
+    expect(f.store.historyRestriction).toEqual({job:{agentId:'5',jobId:'99',executionId:'100'}});
+    f.store.resultSelection={kind:'local',runId:core.runId};
+    f.store.localResult=localBaseline;
+    await flushPromises();expect(view.find('[data-testid="online-stress-comparison"]').exists()).toBe(false);
+    f.store.setVisible(false);
     f.store.activate({...f.store.context!,ownerId:'8'});await flushPromises();expect(view.find('[data-testid="online-stress-comparison"]').exists()).toBe(false);
   });
   // A visible edit must revoke A; a disabled form may not silently submit cached A.
@@ -194,8 +206,39 @@ describe('online stress plan entry', () => {
       expect(calls.filter(call => call.operation === 'run')).toMatchObject([{ runConfig: { stress: { workerCount: 1, confirmedTargetOrigins: ['http://127.0.0.1:9123'] } } }]);
     } finally { f.store.setVisible(false); }
   });
-  // A pending local B may coexist with inspected agent A; Stop must follow A, not active B.
-  it('stops only the inspected agent stress job while a different local stress run remains pending', async () => {
+  it('enables Stop only for the saved plan that submitted the exact agent job, even when plans have identical definitions', async () => {
+    const calls: OnlineExecutionInput[] = [];
+    const f = panelFixture({ onlineExecution: async input => {
+      calls.push(input);
+      if (input.operation === 'run' || input.operation === 'cancel') return { view:'active-status', scope:input.context.scope,
+        jobId:'701',executionId:'702',agentId:'5',state:'running',executionReleased:false,canCancel:true,cancelState:input.operation==='cancel'?'requested':'none' };
+      return [];
+    } });
+    const source = f.store.project!.stressPlans![0]!;
+    f.store.project = {...f.store.project!,stressPlans:[source,{...source,id:'other',name:'Second schedule'}]};
+    f.store.saved = JSON.stringify(f.store.project);
+    const configuration={configVersion:'1',appliedConfigVersion:'1',pendingFields:[],restartRequiredFields:[],status:'applied'};
+    const agent=Object.fromEntries(['maxConcurrentStressJobs','maxStressProcesses','maxStressVus','maxStressRequestConcurrency','maxStressRps','maxStressMetricMemoryBytes'].map(key=>[key,defaultAgentConfig[key as keyof typeof defaultAgentConfig]]));
+    f.store.agents=ProjectExecutionAgentsSchema.parse({defaultAgentId:'5',canManageScripts:false,policy:defaultPolicyConfig,policyVersion:'1',agents:[{
+      id:'5',name:'Agent 5',acceptingJobs:true,availability:'available',lastSeenAt:null,configuration,policy:defaultPolicyConfig,policyVersion:'1',scriptsAllowed:false,
+      runtime:{protocolVersion:1,sessionId:'test',coreBuildId:'a'.repeat(64),scriptApiId:'b'.repeat(64),nodeVersion:'22.19.0',v8Version:'12.4',runtimeCompatibilityId:'recorded',capabilities:['task:stress','stress:local-workers-v1'],configuration},
+      stressConfiguration:{agent,sources:{'agent.maxStressRps':'default','agent.maxStressRequestConcurrency':'default','policy.maxStressRps':'default','policy.maxStressRequestConcurrency':'default'}},
+      scriptGrant:{version:'0',scope:'script-version',scripts:[]} }]});
+    try {
+      f.store.selectLocation({kind:'agent',agentId:'5'});
+      const selector=f.view.get('[data-testid="online-stress-plan"]'), stop=f.view.get('[data-testid="online-stress-stop"]');
+      await selector.setValue('saved'); await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
+      await f.view.get('[data-testid="online-stress-confirm"]').trigger('click'); await f.view.get('[data-testid="online-stress-run"]').trigger('click'); await flushPromises();
+      expect(f.store.submissions[0]?.agentRef).toEqual({agentId:'5',jobId:'701',executionId:'702'});
+      await selector.setValue('other'); expect(stop.attributes('disabled')).toBeDefined();
+      await stop.trigger('click'); expect(calls.filter(call=>call.operation==='cancel')).toEqual([]);
+      await selector.setValue('saved'); expect(stop.attributes('disabled')).toBeUndefined();
+      await stop.trigger('click'); await flushPromises();
+      expect(calls.filter(call=>call.operation==='cancel')).toMatchObject([{runId:'701',location:{kind:'agent',agentId:'5'}}]);
+    } finally { f.store.setVisible(false); }
+  });
+  // The editor keeps ownership of its submitted run if history selects another job.
+  it('stops only its own submitted local plan when history inspects a different agent job', async () => {
     const calls: OnlineExecutionInput[] = []; let finish!: (value: unknown) => void;
     const pending = new Promise(resolve => { finish = resolve; });
     let agentJob: ReturnType<typeof OnlineJobSchema.parse>;
@@ -214,7 +257,7 @@ describe('online stress plan entry', () => {
       expect(f.store.resultSelection).toMatchObject({ kind: 'agent', job: { jobId: '99', executionId: '100' } });
       expect(f.view.get('[data-testid="online-stress-stop"]').attributes('disabled')).toBeUndefined();
       await f.view.get('[data-testid="online-stress-stop"]').trigger('click'); await flushPromises();
-      expect(calls.filter(call => call.operation === 'cancel')).toEqual([{ operation: 'cancel', context: run.context, location: { kind: 'agent', agentId: '5' }, runId: '99' }]);
+      expect(calls.filter(call => call.operation === 'cancel')).toEqual([{ operation: 'cancel', context: run.context, location: { kind: 'local' }, runId: run.runId }]);
       expect(f.store.activeLocalRunId).toBe(run.runId);
     } finally {
       finish(OnlineLocalResultSchema.parse({ location: { kind: 'local' }, runId: run.runId, snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded-local-runtime', scriptTimeoutMs: 3000, output: { kind: 'stress-failure', error: 'worker-failed', started: false, requests: { started: 0, completed: 0 } } }));

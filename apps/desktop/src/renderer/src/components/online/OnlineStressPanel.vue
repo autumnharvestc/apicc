@@ -8,11 +8,11 @@ import type { StressPlan, StressTarget, ContractCollection, ContractFolder } fro
 import type { OnlineExecutionStore } from '../../stores/onlineExecution.js';
 import StressLoadEditor from '../StressLoadEditor.vue';
 import {resolveStressExecutionConfig} from '@apicc/execution/contract';
-import { isFullOnlineJob } from '../../../../shared/online/execution.js';
 import { onlineSessionErrorKey } from '../../i18n/index.js';
 const props = defineProps<{ execution: OnlineExecutionStore; readOnly?: boolean; shortcut?: StressTarget }>();
 const emit = defineEmits<{ record: [id: string] }>();
-const submitted = ref<{ planId: string; runId: string }>();
+const submitted = ref(new Map<string, string>());
+const submittedId = computed(() => submitted.value.get(selected.value));
 const { t } = useI18n();
 const selected = ref('');
 const plans = computed(() => props.execution.project?.stressPlans ?? []);
@@ -30,7 +30,7 @@ function pick(id: string) {
   plan.value = saved.value ? clone(saved.value.plan) : null; name.value = saved.value?.name ?? ''; origins.value = ''; error.value = '';
   props.execution.invalidateStressConfirmation();
 }
-watch(() => props.execution.context, () => { submitted.value = undefined; selected.value = ''; plan.value = null; name.value = ''; origins.value = ''; error.value = ''; });
+watch(() => props.execution.context, () => { submitted.value.clear(); selected.value = ''; plan.value = null; name.value = ''; origins.value = ''; error.value = ''; });
 const targetKey = (target: StressTarget) => target.kind === 'workflow' ? `workflow:${target.workflowId}` : `case:${target.collectionId}:${target.apiId}:${target.caseId}`;
 const targets = computed(() => {
   const values: Array<{ label: string; target: StressTarget }> = (props.execution.project?.workflows ?? []).map(workflow => ({ label: `${t('stress.workbench.workflow')} · ${workflow.name}`, target: { kind: 'workflow', workflowId: workflow.id } }));
@@ -56,7 +56,8 @@ watch(() => props.shortcut, shortcut => {
 function target(value: string) { const next = targets.value.find(item => targetKey(item.target) === value); if (plan.value && next && !props.readOnly && !props.execution.running) plan.value.target = clone(next.target); }
 const dirty = computed(() => !!plan.value && (!saved.value || name.value !== saved.value.name || JSON.stringify(plan.value) !== JSON.stringify(saved.value.plan)));
 function confirmLeave() { return !dirty.value || window.confirm(t("testing.discardConfirm")); }
-defineExpose({ confirmLeave });
+const dirtyStressPlanId = computed(() => dirty.value ? selected.value : null);
+defineExpose({ confirmLeave, dirtyStressPlanId });
 const agent = computed(() => props.execution.location.kind === 'agent' ? props.execution.agents?.agents.find(row => props.execution.location.kind === 'agent' && row.id === props.execution.location.agentId) : undefined);
 const admissionRows=computed(()=>{const configuration=agent.value?.stressConfiguration;if(!configuration||!agent.value)return [];return [
   {label:t('stressPresentation.requestConcurrency'),scope:t('stressPresentation.agent'),value:configuration.agent.maxStressRequestConcurrency,unit:t('stressPresentation.requestUnit'),source:configuration.sources['agent.maxStressRequestConcurrency']},
@@ -85,12 +86,14 @@ const errorText = computed(() => {
   if (error.value === 'version_conflict') return t('onlineStress.conflict');
   return ['stress-local-budget-exceeded','stress-worker-policy-exceeded','stress-capacity-exceeded'].includes(error.value) ? t(`stressFinal.codes.${error.value}`) : error.value;
 });
-const selectedJob = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection && isFullOnlineJob(selection.job) && selection.job.task.target.kind === 'stress' ? props.execution.jobs.find(job => job.jobId === selection.job.jobId && job.executionId === selection.job.executionId) : undefined; });
 const stopTarget = computed(() => {
-  const selection = props.execution.resultSelection;
-  if (selection?.kind === 'local' && selection.runId === props.execution.activeStressLocalRunId) return { kind: 'local' as const };
-  const job = selectedJob.value;
-  return job?.canCancel && job.state !== 'ended' && job.cancelState !== 'requested' ? { kind: 'agent' as const, job } : null;
+  const run = props.execution.submissions.find(item => item.runId === submittedId.value);
+  if (!run || run.target.kind !== 'stress') return null;
+  if (run.location.kind === 'local') return run.runId === props.execution.activeStressLocalRunId ? { kind: 'local' as const } : null;
+  const ref = run.agentRef;
+  if (!ref || !run.job) return null;
+  const job = props.execution.jobs.find(item => item.agentId === ref.agentId && item.jobId === ref.jobId && item.executionId === ref.executionId) ?? run.job;
+  return job.canCancel && job.state !== 'ended' && job.cancelState !== 'requested' ? { kind: 'agent' as const, job } : null;
 });
 const canStop = computed(() => !!stopTarget.value);
 async function action(operation: () => Promise<unknown> | void) { const context = JSON.stringify(props.execution.context); try { await operation(); } catch (cause) { if (context === JSON.stringify(props.execution.context)) error.value = cause instanceof Error ? cause.message : String(cause); } }
@@ -114,7 +117,7 @@ async function run() {
   const previous = props.execution.resultSelection;
   const pending = runOnlineStress(props.execution, plan.value);
   const receipt = props.execution.resultSelection;
-  if (receipt && receipt !== previous && "runId" in receipt) submitted.value = { planId: selected.value, runId: receipt.runId };
+  if (receipt && receipt !== previous && "runId" in receipt) submitted.value.set(selected.value, receipt.runId);
   await pending;
 }
 </script>
@@ -148,7 +151,7 @@ async function run() {
     <button :disabled="!plan || dirty || !valid || execution.running" data-testid="online-stress-confirm" @click="action(confirm)">{{ t('onlineStress.confirm') }}</button>
     <p v-if="plan && !execution.isStressConfirmed(plan)">{{ t('onlineStress.confirmationRequired') }}</p>
     <button :disabled="!canRun" data-testid="online-stress-run" @click="action(run)">{{ t('stress.start') }}</button>
-    <button v-if="submitted?.planId === selected && submitted" @click="emit('record', submitted.runId)">{{ t('projectWorkbench.viewRun') }}</button>
+    <button v-if="submittedId" @click="emit('record', submittedId)">{{ t('projectWorkbench.viewRun') }}</button>
     <button :disabled="!canStop" data-testid="online-stress-stop" @click="action(stop)">{{ t('stress.stop') }}</button>
   </section>
 </template>

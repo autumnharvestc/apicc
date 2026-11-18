@@ -340,7 +340,7 @@ async function publish() { const item = props.localProjects.find(item => item.pr
         </a-modal>
       </template>
     </template>
-        <OnlineRunRecordsHost v-if="runVisited" v-show="moduleView === 'run' && !!execution.project" :active="moduleView === 'run'" v-model:pane="runPane" :online="online" :adapter="adapter" :ai="ai" :read-only="readOnly" :report-error="reportError" :open-project="openProject" @collaboration="emit('collaboration-result', $event)" />
+        <OnlineRunRecordsHost v-if="runVisited" v-show="moduleView === 'run' && !!execution.project" :active="moduleView === 'run'" v-model:pane="runPane" :dirty-stress-plan-id="stressPanel?.dirtyStressPlanId" :online="online" :adapter="adapter" :ai="ai" :read-only="readOnly" :report-error="reportError" :open-project="openProject" @collaboration="emit('collaboration-result', $event)" />
   </section>
 </template>
 <style scoped src="../../styles/online-controls.css"></style>
