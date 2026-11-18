@@ -468,3 +468,26 @@ it("reselects exact local receipts without replaying same-name executions or con
   store.activate(context); expect(store.localOnlyRefIds).toEqual(["desktop-secret-ref"]);
   expect(seen).toHaveLength(2); store.setVisible(false);
 });
+
+it("removes cached historical content when access is revoked and reopens only reauthorized status", async () => {
+  const submitted = job('99','100');
+  const minimal = {jobId:'99',executionId:'100',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:false,view:'active-status',scope:context.scope};
+  let reports=0;
+  const store = createOnlineExecutionStore({onlineExecution:async input => {
+    if (input.operation==='run') return submitted;
+    if (input.operation==='report') { reports++; return {executionId:'100',verdict:'failed'}; }
+    if (input.operation==='list') throw Error('权限不足 / Permission denied（forbidden）');
+    if (input.operation==='status') return minimal;
+    throw Error('Unexpected operation');
+  }});
+  try {
+    activateRun(store); store.selectLocation({kind:'agent',agentId:'5'}); await store.run({kind:'workflow',workflowId});
+    const receipt=store.submissions[0]!;
+    await store.inspect(submitted); expect(store.report?.verdict).toBe('failed');
+    await store.refresh();
+    expect(store.report).toBeNull();expect(store.jobs).toEqual([]);expect(receipt.job).toBeUndefined();
+    await store.selectSubmission(receipt.runId);
+    expect(store.resultSelection).toMatchObject({kind:'agent',job:{view:'active-status',executionId:'100'}});
+    expect(store.report).toBeNull();expect(reports).toBe(1);
+  } finally { store.setVisible(false); }
+});

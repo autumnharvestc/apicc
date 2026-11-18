@@ -16,7 +16,8 @@ import type { OnlineDirectoryResult, OnlineDirectoryWrite } from "../../../share
 import { defaultExecutionCacheStorage, readExecutionCachePreferences, OnlineExecutionCachePreferencesSchema, ONLINE_EXECUTION_CACHE_SETTINGS_KEY,
   type ExecutionCacheStorage, type OnlineExecutionCachePreferences } from './onlineExecutionCachePreferences.js';
 type ResultSelection = { kind: 'local'; runId: string; environmentId?: string } | { kind: 'agent'; runId: string } | { kind: 'agent'; job: OnlineJob };
-export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; error: string };
+type JobRef = Pick<OnlineJob,'agentId'|'jobId'|'executionId'>;
+export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; job?: OnlineJob; agentRef?: JobRef; error: string };
 type CachedContext = { context: OnlineExecutionContext; lastUsed: number; payloadBytes?: number; debugKeys: Set<string>;
   pending: Set<string>; uncertain: Set<string>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
 export interface OnlineExecutionCacheOptions { storage?: ExecutionCacheStorage | null; now?: () => number; preferences?: OnlineExecutionCachePreferences }
@@ -369,9 +370,9 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
         const jobs = await api.onlineExecution({ operation: "list", context, limit: statusPageSize });
         if (!current(token, context)) return;
         store.jobs = reactive(OnlineJobSchema.array().parse(jobs) as object) as OnlineJob[]; store.connection = "connected";
-        for (const job of store.jobs) updateJob(job);
+        for (const job of store.jobs) updateJob(job, false);
         prune();
-      } catch (error) { if (current(token, context)) { store.error = error instanceof Error ? error.message : String(error); store.connection = "disconnected"; } }
+      } catch (error) { if (current(token, context)) { clearDeniedHistory(error); store.error = error instanceof Error ? error.message : String(error); store.connection = "disconnected"; } }
       finally { if (current(token, context)) schedule(); }
     },
     async refreshActive() {
@@ -391,6 +392,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
             updateJob(OnlineJobSchema.parse(raw));
           } catch (error) {
             if (!current(token, context)) return;
+            clearDeniedHistory(error, existing);
             statusError ||= error instanceof Error ? error.message : String(error);
           } finally {
             if (current(token, context)) cached.jobCursor = (cursor + offset + 1) % pendingJobs.length;
@@ -486,7 +488,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       try {
         const raw = await api.onlineExecution({ operation: "run", context, runId, location, target: plain(target), expectedVersion: store.view.assets.version, environmentId: store.environmentId, ...(target.kind === 'debug' && debugSessions.has(sessionKey) ? { debugSessionId: debugSessions.get(sessionKey) } : {}), runConfig: stress ? { stress } : {}, materials: { projectId: context.scope.projectId, ...plain(store.materials) }, localOnlyRefIds: [...store.localOnlyRefIds] });
         if (location.kind === 'local') { const result = OnlineLocalResultSchema.parse(raw); if (result.runId !== runId) throw new Error('fixed-input-mismatch'); run.result = result; if (result.debugSessionId) { debugSessions.set(sessionKey, result.debugSessionId); cached.debugKeys.add(sessionKey); } }
-        else { run.job = OnlineJobSchema.parse(raw); observeJob(context, run.job); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) { debugSessions.set(sessionKey, run.job.task.debugSessionId); cached.debugKeys.add(sessionKey); } }
+        else { run.job = OnlineJobSchema.parse(raw); run.agentRef = { jobId:run.job.jobId, executionId:run.job.executionId, agentId:run.job.agentId }; observeJob(context, run.job); if (isFullOnlineJob(run.job) && run.job.task.debugSessionId) { debugSessions.set(sessionKey, run.job.task.debugSessionId); cached.debugKeys.add(sessionKey); } }
       } catch (error) { const failure = error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('output')) ? new Error('invalid-core-output') : error; run.error = failure instanceof Error ? failure.message : String(failure);
         if (/version_conflict/.test(run.error) && key(context) === key(store.context)) void store.checkForUpdates();
         throw failure;
@@ -497,12 +499,14 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
     async selectSubmission(runId: string) {
       const run = store.submissions.find(item => item.runId === runId);
       if (!run || !store.visible || store.projectAccessLost) throw new Error('run-record-unavailable');
-      if (run.job) {
-        const expected = run.job, context = plain(run.context), token = generation;
+      if (run.agentRef) {
+        const expected = run.agentRef, context = plain(run.context), token = generation;
         store.report = null; store.localResult = null; store.selectedJobId = '';
         store.resultSelection = { kind: 'agent', runId };
         const selection = store.resultSelection;
-        const raw = await api.onlineExecution({ operation: 'status', context, location: run.location, runId: expected.jobId });
+        let raw;
+        try { raw = await api.onlineExecution({ operation: 'status', context, location: run.location, runId: expected.jobId }); }
+        catch (error) { if (!current(token, context) || selection !== store.resultSelection) return; clearDeniedHistory(error,expected); throw error; }
         if (!current(token, context) || selection !== store.resultSelection) return;
         const job = OnlineJobSchema.parse(raw);
         if (job.jobId !== expected.jobId || job.executionId !== expected.executionId || job.agentId !== expected.agentId) throw new Error('fixed-input-mismatch');
@@ -519,7 +523,9 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const token = generation; store.selectedJobId = job.jobId; store.report = null; store.localResult = null;
       store.resultSelection = { kind: 'agent', job: plain(job) };
       if (!isFullOnlineJob(job) || job.reportState !== "archived") return;
-      const raw = await api.onlineExecution({ operation: "report", context, runId: job.jobId, location: { kind: "agent", agentId: job.agentId } });
+      let raw;
+      try { raw = await api.onlineExecution({ operation: "report", context, runId: job.jobId, location: { kind: "agent", agentId: job.agentId } }); }
+      catch (error) { if (!intentCurrent() || !current(token, context) || store.selectedJobId !== job.jobId) return; clearDeniedHistory(error, job); throw error; }
       if (!intentCurrent() || !current(token, context) || store.selectedJobId !== job.jobId) return;
       const parsed = OnlineReportSchema.safeParse(raw);
       if (!parsed.success) throw new Error(parsed.error.issues.some(issue => issue.path.includes('output')) ? 'invalid-core-output' : 'invalid-online-report');
@@ -537,12 +543,25 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       updateJob(OnlineJobSchema.parse(raw)); schedule();
     },
   });
-  function updateJob(job: OnlineJob) {
+  function clearDeniedHistory(error: unknown, ref?: JobRef) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/\b(?:forbidden|unauthorized|job_not_found)\b|HTTP (?:401|403|404)\b/.test(message)) return;
+    const affected = (job: JobRef) => !ref || ref.jobId === job.jobId && ref.executionId === job.executionId && ref.agentId === job.agentId;
+    store.jobs = store.jobs.filter(job => !affected(job));
+    for (const receipt of store.submissions) if (receipt.job && affected(receipt.job)) receipt.job = undefined;
+    const selected = store.resultSelection;
+    const selectedRef = selected?.kind !== 'agent' ? undefined : 'job' in selected ? selected.job : store.submissions.find(receipt => receipt.runId === selected.runId)?.agentRef;
+    if (selectedRef && affected(selectedRef)) {
+      store.resultSelection = null; store.selectedJobId = ''; store.report = null;
+    }
+  }
+  function updateJob(job: OnlineJob, replaceList = true) {
     if (store.context) observeJob(store.context, job);
     const index = store.jobs.findIndex(row => row.jobId === job.jobId);
-    if (index >= 0) store.jobs = store.jobs.map((existing, i) => i === index ? job : existing);
+    if (replaceList && index >= 0) store.jobs = store.jobs.map((existing, i) => i === index ? job : existing);
+    else if (replaceList && index < 0 && !isFullOnlineJob(job) && job.state !== 'ended') store.jobs = [job,...store.jobs].slice(0,statusPageSize);
     const same = (previous: OnlineJob) => previous.jobId === job.jobId && previous.executionId === job.executionId;
-    const run = store.submissions.find(value => value.job && same(value.job));
+    const run = store.submissions.find(value => value.agentRef && value.agentRef.jobId === job.jobId && value.agentRef.executionId === job.executionId && value.agentRef.agentId === job.agentId);
     if (run) run.job = job;
     const selected = store.resultSelection;
     if (selected?.kind === 'agent' && 'job' in selected && same(selected.job)) {

@@ -90,7 +90,7 @@ const requestFact = computed(() => {
   if (report.value?.executionFact) return label(report.value.executionFact);
   const value = output.value;
   if (!value) return msg("notRecorded");
-  if (value.kind === "stress-failure") return label(value.requests.started ? "started" : "not-started");
+  if (value.kind === "stress-failure") return label(value.started ? "started" : "not-started");
   if (value.kind === "debug") return value.result.exchangeTotal > 0 ? label("started") : msg("notRecorded");
   if (value.kind === "stress") return value.result.totalRequests > 0 ? label("started") : msg("notRecorded");
   return value.result.requestFacts ? label(value.result.requestFacts.requestStarted > 0 ? "started" : "not-started") : msg("notRecorded");
@@ -166,7 +166,7 @@ const recordedEnvironment = computed(() => {
         <div v-if="selected"><dt>{{ t("onlineExecution.release") }}</dt><dd>{{ label(selected.executionReleased ? 'released' : 'retained') }}</dd></div>
         <div v-if="fullSelected || local"><dt>{{ t("onlineExecution.archive") }}</dt><dd>{{ local ? msg("sessionReport") : label(fullSelected?.reportState) }}</dd></div>
       </dl>
-      <p v-if="failureText" role="alert">{{ t("onlineExecution.failureReason") }} · {{ failureText }}</p>
+      <p v-if="failureText" role="alert">{{ failureText }}</p>
       <p v-if="selected && selected.cancelState !== 'none'">{{ label('cancel-' + selected.cancelState) }}</p>
       <p v-if="fullSelected?.capacityWaitReason">{{ capacityReason(fullSelected.capacityWaitReason) }}</p>
       <p v-if="fullSelected?.capacityWait">{{ t('stressCapacity.used') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.used) }} · {{ t('stressCapacity.requested') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.requested) }} · {{ t('stressCapacity.limit') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.limit) }} <span v-if="fullSelected.capacityWait.draining">{{ t('stressCapacity.draining') }}</span></p>
@@ -187,7 +187,8 @@ const recordedEnvironment = computed(() => {
       </dl></details>
     </section>
     <section v-if="report || local" data-testid="online-execution-report">
-      <h4>{{ msg("report") }} · {{ logicalVerdict }}</h4>
+      <h4>{{ msg("report") }}</h4>
+      <p>{{ t('onlineExecution.verdict') }}: {{ logicalVerdict }} · {{ t('onlineExecution.requestFact') }}: {{ requestFact }}</p>
       <p v-if="report?.reasonCode" role="alert">{{ label(report.reasonCode) }}</p>
       <template v-if="output?.kind === 'failure'"><p role="alert">{{ t('onlineExecution.failureReason') }}: {{ output.error }}</p><ul v-if="output.result.warnings?.length" :aria-label="t('onlineExecution.evidenceWarnings')"><li v-for="(warning, index) in output.result.warnings" :key="index">{{ warning }}</li></ul></template>
       <p v-if="!output">{{ t(stressSelected?'stressPresentation.reportIntegrityUnknown':'onlineExecution.incompleteReport') }}</p>

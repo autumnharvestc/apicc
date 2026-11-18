@@ -52,6 +52,7 @@ const rows = computed(() => {
       time: full ? receipt?.submittedAt : undefined, state: code(job.state), verdict: full && typeof full.summary?.verdict === "string" ? code(full.summary.verdict) : undefined });
   }
   for (const receipt of e.value.submissions) {
+    if (receipt.agentRef && !receipt.job) continue;
     if (receipt.job) { const job = e.value.jobs.find(j => jobKey(j) === jobKey(receipt.job!)); if (job) addJob(job, receipt); continue; }
     const local = receipt.result?.output;
     result.push({key:receipt.runId,run:receipt,name:receipt.targetName ?? receipt.runId,kind:receipt.target.kind,time:receipt.submittedAt,
