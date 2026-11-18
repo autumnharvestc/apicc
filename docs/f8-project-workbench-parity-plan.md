@@ -1,6 +1,6 @@
 # 本地与在线项目工作台统一实施计划
 
-2026-11-18 制定，2026-11-19 获准实施三个批次。代码核对基线为 `cb4fe63d`。以下编号为验收要求，执行结果另行记录。
+2026-11-18 制定，2026-11-19 获准实施三个批次。代码核对基线为 `cb4fe63d`。以下编号为验收要求，执行结果见[逐项验收记录](f8-project-workbench-parity-verification.md)。
 
 评审时先看[本地「运行 → 发起任务」样板](design/f8-frontend/project-workbench-parity/local-run-launch-proposal.png)，再对照[接口与底栏样板](design/f8-frontend/project-workbench-parity/api-status-bar.png)、[任务记录样板](design/f8-frontend/project-workbench-parity/run-records.png)和[已归档的交互设计](f8-project-workbench-parity-design.md)。本地样板中的「3 个用例」是所选环境下的用例数，同一接口可有多条；它不承诺会发出 3 次请求。
 
