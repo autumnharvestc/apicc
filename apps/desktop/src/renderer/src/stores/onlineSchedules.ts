@@ -8,6 +8,8 @@ import { NotificationPageSchema, NotificationHistoryPageSchema, NotificationRead
 import { ScheduleMaterialOptionsSchema } from '@apicc/execution/contract';
 import type { OnlineSchedulePreparation } from '../../../shared/online/scheduling.js';
 import { OnlineOriginalJobIdentitySchema } from '../../../shared/online/scheduling.js';
+export type OnlineRunPane = 'launch' | 'records' | 'schedules' | 'notifications';
+export type NotificationPosition = { eventId: string; scrollTop: number; pages: number };
 
 export function createOnlineSchedulesStore(api: OnlineSchedulingPort) {
   let generation = 0;
@@ -23,6 +25,12 @@ export function createOnlineSchedulesStore(api: OnlineSchedulingPort) {
     previewResult: null as import('zod').z.infer<typeof SchedulePreviewSchema> | null,
     history: null as ScheduleHistoryPage | null,
     notifications: null as NotificationPage | null, notificationHistory: null as NotificationHistoryPage | null,
+    notificationPages: 0,
+    returnTo: null as null | { context: OnlineExecutionContext; position: NotificationPosition; targetProjectId: string },
+    restorePosition: null as NotificationPosition | null,
+    paneRequest: null as null | { context: OnlineExecutionContext; pane: OnlineRunPane },
+    navigationIntent: 0,
+    contextVersion: 0,
     nextBeforeId: null as string | null, materialOptions: null as import('zod').z.infer<typeof ScheduleMaterialOptionsSchema> | null,
     refreshCandidate: null as { preparation: OnlineSchedulePreparation; id: string; version: string } | null,
     async originalJob(context: OnlineExecutionContext, jobId: string, executionId: string) {
@@ -30,12 +38,16 @@ export function createOnlineSchedulesStore(api: OnlineSchedulingPort) {
     },
     activate(context: OnlineExecutionContext | null, visible = true) {
       if (key(context) === key(store.context) && visible === store.visible) return;
+      store.contextVersion++;
+      if (!context || !store.context || context.serverId !== store.context.serverId || context.ownerId !== store.context.ownerId || context.scope.workspaceId !== store.context.scope.workspaceId) {
+        store.returnTo = null; store.paneRequest = null; store.restorePosition = null; store.navigationIntent++;
+      }
       generation++; store.context = context ? plain(context) : null; store.visible = visible;
       notificationGeneration++; acknowledgedReads.clear();
       store.options = null; store.items = []; store.selected = null; store.error = ''; store.busy = false;
       store.previewResult = null; store.refreshCandidate = null;
       store.history = null;
-      store.notifications = null; store.notificationHistory = null;
+      store.notifications = null; store.notificationHistory = null; store.notificationPages = 0;
       store.nextBeforeId = null; store.materialOptions = null;
     },
     async load(context: OnlineExecutionContext) {
@@ -68,8 +80,10 @@ export function createOnlineSchedulesStore(api: OnlineSchedulingPort) {
     async inspect(id: string) {
       const context = store.context && plain(store.context); if (!context) return;
       store.clearSelection(); const token = generation; const selection = selectionGeneration;
+      store.error = '';
       try {
         const row = ScheduleViewSchema.parse(await api.onlineScheduling({ operation: 'detail', context, id }));
+        if (row.id !== id || row.workspaceId !== context.scope.workspaceId || row.projectId !== context.scope.projectId) throw new Error('fixed-input-mismatch');
         if (current(token, context) && selection === selectionGeneration) store.selected = row;
       } catch (error) { if (current(token, context) && selection === selectionGeneration) store.error = error instanceof Error ? error.message : String(error); }
     },
@@ -94,8 +108,9 @@ export function createOnlineSchedulesStore(api: OnlineSchedulingPort) {
       try {
         const page = NotificationPageSchema.parse(await api.onlineScheduling({ operation: 'notifications', context, limit: 25, ...(beforeId ? { beforeId } : {}) }));
         if (current(token, context) && intent === notificationGeneration) {
-          const items = page.items.map(event => acknowledgedReads.has(event.id) ? { ...event, read: true } : event);
+          const items = page.items.filter(event => event.workspaceId === context.scope.workspaceId).map(event => acknowledgedReads.has(event.id) ? { ...event, read: true } : event);
           store.notifications = { ...page, items: beforeId && store.notifications ? [...store.notifications.items, ...items] : items };
+          store.notificationPages = beforeId ? store.notificationPages + 1 : 1;
         }
       } catch (error) { if (current(token, context) && intent === notificationGeneration) store.error = error instanceof Error ? error.message : String(error); }
     },

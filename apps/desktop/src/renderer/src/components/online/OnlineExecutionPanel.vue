@@ -6,6 +6,7 @@ import type { OnlineJob } from "../../../../shared/online/execution.js";
 import { isFullOnlineJob } from '../../../../shared/online/execution.js';
 import { reportingUnits } from "@apicc/core/report/units";
 import { onlineSessionErrorKey } from '../../i18n/index.js';
+import { useRecordMessages } from '../../execution/recordMessages.js';
 import ResponseViewer from "../ResponseViewer.vue";
 import WfResultDrawer from "../WfResultDrawer.vue";
 import CaseEvidencePanel from "../CaseEvidencePanel.vue";
@@ -17,6 +18,7 @@ import StressExecutionSummaryView from '../StressExecutionSummaryView.vue';
 const props = defineProps<{ execution: OnlineExecutionStore; reportOnly?: boolean; ai?: import('../../stores/ai.js').AiStore }>();
 const emit = defineEmits<{ collaboration: [value: { context: import('../../../../shared/online/execution.js').OnlineExecutionContext; source: { kind: 'online-local'; runId: string } }] }>();
 const { t, te, locale } = useI18n();
+const msg = useRecordMessages();
 const selected = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' && 'job' in selection ? selection.job : props.execution.jobs.find(job => job.jobId === props.execution.selectedJobId); });
 const fullSelected = computed(() => selected.value && isFullOnlineJob(selected.value) ? selected.value : undefined);
 const local = computed(() => { const selection = props.execution.resultSelection; return selection?.kind === 'agent' ? null : selection?.kind === 'local' && selection.runId !== props.execution.localResult?.runId ? null : props.execution.localResult; });
@@ -80,11 +82,43 @@ const reason = computed(() => {
   return sessionKey ? t(sessionKey) : te(key) ? `${t(key)}${text.length > code.length ? ` ${text.slice(code.length + 1)}` : ''}` : text;
 });
 function verdict(job: OnlineJob) { return isFullOnlineJob(job) ? label(typeof job.summary?.verdict === 'string' ? job.summary.verdict : undefined) : '—'; }
-const recordedEnvironment = computed(() => { const selection = props.execution.resultSelection; if (fullSelected.value) return fullSelected.value.task.environmentId ?? t('onlineExecution.baseEnvironment'); if (selection?.kind === 'local') return selection.environmentId ?? t('onlineExecution.baseEnvironment'); return t('onlineExecution.notCollected'); });
+const receipt = computed(() => {
+  const selection = props.execution.resultSelection;
+  return props.execution.submissions?.find(item => selection && ('runId' in selection ? selection.runId === item.runId : item.job?.jobId === selection.job.jobId && item.job.executionId === selection.job.executionId));
+});
+const requestFact = computed(() => {
+  if (report.value?.executionFact) return label(report.value.executionFact);
+  const value = output.value;
+  if (!value) return msg("notRecorded");
+  if (value.kind === "stress-failure") return label(value.requests.started ? "started" : "not-started");
+  if (value.kind === "debug") return value.result.exchangeTotal > 0 ? label("started") : msg("notRecorded");
+  if (value.kind === "stress") return value.result.totalRequests > 0 ? label("started") : msg("notRecorded");
+  return value.result.requestFacts ? label(value.result.requestFacts.requestStarted > 0 ? "started" : "not-started") : msg("notRecorded");
+});
+const failureText = computed(() => {
+  if (report.value?.reasonCode || fullSelected.value?.summary?.reasonCode) return label(report.value?.reasonCode ?? String(fullSelected.value?.summary?.reasonCode));
+  const value = output.value;
+  if (!value) return "";
+  if (value.kind === "failure" || value.kind === "stress-failure") return value.error;
+  if (value.kind === "debug") return value.result.error ?? value.result.outcomes.flatMap(row => row.assertions).find(a => !a.pass)?.message;
+  if (value.kind === "suite") return value.result.cases.find(row => row.error)?.error ?? value.result.cases.flatMap(row => row.assertions).find(a => !a.pass)?.message;
+  if (value.kind === "workflow") return value.result.nodeResults.find(row => row.error)?.error;
+  return "";
+});
+const recordedEnvironment = computed(() => {
+  const selection = props.execution.resultSelection, task = fullSelected.value?.task;
+  const value = output.value;
+  const proven = value?.kind === 'suite' ? value.result.suite?.environmentId : value?.kind === 'debug' || value?.kind === 'stress' ? value.result.environmentId : undefined;
+  const id = proven ?? (task?.target.kind === 'stress' ? task.target.plan.environmentId : undefined) ?? task?.environmentId ?? receipt.value?.environmentId;
+  if (id) return receipt.value?.environmentId === id && receipt.value.environmentName ? receipt.value.environmentName : id;
+  if (task?.target.kind === 'suite' && !receipt.value && value?.kind !== 'suite') return msg('notRecorded');
+  if (task || selection?.kind === 'local') return t('onlineExecution.baseEnvironment');
+  return msg('notRecorded');
+});
 </script>
 <template>
   <section class="execution online-surface" data-testid="online-execution-panel">
-    <button v-if="local" data-testid="collaboration-publish-result" @click="emit('collaboration', {context: execution.context!, source:{kind:'online-local',runId:local.runId}})">{{ t('collaboration.publishToProject') }}</button>
+    <button v-if="local && local.output.kind !== 'stress-failure'" data-testid="collaboration-publish-result" @click="emit('collaboration', {context: execution.context!, source:{kind:'online-local',runId:local.runId}})">{{ t('collaboration.publishToProject') }}</button>
     <div v-if="!reportOnly" class="toolbar">
       <label>{{ t('onlineExecution.location') }}<select :value="execution.location.kind === 'local' ? 'local' : execution.location.agentId" :disabled="execution.running" data-testid="online-execution-location" @change="location"><option value="local">{{ t('onlineExecution.local') }}</option><option v-for="item in execution.agents?.agents" :key="item.id" :value="item.id" :disabled="item.availability !== 'available' || item.configuration.status !== 'applied'">{{ item.name }} · {{ label(item.availability) }}</option></select></label>
       <label>{{ t('onlineExecution.environment') }}<select v-model="execution.environmentId" :disabled="execution.running" data-testid="online-execution-environment"><option :value="undefined">{{ t('onlineExecution.baseEnvironment') }}</option><option v-for="env in execution.project?.environments" :key="env.id" :value="env.id">{{ env.name }}</option></select></label>
@@ -123,20 +157,37 @@ const recordedEnvironment = computed(() => { const selection = props.execution.r
       <button v-if="ai && execution.context && (local || report)" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
       <h4>{{ t('onlineExecution.recordedRun') }}</h4>
       <p v-if="selected && !fullSelected">{{ t('onlineExecution.statusOnly') }}</p>
+      <dl class="summary" data-testid="selected-execution-facts">
+        <div><dt>{{ msg("recordId") }}</dt><dd>{{ selected?.executionId ?? receipt?.runId ?? local?.runId ?? msg("notRecorded") }}</dd></div>
+        <div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ selected ? label(selected.state) : local ? label("ended") : receipt?.pending ? msg("awaiting") : msg("notRecorded") }}</dd></div>
+        <div v-if="!selected || fullSelected"><dt>{{ msg("receipt") }}</dt><dd>{{ selected || local ? msg("accepted") : receipt?.pending ? msg("submitting") : msg("uncertain") }}</dd></div>
+        <div v-if="!selected || fullSelected"><dt>{{ t("onlineExecution.verdict") }}</dt><dd>{{ report || local ? logicalVerdict : selected ? verdict(selected) : msg("notRecorded") }}</dd></div>
+        <div v-if="!selected || fullSelected"><dt>{{ msg("requests") }}</dt><dd>{{ requestFact }}</dd></div>
+        <div v-if="selected"><dt>{{ t("onlineExecution.release") }}</dt><dd>{{ label(selected.executionReleased ? 'released' : 'retained') }}</dd></div>
+        <div v-if="fullSelected || local"><dt>{{ t("onlineExecution.archive") }}</dt><dd>{{ local ? msg("sessionReport") : label(fullSelected?.reportState) }}</dd></div>
+      </dl>
+      <p v-if="failureText" role="alert">{{ t("onlineExecution.failureReason") }} · {{ failureText }}</p>
+      <p v-if="selected && selected.cancelState !== 'none'">{{ label('cancel-' + selected.cancelState) }}</p>
+      <p v-if="fullSelected?.capacityWaitReason">{{ capacityReason(fullSelected.capacityWaitReason) }}</p>
+      <p v-if="fullSelected?.capacityWait">{{ t('stressCapacity.used') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.used) }} · {{ t('stressCapacity.requested') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.requested) }} · {{ t('stressCapacity.limit') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.limit) }} <span v-if="fullSelected.capacityWait.draining">{{ t('stressCapacity.draining') }}</span></p>
+      <button v-if="selected?.canCancel && selected.state !== 'ended'" :disabled="selected.cancelState === 'requested'" @click="action(() => execution.cancel(selected!))">{{ t("onlineExecution.cancel") }}</button>
+      <button v-if="receipt?.location.kind === 'local' && receipt.runId === execution.activeLocalRunId" @click="action(() => execution.cancelLocal())">{{ t("onlineExecution.cancel") }}</button>
       <p v-if="stressSelected && !stressSummary">{{t('stressPresentation.metadataNotCollected')}}</p>
       <StressExecutionSummaryView v-if="stressSelected && stressSummary && !report && !local" :execution="stressSummary" />
       <dl v-if="!selected || fullSelected" class="summary">
-        <div><dt>{{ t('onlineExecution.location') }}</dt><dd>{{ selected ? t('onlineExecution.agent') + ' · ' + selected.agentId : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
+        <div><dt>{{ t('onlineExecution.location') }}</dt><dd>{{ selected ? t('onlineExecution.agent') + ' · ' + (receipt?.locationName ?? selected.agentId) : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
         <div><dt>{{ t('onlineExecution.environment') }}</dt><dd>{{ recordedEnvironment }}</dd></div>
+      </dl>
+      <details v-if="!selected || fullSelected" :key="selected?.executionId ?? receipt?.runId"><summary>{{ msg("technical") }}</summary><dl class="summary">
         <div><dt>{{ t('onlineExecution.snapshot') }}</dt><dd :title="fullSelected?.task.manifestHash ?? local?.manifestHash">{{ fullSelected?.task.snapshotId ?? local?.snapshotId ?? t('onlineExecution.notPrepared') }} · {{ (fullSelected?.task.manifestHash ?? local?.manifestHash)?.slice(0, 12) }}</dd></div>
         <div><dt>{{ t('onlineExecution.dispatch') }}</dt><dd>{{ label(fullSelected?.task.dispatchKind) }}</dd></div>
         <div><dt>{{ t('onlineExecution.scriptTimeout') }}</dt><dd>{{ recordedScriptTimeout ? recordedScriptTimeout + ' ms' : t('onlineExecution.notCollected') }}</dd></div>
         <div><dt>{{ t('onlineExecution.runtime') }}</dt><dd :title="recordedRuntime">{{ recordedRuntime ? shortIdentity(recordedRuntime) : t('onlineExecution.notCollected') }}</dd></div>
         <div><dt>{{ t('onlineExecution.recordedPolicy') }}</dt><dd>{{ fullSelected?.task.policyVersion ?? t('onlineExecution.notCollected') }}</dd></div>
-      </dl>
+      </dl></details>
     </section>
     <section v-if="report || local" data-testid="online-execution-report">
-      <p>{{ t('onlineExecution.verdict') }}: {{ logicalVerdict }} · {{ t('onlineExecution.requestFact') }}: {{ label(report?.executionFact ?? (output?.kind==='stress-failure'?(output.started?'started':'not-started'):undefined)) }}</p>
+      <h4>{{ msg("report") }} · {{ logicalVerdict }}</h4>
       <p v-if="report?.reasonCode" role="alert">{{ label(report.reasonCode) }}</p>
       <template v-if="output?.kind === 'failure'"><p role="alert">{{ t('onlineExecution.failureReason') }}: {{ output.error }}</p><ul v-if="output.result.warnings?.length" :aria-label="t('onlineExecution.evidenceWarnings')"><li v-for="(warning, index) in output.result.warnings" :key="index">{{ warning }}</li></ul></template>
       <p v-if="!output">{{ t(stressSelected?'stressPresentation.reportIntegrityUnknown':'onlineExecution.incompleteReport') }}</p>

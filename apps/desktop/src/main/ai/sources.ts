@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpathSync, lstatSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { readScopedStressRun } from "../runs.js";
+import { readScopedRun, readScopedStressRun } from "../runs.js";
 import { aiReportDigest } from "../../shared/ai/reportDigest.js";
 import type { AiPrepareInput, AiReportRef, AiSourceRef } from "../../shared/ai/contract.js";
 import type { ProjectLocator } from "../../shared/locations.js";
@@ -49,7 +49,6 @@ export function createDesktopAiSources(options: DesktopAiSourceOptions) {
       };
       await check(signal); return { reportId: record.id, report: structuredClone(record.report), assertCurrent: check };
     }
-    if (ref.kind === "run") throw new Error("ai-report-unattributable：旧报告没有完整归属证明，请选择本窗口刚完成的结果");
     const read = async (s: AbortSignal): Promise<AiReadableReport> => {
       s.throwIfAborted();
       if (sourceRef.kind === "local" && ref.kind === "debug") {
@@ -59,14 +58,16 @@ export function createDesktopAiSources(options: DesktopAiSourceOptions) {
         s.throwIfAborted(); if (!result.record || result.record.formatVersion !== 2) throw new Error("ai-debug-report-unavailable");
         return result.record.result;
       }
-      if (sourceRef.kind === "local" && ref.kind === "stress") {
+      if (sourceRef.kind === "local" && (ref.kind === "stress" || ref.kind === 'run')) {
         const root = realpathSync(options.session.captureDraftWriteContext().root), runs = join(root, ".apicc", "runs"), file = join(runs, ref.file);
         // A valid sidecar alone does not authorize following a symlink outside the workspace.
         for (const path of [file, `${file}.scope`]) {
+          if (ref.kind === 'run' && !lstatSync(path, { throwIfNoEntry: false })) throw new Error('ai-report-unattributable');
           const child = relative(runs, path);
           if (!child || child.startsWith("..") || isAbsolute(child) || dirname(realpathSync(path)) !== runs || lstatSync(path).isSymbolicLink()) throw new Error("ai-report-path-unavailable");
         }
-        return readScopedStressRun(root, sourceRef.project, ref.file, { maxBytes: createEvidenceBudget().reportBytes });
+        return ref.kind === 'run' ? readScopedRun(root, sourceRef.project, ref.file, createEvidenceBudget().reportBytes)
+          : readScopedStressRun(root, sourceRef.project, ref.file, { maxBytes: createEvidenceBudget().reportBytes });
       }
       if (sourceRef.kind === "online" && ref.kind === "online" && options.online && options.onlineExecution) {
         const binding = options.online.captureExecution(sourceRef.context);

@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, realpathSync, openSync, readSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import { parseStressReport as parseCoreStressReport, isStressReportV2, reportingUnits, workflowToRunResult, type RunResult, type WorkflowRunResult, type ReadableStressReport } from "@apicc/core";
 import { StressReportFileSchema, type StressRunSummaryDTO, type RunSummaryDTO, type StressReportDTO } from "../shared/types.js";
@@ -59,15 +59,16 @@ function parseJson(raw: string): unknown | null {
 function summarize(runsDir: string, file: string): RunSummary | null {
   try {
     const raw = readFileSync(join(runsDir, file), "utf8");
+    const archiveProject = readArchiveScope(runsDir, file, raw);
     const r = parseRunResult(raw);
     if (r) {
-      return { kind: r.suite ? "suite" : r.workflowId ? "workflow" : r.kind ?? "collection", projectId: r.projectId ?? r.suite?.projectId, file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0, reportingUnits: r.reportingUnits ?? reportingUnits(r).summary,
+      return { kind: r.suite ? "suite" : r.workflowId ? "workflow" : r.kind ?? "collection", projectId: r.projectId ?? r.suite?.projectId, ...(archiveProject ? { archiveProject } : {}), file, collectionName: r.collectionName, startedAt: r.startedAt, total: r.total, passed: r.passed, failed: r.failed, skipped: r.skipped ?? 0, reportingUnits: r.reportingUnits ?? reportingUnits(r).summary,
         ...(r.reportingMode ? { reportingMode: r.reportingMode, logicalVerdict: r.suite?.verdict ?? r.workflow?.verdict } : {}) };
     }
     const s = parseStressReport(raw);
     if (s) {
       // 压测报告 startedAt 为 epoch ms，摘要统一为 ISO 字符串（与集合行同口径排序）。
-      return summarizeStressReport(s, file);
+      return { ...summarizeStressReport(s, file), ...(archiveProject ? { archiveProject } : {}) };
     }
     return null;
   } catch {
@@ -117,6 +118,31 @@ export function readRun(runsDir: string, file: string): RunResult | StressReport
 
 const scopeEvidenceSchema = z.object({ formatVersion: z.literal(1), root: z.string().min(1), scope: ProjectLocatorSchema, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const contentHash = (content: string) => createHash("sha256").update(content).digest("hex");
+function readArchiveScope(runsDir: string, file: string, content: string): ProjectLocator | undefined {
+  try {
+    const evidence = scopeEvidenceSchema.parse(JSON.parse(readStressFile(join(runsDir, file + '.scope'), 8192)));
+    if (realpathSync(resolve(runsDir, '../..')) === evidence.root && contentHash(content) === evidence.sha256) return evidence.scope;
+  } catch { /* Archives predating scope receipts remain readable. */ }
+}
+export function writeRunScope(root: string, file: string, scope: ProjectLocator): boolean {
+  try {
+    const actualRoot = realpathSync(root), name = StressReportFileSchema.parse(file);
+    const path = join(actualRoot, '.apicc', 'runs', name);
+    const content = readFileSync(path, 'utf8'), report = parseRunResult(content);
+    if (!report || (report.projectId ?? report.suite?.projectId) !== scope.projectId) return false;
+    atomicStressWrite(path + '.scope', JSON.stringify(scopeEvidenceSchema.parse({ formatVersion: 1, root: actualRoot, scope, sha256: contentHash(content) })));
+    return true;
+  } catch { return false; }
+}
+export function readScopedRun(root: string, scope: ProjectLocator, file: string, maxBytes: number): RunResult {
+  const runs = join(realpathSync(root), '.apicc', 'runs');
+  const content = readStressFile(join(runs, StressReportFileSchema.parse(file)), maxBytes);
+  const verified = readArchiveScope(runs, file, content);
+  const report = parseRunResult(content);
+  if (!report || !verified || verified.workspaceId !== scope.workspaceId || verified.groupId !== scope.groupId || verified.projectId !== scope.projectId
+      || (report.projectId ?? report.suite?.projectId) !== scope.projectId) throw new Error('ai-report-unattributable');
+  return report;
+}
 /** Bind the actual final safe bytes, not an earlier in-memory representation. */
 export function writeStressRunScope(root: string, file: string, scope: ProjectLocator): void {
   StressReportFileSchema.parse(file); const actualRoot = realpathSync(root);

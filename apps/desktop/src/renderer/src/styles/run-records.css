@@ -1,0 +1,9 @@
+.records-layout{display:grid;grid-template-columns:minmax(210px, .84fr) minmax(0,2.16fr);min-height:0;height:100%;min-width:0;overflow:hidden;color:var(--text)}
+.record-list,.record-detail{min-width:0;min-height:0;overflow:auto;scrollbar-gutter:stable;padding:16px;background:var(--bg)}
+.record-list{border-right:1px solid var(--border);background:var(--panel)}
+.record-list h3,.record-detail h3{margin:0 0 10px}.record-list p,.record-detail dt{font-size:12px;color:var(--text-muted)}
+.records-layout button{font:inherit;color:inherit;cursor:pointer}.record-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}
+.record-row{display:flex;align-items:flex-start;flex-direction:column;gap:4px;text-align:left;width:100%;margin:6px 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg)}
+.record-row[aria-current=true]{border-color:var(--accent);background:var(--subtle)}.record-row strong,.record-row small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.record-row small{color:var(--text-muted)}
+.record-detail{overflow-wrap:anywhere}.record-detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:8px 14px}.record-detail dd{margin:4px 0}.record-detail time{font-variant-numeric:tabular-nums}.record-detail [role=alert]{color:var(--fail)}.record-detail details{margin:10px 0}.record-detail summary,.record-list summary{cursor:pointer}
+@media(max-width:760px){.records-layout{grid-template-columns:1fr;grid-template-rows:minmax(105px,34%) minmax(0,1fr)}.record-list{border-right:0;border-bottom:1px solid var(--border);padding:10px 12px}.record-detail{padding:12px}}

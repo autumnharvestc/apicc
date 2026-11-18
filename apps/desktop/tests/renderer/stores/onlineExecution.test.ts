@@ -447,3 +447,24 @@ describe("online execution renderer state", () => {
     expect(store.statusRefreshMs).toBe(2000);
   });
 });
+
+it("reselects exact local receipts without replaying same-name executions or consuming a different project's selection", async () => {
+  const seen: string[] = [];
+  const store = createOnlineExecutionStore({ onlineExecution: async input => {
+    if (input.operation !== "run") throw Error("Unexpected side effect");
+    seen.push(input.runId); return localResult(input.runId);
+  } });
+  activateRun(store);
+  store.environmentId = "env-original";
+  await store.run({ kind: "workflow", workflowId }); store.environmentId = "env-next";
+  await store.run({ kind: "workflow", workflowId });
+  expect(store.submissions.map(item => item.runId)).toEqual([...seen].reverse());
+  await store.selectSubmission(seen[0]!);
+  expect(store.localResult?.runId).toBe(seen[0]);
+  expect(store.resultSelection).toMatchObject({kind:"local",runId:seen[0],environmentId:"env-original"});
+  store.localOnlyRefIds=["desktop-secret-ref"]; store.activate({...context,ownerId:"9"});
+  await expect(store.selectSubmission(seen[0]!)).rejects.toThrow("unavailable");
+  expect(store.submissions).toEqual([]); expect(store.localOnlyRefIds).toEqual([]);
+  store.activate(context); expect(store.localOnlyRefIds).toEqual(["desktop-secret-ref"]);
+  expect(seen).toHaveLength(2); store.setVisible(false);
+});

@@ -10,6 +10,7 @@ export const CollaborationLocalSourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('debug'), historyId: z.string().uuid(), owner: DebugHistoryOwnerIdentitySchema, project: ProjectLocatorSchema }).strict(),
   z.object({ kind: z.literal('current'), expectedReportDigest: z.string().regex(/^[a-f0-9]{64}$/), project: ProjectLocatorSchema }).strict(),
   z.object({ kind: z.literal('stress'), file: z.string().regex(/^[^/\\]+\.json$/), project: ProjectLocatorSchema }).strict(),
+  z.object({ kind: z.literal('run'), file: z.string().regex(/^[^/\\]+\.json$/), project: ProjectLocatorSchema }).strict(),
   z.object({ kind: z.literal('online-local'), runId: z.string().uuid() }).strict(),
 ]);
 const context = { context: OnlineExecutionContextSchema };
@@ -42,7 +43,7 @@ export const COLLABORATION_LOCAL_LIMITS = { source: 'product-hard-ceiling', maxS
 export const CollaborationLocalLimitsSchema = z.object({ source: z.literal('product-hard-ceiling'), maxSourceBytes: z.literal(67108864), maxArtifactBytes: z.literal(33554432), maxFieldBytes: z.literal(65536), evidenceIncluded: z.literal(false), serverPolicyKnown: z.literal(false) }).strict();
 export const CollaborationResultSchema = z.discriminatedUnion('stage', [
   z.object({ stage: z.literal('idle') }).strict(),
-  z.object({ stage: z.literal('local'), candidateId: z.string().uuid(), artifact: PublicArtifactDtoSchema, expiresAt: z.string(), artifactBytes: z.number().int().nonnegative(), uploadBytes: z.number().int().nonnegative(), localLimits: CollaborationLocalLimitsSchema, source: z.object({ kind: z.enum(['local-debug','local-current','local-stress','online-local']), location: z.literal('local'), selectionCount: z.literal(1), project: z.union([ProjectLocatorSchema, OnlineExecutionContextSchema.shape.scope]) }).strict() }).strict(),
+  z.object({ stage: z.literal('local'), candidateId: z.string().uuid(), artifact: PublicArtifactDtoSchema, expiresAt: z.string(), artifactBytes: z.number().int().nonnegative(), uploadBytes: z.number().int().nonnegative(), localLimits: CollaborationLocalLimitsSchema, source: z.object({ kind: z.enum(['local-debug','local-current','local-run','local-stress','online-local']), location: z.literal('local'), selectionCount: z.literal(1), project: z.union([ProjectLocatorSchema, OnlineExecutionContextSchema.shape.scope]) }).strict() }).strict(),
   z.object({ stage: z.literal('server'), candidateId: z.string().uuid(), preview: CollaborationPreviewSchema }).strict(),
   z.object({ stage: z.literal('published'), publication: CollaborationPublicationSchema }).strict(),
   z.object({ stage: z.literal('publication-reconciled'), receipt: PublicationOperationSchema }).strict(),

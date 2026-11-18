@@ -10,9 +10,10 @@ import type { DraftWriteContext } from '../session.js';
 import type { OnlineExecutionContext, OnlineLocalResult } from '../../shared/online/execution.js';
 import { CollaborationInputSchema, COLLABORATION_LOCAL_LIMITS } from '../../shared/online/collaboration.js';
 import type { ProjectLocator } from '../../shared/locations.js';
-import { readScopedStressRun } from '../runs.js';
+import { readScopedRun, readScopedStressRun } from '../runs.js';
 
-export function createCollaborationHost(deps: { session: OnlineSession; localSession: ReturnType<typeof createSession>; fetch?: typeof fetch; readOnlineResult?(owner: object): { context: OnlineExecutionContext; result: OnlineLocalResult } | undefined; readCurrentReport?(owner: object): { context: DraftWriteContext; project: ProjectLocator; report: RunResult; digest: string } | undefined; writeClipboard?(text: string): void | Promise<void>; readDebugHistory(id: string, ownerKey: string): Promise<DebugHistoryReadResult> }) {
+type OwnedLocalResult = { context: OnlineExecutionContext; result: OnlineLocalResult };
+export function createCollaborationHost(deps: { session: OnlineSession; localSession: ReturnType<typeof createSession>; fetch?: typeof fetch; readOnlineResult?(owner: object, runId: string): OwnedLocalResult | undefined | Promise<OwnedLocalResult | undefined>; readCurrentReport?(owner: object): { context: DraftWriteContext; project: ProjectLocator; report: RunResult; digest: string } | undefined; writeClipboard?(text: string): void | Promise<void>; readDebugHistory(id: string, ownerKey: string): Promise<DebugHistoryReadResult> }) {
   const client = createMemberCollaborationClient(deps);
   type Candidate = { candidateId: string; title: string; artifact: PublicArtifactDto; preview?: CollaborationPreview; publicationIntentId: string;
     context: OnlineExecutionContext; binding: ReturnType<OnlineSession['captureExecution']>; localContext?: DraftWriteContext; generation: number; expiresAt: number; digest: string; readCurrent?: () => Promise<unknown>; attempted?: boolean };
@@ -151,7 +152,7 @@ export function createCollaborationHost(deps: { session: OnlineSession; localSes
     const source = input.source;
     const readSource = async () => {
       if (source.kind === 'online-local') {
-        const current = deps.readOnlineResult?.(owner);
+        const current = await deps.readOnlineResult?.(owner, source.runId);
         if (!current || current.result.runId !== source.runId || JSON.stringify(current.context) !== JSON.stringify(input.context) || current.result.output.kind === 'stress-failure') throw new Error('collaboration-source-unavailable');
         return current.result.output;
       }
@@ -171,6 +172,7 @@ export function createCollaborationHost(deps: { session: OnlineSession; localSes
         if (dirname(realpathSync(path)) !== runs || lstatSync(path).isSymbolicLink()) throw new Error('collaboration-source-unavailable');
         if (statSync(path).size > maxBytes) throw new Error('collaboration-source-budget-exceeded');
       }
+      if (source.kind === 'run') return readScopedRun(localContext!.root, source.project, source.file, maxBytes);
       return readScopedStressRun(localContext!.root, source.project, source.file, { maxBytes });
     };
     const readCurrent = async () => {
@@ -186,7 +188,7 @@ export function createCollaborationHost(deps: { session: OnlineSession; localSes
       else if (output.kind === 'stress') report = { format: 'stress', body: output.result };
       else if (output.kind === 'workflow') report = { format: 'run', body: workflowToRunResult(output.result) };
       else report = { format: 'run', body: (output as Extract<typeof output, { kind: 'suite' }>).result };
-    } else report = source.kind === 'debug' ? { format: 'debug', body: value as import('@apicc/core').DebugHistoryRecord } : source.kind === 'current' ? { format: 'run', body: value as RunResult } : { format: 'stress', body: value as import('@apicc/core').ReadableStressReport };
+    } else report = source.kind === 'debug' ? { format: 'debug', body: value as import('@apicc/core').DebugHistoryRecord } : source.kind === 'current' || source.kind === 'run' ? { format: 'run', body: value as RunResult } : { format: 'stress', body: value as import('@apicc/core').ReadableStressReport };
     const projected = await projectPublication({ sourceKind: 'server-archive', title: input.title, source: { revision: digest, digest }, report, redaction: 'unavailable', privateMarkers: [] },
       { revision: 1, includeEvidence: false, maxFieldBytes: COLLABORATION_LOCAL_LIMITS.maxFieldBytes, maxEvidenceBytes: 8388608, maxArtifactBytes: COLLABORATION_LOCAL_LIMITS.maxArtifactBytes, extraSensitiveHeaders: [], extraSensitiveQuery: [], extraSensitiveFields: [], extraSensitivePointers: [] });
     const artifact: PublicArtifactDto = { ...projected, source: { ...projected.source, trust: 'member-claim' } };

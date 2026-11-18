@@ -70,10 +70,10 @@ function projectFixture(saved = false, updateFailure: boolean | string = false, 
   execution.agents = scheduleAgents();
   const adapter = createOnlineProjectAdapter(execution, api, () => false, () => true);
   const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
-  const view = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
+  const view = mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [], view: 'run' }, global: { plugins: [i18n] } });
   return { online, execution, context, project, i18n, view, calls, executionCalls, twoReports() { twoReports = true; }, reportIO(handler: NonNullable<typeof reportIO>) { reportIO = handler; }, notices(values: string[]) { previewNotices = values; }, dstGapHistory() { dstGapHistory = true; }, delayStatus(promise: Promise<void>) { statusGate = promise; }, delayDetail(promise: Promise<void>) { detailGate = promise; }, delayPreview(promise: Promise<void>) { previewGate = promise; }, delayPrepare(promise: Promise<void>) { prepareGate = promise; }, mismatchJob() { mismatchJob = true; }, listNext(id: string) { listNext = id; }, historyPaging() { historyPaging = true; }, customPolicy() { options = { ...scheduleOptions(), policy: { ...scheduleOptions().policy, queueTimeoutMs: 12345, maxQueueTimeoutMs: 20000, minIntervalMs: 65000 }, sources: { queueTimeoutMs: 'project', minIntervalMs: 'workspace', maxQueueTimeoutMs: 'workspace' } }; } };
 }
-async function openSchedules(f: ReturnType<typeof projectFixture>) { await f.view.findAll('nav.tabs button').find(b => b.text() === '定时任务')!.trigger('click'); await flushPromises(); }
+async function openSchedules(f: ReturnType<typeof projectFixture>) { await f.view.findAll('nav.run-tabs button').find(b => b.text() === '定时任务')!.trigger('click'); await flushPromises(); }
 async function inspectSaved(f: ReturnType<typeof projectFixture>) { await openSchedules(f); await f.view.get('[data-testid="schedule-open"]').trigger('click'); await flushPromises(); }
 
 it.each([['passed','通过','Passed'],['failed','失败','Failed']] as const)('shows actual original-job %s in the history verdict cell in both languages',async(verdict,zh,en)=>{
@@ -187,7 +187,7 @@ it.each([
     if (lifecycle === 'new') await f.view.findAll('button').find(button => button.text() === '新建计划')!.trigger('click');
     if (lifecycle === 'select') await f.online.schedules.inspect('9007199254740994');
     if (lifecycle === 'hidden') f.execution.setVisible(false);
-    if (lifecycle === 'pane') await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click');
+    if (lifecycle === 'pane') await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click');
     if (lifecycle === 'unmount') f.view.unmount();
     await flushPromises(); release(); await flushPromises();
     expect(f.execution.report).toBeNull(); expect(f.execution.error).toBe('');
@@ -223,8 +223,8 @@ it('round1 DST gap missed-window reason is readable in both languages', async ()
 it('offers the schedules business page inside the saved online project', async () => {
   const f = projectFixture();
   try {
-    expect(f.view.get('nav.tabs').text()).toContain('定时任务');
-    await f.view.findAll('nav.tabs button').find(b => b.text() === '定时任务')!.trigger('click');
+    expect(f.view.get('nav.run-tabs').text()).toContain('定时任务');
+    await f.view.findAll('nav.run-tabs button').find(b => b.text() === '定时任务')!.trigger('click');
     await flushPromises();
     expect(f.view.text()).toContain('首次保存为暂停状态');
   } finally { f.execution.setVisible(false); }
@@ -445,8 +445,8 @@ it('reads effective policy defaults and sources with units instead of silently u
 it('reopens the fixed saved schedule form after switching business pages without preparing or running it', async () => {
   const f = projectFixture(true);
   try {
-    await inspectSaved(f); await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '定时任务')!.trigger('click'); await flushPromises();
+    await inspectSaved(f); await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '定时任务')!.trigger('click'); await flushPromises();
     expect((f.view.get('[data-testid="schedule-name"]').element as HTMLInputElement).value).toBe(scheduleView().name);
     expect(f.calls.filter(input => input.operation === 'prepare' || input.operation === 'save')).toEqual([]); expect(f.executionCalls).toEqual([]);
   } finally { f.execution.setVisible(false); }
@@ -526,6 +526,7 @@ it('opens the same original job report from schedule history repeatedly without 
     expect(f.view.get('[data-testid="schedule-history"]').text()).toContain('查看原任务报告');
     await f.view.get('[data-testid="schedule-original-report"]').trigger('click'); await flushPromises();
     expect(f.view.get('[data-testid="online-execution-report"]').text()).toContain('失败');
+    await f.view.findAll('button').find(button => button.text() === '返回原计划')!.trigger('click'); await flushPromises();
     await f.view.get('[data-testid="schedule-original-report"]').trigger('click'); await flushPromises();
     expect(f.executionCalls.map(input => [input.operation, input.runId])).toEqual([['status', '78'], ['report', '78'], ['status', '78'], ['report', '78']]);
     expect(f.calls.filter(input => input.operation === 'prepare' || input.operation === 'save')).toEqual([]);

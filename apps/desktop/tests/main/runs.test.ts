@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listRuns, readRun, readScopedStressRun, writeStressRunScope } from "../../src/main/runs.js";
+import { listRuns, readRun, readScopedRun, writeRunScope, readScopedStressRun, writeStressRunScope } from "../../src/main/runs.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
 import { createStressController } from "../../src/main/stress.js";
@@ -247,4 +247,19 @@ describe("IPC run 频道", () => {
     const emptyEnvRun = await full.handle("run:collection", {}, { locator: collection.locator, envName: "" });
     expect(emptyEnvRun.total).toBe(1);
   });
+});
+
+it("binds archived report actions to exact bytes, workspace root and complete project scope", () => {
+  const root = mkdtempSync(join(tmpdir(), "f8-archive-scope-")), dir = join(root, ".apicc", "runs");
+  mkdirSync(dir, { recursive: true });
+  const scope = {workspaceId: uuid(1), groupId: uuid(2), projectId: uuid(3)}, file = "same-name.json";
+  const run = {...sample, projectId:scope.projectId};
+  writeFileSync(join(dir,file),JSON.stringify(run));
+  expect(writeRunScope(root,file,scope)).toBe(true);
+  expect(listRuns(dir)[0]?.archiveProject).toEqual(scope);
+  expect(readScopedRun(root,scope,file,10000)).toEqual(run);
+  expect(() => readScopedRun(root,{...scope,groupId:uuid(4)},file,10000)).toThrow();
+  writeFileSync(join(dir,file),JSON.stringify({...run, passed:0}));
+  expect(listRuns(dir)[0]?.archiveProject).toBeUndefined();
+  expect(() => readScopedRun(root,scope,file,10000)).toThrow();
 });

@@ -10,7 +10,7 @@ import { createOnlineProjectAdapter } from '../../../src/renderer/src/stores/onl
 import OnlineProjectAssets from '../../../src/renderer/src/components/online/OnlineProjectAssets.vue';
 import { createI18nInstance } from '../../../src/renderer/src/i18n/index.js';
 import type { ApiccApi } from '../../../src/shared/types.js';
-import { scheduleContext as context } from '../../helpers/scheduling.js';
+import { scheduleContext as context, scheduleOptions, scheduleView } from '../../helpers/scheduling.js';
 import { NotificationPageSchema } from '@apicc/execution/contract';
 import { NotificationDeliverySchema } from '@apicc/execution/contract';
 import OnlineDeliveryList from '../../../src/renderer/src/components/online/OnlineDeliveryList.vue';
@@ -22,7 +22,7 @@ it.each([
 ] as const)('explains actual outbound reason %s in notification center in both languages',async(reasonCode,zh,en)=>{
   const f=fixture();
   try{
-    await f.view.findAll('nav.tabs button').find(b=>b.text()==='通知中心')!.trigger('click');await flushPromises();const page=f.online.schedules.notifications!;
+    await f.view.findAll('nav.run-tabs button').find(b=>b.text()==='通知')!.trigger('click');await flushPromises();const page=f.online.schedules.notifications!;
     f.online.schedules.notifications=NotificationPageSchema.parse({...page,items:page.items.map(event=>({...event,deliveries:event.deliveries.map(d=>({...d,reasonCode,status:302,attempts:1}))}))});await flushPromises();
     const text=()=>f.view.get('.notifications').text();expect(text()).toContain(zh);expect(text()).toContain('HTTP 302');expect(text()).not.toContain(reasonCode);
     f.i18n.global.locale.value='en';await flushPromises();expect(text()).toContain(en);expect(text()).toContain('HTTP 302');expect(text()).not.toContain(reasonCode);
@@ -37,25 +37,40 @@ const terminalReasons = [
   ['schedule-rejected', '计划触发已拒绝', 'Scheduled trigger rejected'], ['schedule-cancelled', '计划触发已取消', 'Scheduled trigger cancelled'],
   ['schedule-deleted', '计划已删除', 'Schedule deleted'],
 ] as const;
-function fixture() {
+function fixture(crossProject = false) {
   const page = JSON.parse(readFileSync(resolve('../../server/src/test/resources/notifications/center.json'), 'utf8'));
   const delivery = JSON.parse(readFileSync(resolve('../../server/src/test/resources/notifications/history.json'), 'utf8')).items[0].deliveries[0];
   const response = NotificationPageSchema.parse({ ...page, items: page.items.map((item: any) => ({ ...item, workspaceId: '11', projectId: '33', link: '/workspaces/11/projects/33/schedules/' + item.scheduleId, notificationState: 'failed', deliveries: [delivery] })) });
   const calls: Array<Record<string, any>> = [];
   let listGate: Promise<void> | undefined;
-  const api = { assertionOperators: async () => [], onlineExecution: async () => [], onlineScheduling: async (input: Record<string, any>) => { calls.push(input); if (input.operation === 'notifications' && listGate) await listGate; return input.operation === 'markNotificationRead' ? { id: input.id, read: true } : input.beforeId ? { items: [], nextBeforeId: null } : response; } } as unknown as ApiccApi;
+  const api = { assertionOperators: async () => [], onlineExecution: async (input: Record<string, any>) => {
+    calls.push(input);
+    if (input.operation === 'status') return {jobId:'701',executionId:'702',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:false,view:'active-status',scope:input.context.scope};
+    return [];
+  }, onlineScheduling: async (input: Record<string, any>) => { calls.push(input);
+    if (input.operation === 'options') return scheduleOptions();
+    if (input.operation === 'list') return {items:[],nextBeforeId:null};
+    if (input.operation === 'detail') return {...scheduleView(),id:input.id,workspaceId:input.context.scope.workspaceId,projectId:input.context.scope.projectId,name:'Linked schedule'};
+    if (input.operation === 'originalJob') return {jobId:input.jobId,executionId:input.executionId,agentId:'5'};
+    if (crossProject && input.operation === 'notifications' && input.beforeId) return {items:[{...response.items[0],id:'5',projectId:'44',jobId:'701',executionId:'702',scheduleName:'Other project schedule',link:'/workspaces/11/projects/44/schedules/6'}],nextBeforeId:null};
+    if (input.operation === 'notifications' && listGate) await listGate; return input.operation === 'markNotificationRead' ? { id: input.id, read: true } : input.beforeId ? { items: [], nextBeforeId: null } : response; } } as unknown as ApiccApi;
   const online = createOnlineStore({ api }); const execution = online.execution;
   const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
   execution.activate(context); execution.setVisible(true); execution.project = project; execution.saved = JSON.stringify(project);
   execution.view = { project, problems: [], assets: { ...context.scope, format: 'contract-files-v1', contractProjectId: project.id, version: '1', manifestHash: 'a'.repeat(64), files: [] } };
   const adapter = createOnlineProjectAdapter(execution, api, () => true, () => true);
   const { i18n } = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
-  return { online, execution, i18n, calls, delayList(promise: Promise<void>) { listGate = promise; }, view: mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [] }, global: { plugins: [i18n] } }) };
+  return { online, execution, i18n, calls, delayList(promise: Promise<void>) { listGate = promise; }, view: mount(OnlineProjectAssets, { props: { online, adapter, localProjects: [], view: 'run', openProject: async (ws:string,id:string) => {
+    calls.push({operation:'switch-tab',workspaceId:ws,projectId:id});
+    if (!crossProject || ws !== context.scope.workspaceId || !['33','44'].includes(id)) return false;
+    execution.activate({...context,scope:{...context.scope,projectId:id}});
+    execution.project=project; execution.saved=JSON.stringify(project);return true;
+  } }, global: { plugins: [i18n] } }) };
 }
 it.each(terminalReasons)('localizes known notification reason %s in Chinese and English', async (reasonCode, zh, en) => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     const page = f.online.schedules.notifications!;
     f.online.schedules.notifications = NotificationPageSchema.parse({ ...page, items: page.items.map(event => ({ ...event, reasonCode })) }); await flushPromises();
     expect(f.view.get('.notifications').text()).toContain(zh);
@@ -68,7 +83,7 @@ it.each(terminalReasons)('localizes known notification reason %s in Chinese and 
 it('round1 notification stays visibly read after a stale refresh finishes', async () => {
   const f = fixture(); let release!: () => void;
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     f.delayList(new Promise<void>(done => { release = done; }));
     const pending = f.online.schedules.loadNotifications();
     await f.view.get('[data-testid="notification-read"]').trigger('click'); await flushPromises();
@@ -81,8 +96,8 @@ it('round1 notification stays visibly read after a stale refresh finishes', asyn
 it('offers the current member notification center inside the project navigation', async () => {
   const f = fixture();
   try {
-    expect(f.view.get('nav.tabs').text()).toContain('通知中心');
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    expect(f.view.get('nav.run-tabs').text()).toContain('通知');
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('当前成员有权项目');
   } finally { f.execution.setVisible(false); }
 });
@@ -90,7 +105,7 @@ it('offers the current member notification center inside the project navigation'
 it('shows in-app read state and external failure separately from an uncollected test verdict and marks only this member read', async () => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('每日回归');
     expect(f.view.text()).toContain('投递失败'); expect(f.view.text()).toContain('执行结论：未采集');
     expect(f.view.text()).toContain('Webhook'); expect(f.view.text()).toContain('站内未读'); expect(f.view.text()).toContain('UTC');
@@ -107,7 +122,7 @@ it('keeps absent report archive separate from absent delivery retry', async () =
   const f = fixture();
   try {
     f.i18n.global.locale.value = 'en'; await flushPromises();
-    await f.view.findAll('nav.tabs button').find(button => button.text() === 'Notification center')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === 'Notifications')!.trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('No archive yet');
   } finally { f.execution.setVisible(false); }
 });
@@ -115,7 +130,7 @@ it('keeps absent report archive separate from absent delivery retry', async () =
 it('keeps protocol or structured errors out of the notification business view', async () => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     f.online.schedules.error = '[{"code":"invalid_type","private":"DO-NOT-DISPLAY"}]'; await flushPromises();
     expect(f.view.get('[role="alert"]').text()).toBe('调度请求失败，请检查输入或刷新后重试。');
     expect(f.view.text()).not.toContain('DO-NOT-DISPLAY');
@@ -133,7 +148,7 @@ it.each([['pending', '等待投递', 'Awaiting delivery'], ['sending', '正在�
 it('keeps a failed execution verdict distinct from its failed delivery', async () => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     const page = f.online.schedules.notifications!;
     f.online.schedules.notifications = NotificationPageSchema.parse({ ...page, items: page.items.map(event => ({ ...event, eventKind: 'failed', reasonCode: 'execution-failed', jobId: '78', executionId: '79', verdict: 'failed', reportState: 'archived', evidenceState: 'complete' })) }); await flushPromises();
     expect(f.view.text()).toContain('执行结论：失败'); expect(f.view.text()).toContain('投递失败');
@@ -142,7 +157,7 @@ it('keeps a failed execution verdict distinct from its failed delivery', async (
 it('shows an in-app-only event without inventing an external delivery', async () => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     const page = f.online.schedules.notifications!; f.online.schedules.notifications = NotificationPageSchema.parse({ ...page, items: page.items.map(event => ({ ...event, notificationState: 'in-app', deliveries: [] })) }); await flushPromises();
     expect(f.view.text()).toContain('仅站内通知'); expect(f.view.text()).not.toContain('Webhook #');
   } finally { f.execution.setVisible(false); }
@@ -150,7 +165,7 @@ it('shows an in-app-only event without inventing an external delivery', async ()
 it('pages current member notifications without losing an already-read event', async () => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('更多通知');
     await f.view.get('[data-testid="notification-read"]').trigger('click'); await flushPromises();
     await f.view.get('[data-testid="notification-more"]').trigger('click'); await flushPromises();
@@ -162,7 +177,7 @@ it('pages current member notifications without losing an already-read event', as
 it.each(['zh-CN', 'en'] as const)('P3f distinguishes loaded empty notifications from unavailable results in %s', async locale => {
   const f = fixture();
   try {
-    await f.view.findAll('nav.tabs button').find(button => button.text() === '通知中心')!.trigger('click'); await flushPromises();
+    await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     f.i18n.global.locale.value = locale;
     f.online.schedules.notifications = { items: [], nextBeforeId: '6' }; await flushPromises();
     const empty = locale === 'en' ? 'No notifications in the loaded results.' : '已加载的结果中暂无通知。';
@@ -172,5 +187,42 @@ it.each(['zh-CN', 'en'] as const)('P3f distinguishes loaded empty notifications 
     expect(f.view.get('.notifications').text()).not.toContain(empty);
     f.online.schedules.error = ''; f.online.schedules.notifications = null; await flushPromises();
     expect(f.view.get('.notifications').text()).not.toContain(empty);
+  } finally { f.execution.setVisible(false); }
+});
+
+it("opens a cross-project status beyond the recent page and restores the unread notification, paging and scroll", async () => {
+  const f=fixture(true);
+  try {
+    await f.view.get('[data-testid="run-pane-notifications"]').trigger('click'); await flushPromises();
+    const first = f.view.get('.notifications article');
+    expect(first.findAll('.links button').map(b=>b.text())).toEqual(['查看计划','查看本次运行']);
+    expect(first.get('[data-testid="notification-run"]').attributes('disabled')).toBeDefined();
+    expect(first.text()).toContain('此通知没有关联运行');
+    await f.view.get('[data-testid="notification-more"]').trigger('click'); await flushPromises();
+    (f.view.get('.event-scroll').element as HTMLElement).scrollTop=72;
+    await f.view.findAll('[data-testid="notification-run"]')[1]!.trigger('click'); await flushPromises();
+    expect(f.execution.resultSelection).toMatchObject({kind:'agent',job:{jobId:'701',executionId:'702',view:'active-status'}});
+    expect(f.calls.find(c=>c.operation==='originalJob')).toMatchObject({context:{scope:{projectId:'44'}},jobId:'701',executionId:'702'});
+    expect(f.view.get('[data-testid="selected-execution-facts"]').text()).toContain('702');
+    expect(f.calls.filter(c=>['run','report','markNotificationRead'].includes(c.operation))).toEqual([]);
+    await f.view.get('[data-testid="return-notification"]').trigger('click'); await flushPromises();
+    expect(f.execution.context?.scope.projectId).toBe('33');
+    expect(f.view.get('.notifications article[aria-current=true]').text()).toContain('Other project schedule');
+    expect(f.online.schedules.notificationPages).toBe(2);
+    expect((f.view.get('.event-scroll').element as HTMLElement).scrollTop).toBe(72);
+    expect(f.view.get('.notifications article[aria-current=true]').text()).toContain('站内未读');
+  } finally { f.execution.setVisible(false); }
+});
+
+it("reads the exact schedule when the notification has no job and leaves its read state unchanged", async () => {
+  const f=fixture();
+  try {
+    await f.view.get('[data-testid="run-pane-notifications"]').trigger('click'); await flushPromises();
+    await f.view.get('[data-testid="notification-plan"]').trigger('click'); await flushPromises();
+    expect(f.online.schedules.selected).toMatchObject({id:'6',projectId:'33',name:'Linked schedule'});
+    expect(f.calls.filter(c=>c.operation==='detail')).toEqual([{operation:'detail',context,id:'6'}]);
+    expect(f.calls.filter(c=>['originalJob','report','markNotificationRead','run'].includes(c.operation))).toEqual([]);
+    await f.view.get('[data-testid="return-notification"]').trigger('click'); await flushPromises();
+    expect(f.view.get('.notifications article[aria-current=true]').text()).toContain('站内未读');
   } finally { f.execution.setVisible(false); }
 });

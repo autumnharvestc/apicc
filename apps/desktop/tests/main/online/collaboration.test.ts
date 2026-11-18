@@ -11,7 +11,7 @@ import { createCollaborationHost } from '../../../src/main/online/collaboration.
 import { IDS, makeWorkspace, persistWorkspace } from '../helpers/contract-assets.js';
 import { debugHistory, safeReport, safeDocument, runReport, stressReport } from '../../../../../packages/core/tests/collaboration/fixtures.js';
 import { aiReportDigest } from '../../../src/shared/ai/reportDigest.js';
-import { writeStressRunScope } from '../../../src/main/runs.js';
+import { writeRunScope, writeStressRunScope } from '../../../src/main/runs.js';
 import { grantConstraints, previewConstraints } from '../../../../../packages/execution/tests/helpers/collaboration.js';
 import { mkdirSync, writeFileSync, appendFileSync, renameSync, symlinkSync } from 'node:fs';
 import { createEvidenceBudget } from '@apicc/core';
@@ -483,12 +483,14 @@ it('revokes a recovered grant by its actual revision while preview disposal neve
     await f.host.handle({ operation: 'cancel-preview', context: f.context }, f.owner); f.host.clearOwner(f.owner); expect(f.requests).toHaveLength(1);
   } finally { f.close(); }
 });
-it.each(['current', 'stress'])('projects the single attributable local %s report without networking', async kind => {
+it.each(['current', 'stress', 'run'])('projects the single attributable local %s report without networking', async kind => {
   const f = await fixture();
   try {
-    const file = 'selected-stress.json'; mkdirSync(join(f.root, '.apicc', 'runs'), { recursive: true });
-    const report = stressReport(); report.projectId = f.input.source.project.projectId;
-    writeFileSync(join(f.root, '.apicc', 'runs', file), JSON.stringify(report)); writeStressRunScope(f.root, file, f.input.source.project);
+    const file = 'selected-report.json'; mkdirSync(join(f.root, '.apicc', 'runs'), { recursive: true });
+    const report = kind === 'run' ? runReport() : stressReport(); report.projectId = f.input.source.project.projectId;
+    writeFileSync(join(f.root, '.apicc', 'runs', file), JSON.stringify(report));
+    if (kind === 'run') expect(writeRunScope(f.root, file, f.input.source.project)).toBe(true);
+    else writeStressRunScope(f.root, file, f.input.source.project);
     const source = kind === 'current' ? { kind, project: f.input.source.project, expectedReportDigest: f.reportDigest } : { kind, project: f.input.source.project, file };
     const local = await f.host.handle({ ...f.input, source }, f.owner);
     expect(local).toMatchObject({ stage: 'local', artifact: { kind: 'report', source: { trust: 'member-claim' } }, source: { kind: 'local-' + kind, selectionCount: 1 } });
