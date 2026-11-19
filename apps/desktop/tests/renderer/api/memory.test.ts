@@ -263,6 +263,9 @@ describe("memory 替身正式工作流入口", () => {
     await fixture.api.wfSetStatus(locator, "published");
     const result = await fixture.api.wfRun({ locator, invocationId: "10000000-0000-4000-8000-000000000001" });
     expect(result).toMatchObject({ verdict: "passed", reportingMode: "workflow-invocation-v2" });
+    const archive = (await fixture.api.runsList()).find(row => row.file === result.archiveFile);
+    expect(archive).toMatchObject({ archiveProject: fixture.projectLocator, archiveDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(await fixture.api.runsGet(result.archiveFile!, { scope: fixture.projectLocator, digest: archive!.archiveDigest })).toMatchObject({ workflowId: workflow.id });
     expect(result.warnings.join(" ")).toContain("内存演示");
     expect(await fixture.api.wfCancel({ locator, invocationId: result.invocationId!, root: "unused" })).toBe(false);
     await expect(fixture.api.wfRun({ locator, invocationId: result.invocationId, root: `${fixture.root}-wrong` })).rejects.toThrow(/workspace context changed/);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ContractProjectSchema, StressPlanSchema, WorkflowV1Schema, WorkflowSchema, createDefaultRegistry, fileStorage, type WorkflowV1 } from "@apicc/core";
 import { createWorkflowController } from "../../src/main/workflow.js";
+import { listRuns, readRun } from "../../src/main/runs.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "../../src/main/executionOutput.js";
 import { createCredentialHost } from "../../src/main/credentialHost.js";
 import { workflowReportScenarios } from "../../../../packages/core/tests/helpers/contractExecutionFixtures.js";
@@ -727,12 +728,20 @@ describe("工作流 IPC", () => {
     const selected = createDefaultRegistry(); let calls = 0;
     selected.registerProtocol({ name: "http", canHandle: () => true, execute: async () => { if (++calls !== 2) throw new Error("transport failure"); return { status: 200, headers: {}, bodyText: "", timeMs: 0 }; } });
     const controller = createWorkflowController(session, async () => selected, createCredentialHost(session, () => ({ put: async () => {}, remove: async () => {}, resolve: async () => "", version: async () => "", status: async () => "available" })));
+    const scope = { workspaceId: ws.id, groupId: IDS.groupOne, projectId: project.id };
+    const archiveFiles: string[] = [];
     for (const flow of project.workflows.slice(0, 3)) {
-      const result = await controller.run({ locator: { workspaceId: ws.id, groupId: IDS.groupOne, projectId: project.id, workflowId: flow.id }, root: dir, invocationId: uuid(1000 + calls) });
+      const result = await controller.run({ locator: { ...scope, workflowId: flow.id }, root: dir, invocationId: uuid(1000 + calls) });
       expect(result.verdict).toBe("passed"); expect(result.reportingMode).toBe("workflow-invocation-v2");
       if (flow.name !== "or") expect(result.nodeResults[0]!.outcomes?.some((row) => !row.passed)).toBe(true);
+      expect(result.archiveFile).toMatch(/^workflow-.+\.json$/);
+      archiveFiles.push(result.archiveFile!);
     }
-    const reports = readdirSync(join(dir, ".apicc", "runs")).map((file) => JSON.parse(readFileSync(join(dir, ".apicc", "runs", file), "utf8")) as RunResult);
+    const runsDir = join(dir, ".apicc", "runs");
+    const history = listRuns(runsDir);
+    expect(history.map(row => row.file).sort()).toEqual(archiveFiles.sort());
+    for (const row of history) expect(row).toMatchObject({ kind: "workflow", archiveProject: scope });
+    const reports = archiveFiles.map(file => JSON.parse(readFileSync(join(runsDir, file), "utf8")) as RunResult);
     expect(reports).toHaveLength(3); expect(reports.every((report) => report.reportingUnits?.failed === 0 && report.workflow?.verdict === "passed")).toBe(true);
     expect(reports.reduce((total, report) => total + report.failed, 0)).toBe(2);
   });
@@ -761,8 +770,9 @@ describe("工作流 IPC", () => {
       release(); const result = await running;
       expect(result.invocationId).toBe(input.invocationId); expect(result.verdict).toBe("aborted"); expect(result.nodeResults[0]!.outcomes).toHaveLength(1);
       expect(await controller.cancel(input, owner)).toBe(false);
-      const report = JSON.parse(readFileSync(join(dir, ".apicc", "runs", readdirSync(join(dir, ".apicc", "runs")).find((name) => name.startsWith("workflow-"))!), "utf8")) as RunResult;
-      expect(report.reportingMode).toBe("workflow-invocation-v2"); expect(report.workflow?.verdict).toBe("aborted");
+      expect(result.archiveFile).toMatch(/^workflow-.+\.json$/);
+      const report = readRun(join(dir, ".apicc", "runs"), result.archiveFile!, { scope: project.locator });
+      expect(report).toMatchObject({ reportingMode: "workflow-invocation-v2", workflow: { verdict: "aborted" } });
     } finally { release(); await running; }
   });
 

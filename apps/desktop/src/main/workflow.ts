@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { writeRunScope } from "./runs.js";
 import { basename, join } from "node:path";
-import { compileWorkflowPlan, workflowPlanRequests, validateWorkflowRunOptions, createExecutionEvidenceCollector, createHttpSession, createProjectSnapshot, WorkflowRunner, type PluginRegistry, type WorkflowRunResult } from "@apicc/core";
+import { compileWorkflowPlan, workflowPlanRequests, validateWorkflowRunOptions, createExecutionEvidenceCollector, createHttpSession, createProjectSnapshot, WorkflowRunner, type PluginRegistry, type RunResult, type WorkflowRunResult } from "@apicc/core";
 import type { createSession } from "./session.js";
 import type { DebugCredentialHost } from "./credentialHost.js";
 import { prepareDesktopTestData } from "./executionContext.js";
-import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
+import { createExecutionOutputBoundary, persistExecutionJson, type PersistedExecution } from "./executionOutput.js";
+import type { ProjectLocator } from "../shared/locations.js";
 import type { WfRunInput, WfCancelInput } from "../shared/types.js";
 
 /** A run remains owned and cancellable until the real runner/session drain has finished. */
 export function createWorkflowController(session: ReturnType<typeof createSession>, registrySource: () => Promise<PluginRegistry>, credentials: DebugCredentialHost,
-  storage?: { persist(path: string, result: import("@apicc/core").RunResult): { warning?: string } },
-  onReport?: (owner: object | undefined, context: ReturnType<typeof session.captureDraftWriteContext>, project: import("../shared/locations.js").ProjectLocator, native: import("@apicc/core").RunResult, dto: WorkflowRunResult) => Promise<void>) {
+  storage?: { persist(path: string, result: RunResult, project: ProjectLocator): { warning?: string } },
+  onReport?: (owner: object | undefined, context: ReturnType<typeof session.captureDraftWriteContext>, project: ProjectLocator, native: RunResult, dto: WorkflowRunResult) => Promise<void>) {
   const defaultOwner = {};
   const active = new Map<string, { owner: object; input: WfRunInput; context: ReturnType<typeof session.captureDraftWriteContext>; abort: AbortController }>();
   async function run(raw: WfRunInput, owner = defaultOwner): Promise<WorkflowRunResult & { archiveFile?: string }> {
@@ -36,7 +37,8 @@ export function createWorkflowController(session: ReturnType<typeof createSessio
       const selected = workflowPlanRequests(snapshot, plan);
       const selections = (input.strict ?? true) && plan.referenceDiagnostics.some((item) => item.logicalMissing) ? [] : selected;
       const { workspaceId, groupId, projectId } = input.locator;
-      const prepared = await credentials.prepareRunForRequests({ workspaceId, groupId, projectId }, snapshot, selections, { workspaceRoot: context.root, environmentId: env?.id, signal: abort.signal });
+      const project = { workspaceId, groupId, projectId };
+      const prepared = await credentials.prepareRunForRequests(project, snapshot, selections, { workspaceRoot: context.root, environmentId: env?.id, signal: abort.signal });
       output = createExecutionOutputBoundary(prepared.markers);
       const withData = await prepareDesktopTestData(prepared, selections, context.root, env?.id);
       session.assertDraftWriteContext(context);
@@ -52,13 +54,18 @@ export function createWorkflowController(session: ReturnType<typeof createSessio
       const result = evidence.projectWorkflow(rawResult);
       output = createExecutionOutputBoundary(evidence.markers());
       const path = join(context.root, ".apicc", "runs", `workflow-${result.workflowId}-${randomUUID()}.json`);
-      const archive = { ...result.report!, projectId, archiveProject: { workspaceId, groupId, projectId } };
-      const persisted = storage ? storage.persist(path, archive) : persistExecutionJson(path, archive, output, () => "工作流安全 JSON 报告保存失败");
-      if (!storage && !persisted.warning) writeRunScope(context.root, basename(path), archive.archiveProject);
-      const { report: _report, ...dto } = result;
+      const { report, ...dto } = result;
+      let persisted: PersistedExecution<RunResult>;
+      if (storage) {
+        const value = output.value(report!);
+        persisted = { ...storage.persist(path, value, project), value };
+      } else {
+        persisted = persistExecutionJson(path, report!, output, () => "工作流安全 JSON 报告保存失败");
+        if (!persisted.warning) writeRunScope(context.root, basename(path), project);
+      }
       const publicResult = { ...output.value(persisted.warning ? { ...dto, warnings: [...dto.warnings, persisted.warning] } : dto), ...(persisted.warning ? {} : { archiveFile: basename(path) }) };
       if (onReport) {
-        try { await onReport(owner === defaultOwner ? undefined : owner, context, { workspaceId, groupId, projectId }, output.value(result.report!), publicResult); }
+        try { await onReport(owner === defaultOwner ? undefined : owner, context, project, persisted.value, publicResult); }
         catch { /* AI source availability cannot change a completed execution. */ }
       }
       return publicResult;

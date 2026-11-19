@@ -122,12 +122,43 @@ it('G06 safe eviction removes debug sessions, selections and results while the s
   activate(value, 1); expect(value.localResult).toBeNull(); expect(value.location).toEqual({ kind: 'local' }); expect(value.environmentId).toBeUndefined();
   await value.run({ kind: 'debug', invocation: invocation() }); expect(calls.at(-1)!.debugSessionId).toBeUndefined();
 });
-it('G06 an uncertain context keeps its earlier debug session even with zero inactive retention', async () => {
-  const ids: Array<string | undefined> = [];
-  const value = store({ onlineExecution: async input => { if (input.operation !== 'run') throw new Error('Unexpected RPC'); ids.push(input.debugSessionId); if (ids.length === 2) throw new Error('Synthetic lost response'); return result(input.runId, undefined, 'protected-session'); } }, { ...defaults, maxInactiveContexts: 0 });
-  activate(value, 1); await value.run({ kind: 'debug', invocation: invocation() }); await expect(value.run({ kind: 'debug', invocation: invocation() })).rejects.toThrow('Synthetic lost response');
-  activate(value, 2); expect(value.cacheUsage.protectedContexts).toBe(1); activate(value, 1); await value.run({ kind: 'debug', invocation: invocation() });
-  expect(ids).toEqual([undefined, 'protected-session', 'protected-session']);
+it.each(['no confirmation dialog', 'retained session', 'new session'] as const)('G06 protects an uncertain debug submission with zero inactive retention: %s', async scenario => {
+  const calls: Array<Extract<OnlineExecutionInput, { operation: 'run' }>> = [];
+  const confirmNewSubmission = vi.fn<(runId: string) => boolean>().mockReturnValue(false);
+  const value = createOnlineExecutionStore({ onlineExecution: async input => {
+    if (input.operation !== 'run') throw new Error('Unexpected RPC');
+    calls.push(input);
+    if (calls.length === 2) throw new Error('Synthetic lost response');
+    return result(input.runId, undefined, input.debugSessionId ?? `session-${calls.length}`);
+  } }, { preferences: { ...defaults, maxInactiveContexts: 0 }, storage: null,
+    ...(scenario === 'no confirmation dialog' ? {} : { confirmNewSubmission }) });
+  stores.push(value);
+
+  const target = { kind: 'debug' as const, invocation: invocation() };
+  activate(value, 1);
+  await value.run(target);
+  await expect(value.run(target)).rejects.toThrow('Synthetic lost response');
+  const uncertainId = calls[1]!.runId;
+  const originalIds = calls.map(call => call.runId);
+  activate(value, 2);
+  expect(value.cacheUsage.protectedContexts).toBe(1);
+  activate(value, 1);
+  await value.run(target);
+  expect(calls.map(call => call.debugSessionId)).toEqual([undefined, 'session-1']);
+  expect(value.submissions.map(run => run.runId)).toEqual([...originalIds].reverse());
+  expect(value.resultSelection).toMatchObject({ kind: 'local', runId: uncertainId });
+  expect(value.error).toBe('Synthetic lost response');
+  if (scenario === 'no confirmation dialog') return;
+
+  expect(confirmNewSubmission.mock.calls).toEqual([[uncertainId]]);
+  confirmNewSubmission.mockReturnValue(true);
+  if (scenario === 'new session') value.newDebugSession();
+  await value.run(target);
+  expect(confirmNewSubmission.mock.calls).toEqual([[uncertainId], [uncertainId]]);
+  expect(calls).toHaveLength(3);
+  expect(originalIds).not.toContain(calls[2]!.runId);
+  expect(calls[2]!.debugSessionId).toBe(scenario === 'new session' ? undefined : 'session-1');
+  expect(value.localResult).toMatchObject({ runId: calls[2]!.runId, debugSessionId: scenario === 'new session' ? 'session-3' : 'session-1' });
 });
 
 const boundaries = [ ['maxInactiveContexts', 0, 200], ['inactiveTtlMinutes', 1, 1440], ['maxInactivePayloadMiB', 1, 512] ] as const;

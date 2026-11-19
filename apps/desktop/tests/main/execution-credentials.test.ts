@@ -7,6 +7,7 @@ import * as Core from "@apicc/core";
 import { createDesktopCredentialHost } from "../../src/main/credentials.js";
 import { createOnlineLocalCredentialStore } from "../../src/main/online/projectCredentials.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "../../src/main/debug.js";
+import { listRuns } from "../../src/main/runs.js";
 import { createStressController } from "../../src/main/stress.js";
 import { createIpcDeps } from "../../src/main/ipc.js";
 import { createSession } from "../../src/main/session.js";
@@ -201,7 +202,8 @@ describe("desktop execution credential wiring", () => {
       secretStore.replace("passed", "generation-1");
       const result = await runCollection(session, { locator: { workspaceId: LOCATOR.workspaceId, groupId: LOCATOR.groupId, projectId: LOCATOR.projectId, collectionId: LOCATOR.collectionId }, envName: "dev" }, createDefaultRegistry(), credentials);
       expect(typeof result.passed).toBe("number"); expect(typeof result.cases[0]?.passed).toBe("boolean");
-      const saved = JSON.parse(readFileSync(join(workspaceRunsDir(temp.path), readdirSync(workspaceRunsDir(temp.path))[0]!), "utf8"));
+      expect(result.archiveFile).toMatch(/^run-.+\.json$/);
+      const saved = JSON.parse(readFileSync(join(workspaceRunsDir(temp.path), result.archiveFile!), "utf8"));
       expect(saved.passed).toBe(result.passed); expect(saved.cases[0].passed).toBe(result.cases[0]!.passed);
       expect(saved.cases[0].evidence.identity).toEqual(result.cases[0]!.evidence!.identity);
       expect(JSON.stringify(saved)).not.toContain("Bearer passed");
@@ -1066,9 +1068,13 @@ describe("desktop execution credential wiring", () => {
     expect(received[0]?.authorization).toBe(`Bearer ${SECRET}`);
     expect(JSON.stringify(result)).not.toContain(SECRET);
     expect(secretStore.calls.map((call) => call.method)).toEqual(["version", "resolve", "version", "status"]);
-    const files = readdirSync(join(temp.path, ".apicc", "runs")).filter((file) => file.startsWith(`workflow-${IDS.workflow}-`));
-    expect(files).toHaveLength(1);
-    expect(readFileSync(join(temp.path, ".apicc", "runs", files[0]!), "utf8")).not.toContain(SECRET);
+    const runsDir = workspaceRunsDir(temp.path);
+    expect(result.archiveFile).toMatch(new RegExp(`^workflow-${IDS.workflow}-.+\\.json$`));
+    expect(listRuns(runsDir)).toMatchObject([{ kind: "workflow", file: result.archiveFile,
+      archiveProject: { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne } }]);
+    const archivePath = join(runsDir, result.archiveFile!);
+    expect(readFileSync(archivePath, "utf8")).not.toContain(SECRET);
+    expect(readFileSync(archivePath + ".scope", "utf8")).not.toContain(SECRET);
     await temp.dispose();
   });
 

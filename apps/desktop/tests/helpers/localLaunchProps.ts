@@ -9,9 +9,15 @@ import { createStressStore } from "../../src/renderer/src/stores/stress.js";
 import { useWorkflowDesignStore } from "../../src/renderer/src/stores/workflowDesign.js";
 
 export function localLaunchProps(api: ApiccApi, workspace: ReturnType<typeof useWorkspaceStore>, project?: ProjectLocator) {
-  const node = workspace.workspace!.groups.flatMap(group => group.projects.map(item => ({group, item})))[0]!;
-  const projectLocator = project ? { workspaceId: project.workspaceId, groupId: project.groupId, projectId: project.projectId }
-    : { workspaceId: workspace.workspace!.id, groupId: node.group.id, projectId: node.item.id };
+  if (!project) {
+    for (const group of workspace.tree?.children ?? []) {
+      if (group.kind !== "group") continue;
+      project = group.children.find(node => node.kind === "project")?.locator;
+      if (project) break;
+    }
+    if (!project) throw new Error("Local launch fixture requires a project");
+  }
+  const projectLocator = { workspaceId: project.workspaceId, groupId: project.groupId, projectId: project.projectId };
   const context = () => ({ root: workspace.root, readOnly: workspace.readOnly });
   const editor = useEditorStore(api, context);
   return { api, projectLocator, environmentId: null, readOnly: workspace.readOnly, editor, debug: useDebugStore(api, editor, context),

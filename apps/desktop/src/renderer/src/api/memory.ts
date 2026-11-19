@@ -411,7 +411,12 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
     if (!session.root || context.root !== root) throw new Error("Testing root context changed");
     return { ...context, root: session.root };
   }
-  const workflowRuns = createWorkflowController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, result) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result }); return {}; } });
+  const workflowRuns = createWorkflowController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), {
+    persist(path, result, archiveProject) {
+      runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: { ...result, archiveProject } });
+      return {};
+    },
+  });
   let workflowEpoch = 0;
   const workflowContexts = new Map<string, { logicalRoot: string; epoch: number }>();
 
