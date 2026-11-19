@@ -71,3 +71,13 @@ CI113 对应提交 `cb81b31f`。四份任务日志中，品牌检查通过。Lin
 复验结果包括 Linux 桌面 6 个文件 136 项、Windows 渲染及产物依赖检查 5 个文件 112 项、Core 环境及工作流 99 项、Java 边界与真实协作调用 54 项，均通过。Windows 新目录包实际启动通过。跨平台结果分别计数，同一行为会有覆盖重叠。
 
 后续只要改动 Core 的运行时代码，在重新构建 Core、execution 和 collaboration-runtime 后即可执行 `node apps/collaboration-runtime/scripts/generate-java-boundary.mjs --check`。改动桌面测试夹具时，使用桌面包的 `typecheck` 核对普通 TypeScript 路径。两项检查都可在推送前单独执行。
+
+## CI114 跨包类型检查
+
+CI114 在 `e3523eff` 通过了品牌检查、Windows 打包冒烟和 2204 项 Java 测试。Linux 任务在 CLI 构建完成后，单独运行 `pnpm -C packages/cli typecheck` 时报告 TS7056。递归包测试和依赖该任务的部署冒烟均未执行。
+
+CLI 的 Mock 测试引用桌面会话，会经公共 API 类型检查集合运行预览。CLI 类型检查同时纳入测试目录和 TypeScript 声明检查，发现 `selectCollectionCases` 的推断返回类型过长。上次只跑了桌面类型检查和 CLI 构建，遗漏了这条跨包路径。
+
+修复给选中项声明了返回类型，接口与用例字段从项目快照的元素类型派生。独审对比了修复前后生成的 JavaScript，字节完全一致。以后调整桌面共享 API 或其引用的类型时，桌面与 CLI 两个包的 `typecheck` 都是直接相关的定向检查。
+
+Windows 和 Linux 均在 Node 22.19.0、TypeScript 5.9.2 下复现原始 TS7056，并通过修复后的 CLI 类型检查。Windows 桌面普通类型检查、集合用例预览与实际执行的回归通过。Linux 的 CLI Mock、导入交换、契约资产和 MCP 报告共 4 个文件 67 项通过。另有 19 项 CI 脚本测试通过，执行代理镜像构建成功。本轮采用定向验证，完整部署冒烟留给后续 CI。

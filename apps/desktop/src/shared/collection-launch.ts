@@ -16,6 +16,13 @@ export interface CollectionLaunchPreview {
 }
 
 type Collection = ProjectSnapshot["project"]["collections"][number];
+type CollectionApi = Collection["apis"][number];
+
+interface CollectionCaseSelection {
+  asset: CollectionApi;
+  folderIds: string[];
+  cases: Array<CollectionApi["cases"][number]>;
+}
 
 function collectCollectionApis(collection: Collection) {
   const apis = collection.apis.map(asset => ({ asset, folderIds: [] as string[] }));
@@ -30,7 +37,7 @@ function collectCollectionApis(collection: Collection) {
   return apis;
 }
 
-export function selectCollectionCases(snapshot: ProjectSnapshot, collection: Collection, environmentId?: string) {
+export function selectCollectionCases(snapshot: ProjectSnapshot, collection: Collection, environmentId?: string): CollectionCaseSelection[] {
   const environment = resolveExecutionEnvironment(snapshot.project, collection.id, environmentId);
   return collectCollectionApis(collection).map(({ asset, folderIds }) => ({
     asset, folderIds, cases: selectEffectiveCases(asset.cases, environment.chain),
