@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { isFullOnlineJob, OnlineJobSchema, type OnlineExecutionContext, type OnlineJob } from "../../../../shared/online/execution.js";
 import type { CollaborationLocalSource } from "../../../../shared/online/collaboration.js";
@@ -7,11 +7,12 @@ import type { NotificationEvent, ScheduleOccurrence } from "@apicc/execution/con
 import type { createOnlineStore } from "../../stores/online.js";
 import type { createOnlineProjectAdapter } from "../../stores/onlineProjectAdapter.js";
 import type { NotificationPosition, OnlineRunPane } from "../../stores/onlineSchedules.js";
-import { useWorkbenchPosition } from "../../stores/workbenchPosition.js";
+import { useWorkbenchPosition, workbenchPositionKey } from "../../stores/workbenchPosition.js";
 import type { RunRecord } from "../../stores/onlineExecution.js";
 import type { AiStore } from "../../stores/ai.js";
 import { recordTime, useRecordMessages } from "../../execution/recordMessages.js";
 import { jobRecordFacts, shortRecordId } from "../../execution/recordFacts.js";
+import RunWorkbench from "../RunWorkbench.vue";
 import OnlineRunLaunch from "./OnlineRunLaunch.vue";
 import OnlineExecutionPanel from "./OnlineExecutionPanel.vue";
 import OnlineSchedulesPanel from "./OnlineSchedulesPanel.vue";
@@ -28,12 +29,12 @@ const sameMember = (a: OnlineExecutionContext,b?: OnlineExecutionContext | null)
 const position = ref<"schedules" | null>(null), issue = ref(""), list = ref<HTMLElement>();
 let intent = 0;
 const workbench = useWorkbenchPosition(() => JSON.stringify(e.value.context));
+provide(workbenchPositionKey, workbench);
 const hideDetail = computed({ get: () => workbench.value.recordListOnly, set: value => { workbench.value.recordListOnly = value; } });
 const selected = computed(() => e.value.resultSelection);
 const selectedJob = computed(() => selected.value?.kind === "agent" && "job" in selected.value ? selected.value.job : undefined);
 const jobKey = (j: OnlineJob) => [j.agentId,j.jobId,j.executionId].join("/");
 const selectedKey = computed(() => selectedJob.value ? jobKey(selectedJob.value) : selected.value && "runId" in selected.value ? selected.value.runId : "");
-const paneTitle = (p: OnlineRunPane) => p === "schedules" ? t("scheduling.title") : msg(p);
 function code(value?: string) { return value ? te("onlineExecution.states."+value) ? t("onlineExecution.states."+value) : value : msg("notRecorded"); }
 function go(pane: OnlineRunPane, revealing = false) { workbench.value.revealingRecord = revealing; issue.value = ""; intent++; emit("update:pane", pane); }
 watch(() => [props.active, e.value.context, e.value.visible, props.pane, schedules.value.selected], () => { intent++; issue.value = ""; }, { flush: "sync" });
@@ -187,8 +188,7 @@ function returnList() { workbench.value.onlineRecord = null; hideDetail.value=tr
 const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing.dirty || props.adapter.workflowDesign.dirty || props.online.editorDirty);
 </script>
 <template>
-  <section class="run-host" data-testid="online-run-host">
-    <nav class="run-tabs" :aria-label="msg('records')"><button v-for="p in (['launch','records','schedules','notifications'] as const)" :key="p" :data-testid="'run-pane-'+p" :aria-current="pane===p" @click="changePane(p)">{{ paneTitle(p) }}</button></nav>
+  <RunWorkbench online :pane="pane" data-testid="online-run-host" @navigate="changePane">
     <button v-if="canReturn" class="return" data-testid="return-notification" @click="backToNotification">{{ msg("returnNotifications") }}</button>
     <button v-else-if="position && pane==='records'" class="return" @click="position=null;go('schedules')">{{ msg("returnSchedule") }}</button>
     <p v-if="issue" role="alert">{{ issue }}</p>
@@ -208,10 +208,9 @@ const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing
     </article></div>
     <OnlineSchedulesPanel v-if="pane==='schedules'" :execution="e" :schedules="schedules" :draft-dirty="dirty" @report="scheduleReport" />
     <OnlineNotificationsPanel v-if="pane==='notifications'" :schedules="schedules" @navigate="notification" />
-  </section>
+  </RunWorkbench>
 </template>
 <style scoped src="../../styles/run-records.css"></style>
 <style scoped>
-.run-host{min-height:0;height:100%;min-width:0;display:flex;flex-direction:column;overflow:hidden;color:var(--text);background:var(--bg)}
-.run-host>:last-child,.records-layout{min-height:0}.run-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--border);padding:6px 12px}.run-tabs button,.return{border:0;background:transparent;color:var(--text-muted);padding:7px 10px;cursor:pointer;font:inherit}.run-tabs button[aria-current=true]{color:var(--accent);box-shadow:inset 0 -2px var(--accent)}.return{align-self:flex-start;color:var(--accent)}input[type=number]{max-width:92px}.record-detail{padding:12px}.record-detail :deep(.execution){border:0;padding:8px 2px}.record-actions{align-items:baseline}
+.return{border:0;background:transparent;padding:7px 10px;cursor:pointer;font:inherit}.return{align-self:flex-start;color:var(--accent)}input[type=number]{max-width:92px}.record-detail{padding:12px}.record-detail :deep(.execution){border:0;padding:8px 2px}.record-actions{align-items:baseline}
 </style>

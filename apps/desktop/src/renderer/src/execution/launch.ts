@@ -6,7 +6,7 @@ import type { ApiLocator } from "../../../shared/locations.js";
 import type { OnlineExecutionStore } from "../stores/onlineExecution.js";
 
 export type LaunchKind = "module" | "case" | "suite" | "workflow" | "stress";
-export interface LaunchChoice { id: string; label: string; detail?: string }
+export interface LaunchChoice { id: string; label: string; detail?: string; modulePath?: string }
 
 export function buildSavedCaseInvocation(locator: ApiLocator, selected: { caseId: string; scope: string }, environmentId?: string, settings?: DebugInvocation["settings"]): Extract<DebugInvocation, { mode: "case" }> {
   const where = { ...locator, folderIds: [...locator.folderIds] };

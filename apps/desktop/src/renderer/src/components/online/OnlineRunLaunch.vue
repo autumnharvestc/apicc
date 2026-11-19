@@ -22,7 +22,7 @@ const { t, te } = useI18n();
 const label = useLaunchMessages();
 const kinds = ["case", "suite", "workflow", "stress"] as const;
 const position = useWorkbenchPosition(() => scopeKey.value);
-const kind = computed<LaunchKind>({ get: () => position.value.launchTarget?.kind ?? "case", set: kind => { position.value.launchTarget = { kind, id: "" }; } });
+const kind = computed<LaunchKind>({ get: () => position.value.launchTarget?.kind ?? "case", set: kind => { position.value.launchSearch = ""; position.value.launchTarget = { kind, id: "" }; } });
 const selected = computed({ get: () => position.value.launchTarget?.id ?? "", set: id => { position.value.launchTarget = { kind: kind.value, id }; } });
 const allowDraft = ref(false), origins = ref("");
 const inputs = ref<Record<string, JsonValue>>(), validInputs = ref(false);
@@ -34,22 +34,22 @@ const version = computed(() => props.execution.view?.assets.version);
 const assets = computed(() => {
   const context = props.execution.context;
   if (!project.value || !context) return [];
-  const entries: Array<{ locator: ApiLocator; asset: ApiAsset }> = [];
+  const entries: Array<{ locator: ApiLocator; asset: ApiAsset; modulePath: string }> = [];
   for (const collection of project.value.collections) {
-    const visit = (container: ContractCollection | ContractFolder, folderIds: string[]) => {
-      for (const asset of container.apis) entries.push({ asset, locator: {
+    const visit = (container: ContractCollection | ContractFolder, folderIds: string[], names: string[]) => {
+      for (const asset of container.apis) entries.push({ asset, modulePath: names.join(" / "), locator: {
         workspaceId: context.scope.workspaceId, groupId: context.scope.groupId, projectId: project.value!.id, collectionId: collection.id, folderIds, apiId: asset.contract.id,
       } });
-      for (const folder of container.folders) visit(folder, [...folderIds, folder.id]);
+      for (const folder of container.folders) visit(folder, [...folderIds, folder.id], [...names, folder.name]);
     };
-    visit(collection, []);
+    visit(collection, [], [collection.name]);
   }
   return entries;
 });
-const cases = computed(() => assets.value.flatMap(({ locator, asset }) => asset.cases.map(testCase => ({
+const cases = computed(() => assets.value.flatMap(({ locator, asset, modulePath }) => asset.cases.map(testCase => ({
   id: JSON.stringify([locator, testCase.id, testCase.scope]), label: testCase.name,
-  detail: `${asset.contract.metadata.name} · ${testCase.scope === "base" ? t("onlineExecution.baseEnvironment") : testCase.scope}`,
-  locator, asset, testCase,
+  detail: [asset.contract.metadata.name, testCase.scope === "base" ? undefined : testCase.scope].filter(Boolean).join(" · "),
+  locator, asset, testCase, modulePath,
 }))));
 const choices = computed(() => {
   if (kind.value === "case") return cases.value;
@@ -184,13 +184,13 @@ async function cancel() {
 </script>
 
 <template>
-  <RunLaunchForm v-model:kind="kind" v-model:selected="selected" :kinds="kinds" :choices="choices" :reason="reason"
+  <RunLaunchForm v-model:search="position.launchSearch" v-model:kind="kind" v-model:selected="selected" :kinds="kinds" :choices="choices" :reason="reason"
     :notice="notice" :busy="busy || execution.running" :disabled="!!workflow && !validInputs" @launch="start">
     <dl>
-      <dt>{{ label("scope") }}</dt><dd v-if="suite">{{ suitePreview?.count == null ? label('suite') : label('entries', { count: suitePreview.count }) }}</dd>
+      <template v-if="testCase"><dt>{{ label("api") }}</dt><dd>{{ testCase.asset.contract.metadata.name }}</dd><dt>{{ t("run.case") }}</dt><dd>{{ testCase.testCase.name }}</dd></template>
+      <template v-else><dt>{{ label("scope") }}</dt><dd v-if="suite">{{ suitePreview?.count == null ? label('suite') : label('entries', { count: suitePreview.count }) }}</dd>
       <dd v-else-if="workflow">{{ label('nodes', { count: workflow.nodes.length }) }}</dd>
-      <dd v-else-if="testCase">{{ testCase.asset.contract.metadata.name }} · {{ label('assertionCount', { count: testCase.testCase.assertions.length }) }}</dd>
-      <dd v-else>{{ label(kind) }}</dd>
+      <dd v-else>{{ label(kind) }}</dd></template>
       <dt>{{ label("environment") }}</dt><dd>{{ environment?.name ?? (environmentId ? label('environment-unavailable') : t('onlineExecution.baseEnvironment')) }}<small v-if="environment && (plan?.environmentId || (suite?.environmentId && !execution.environmentId))"> · {{ label('planEnvironment') }}</small></dd>
       <dt>{{ label("location") }}</dt><dd>{{ execution.location.kind === 'local' ? label('local') : agent?.name ?? label('agent-offline') }}</dd>
       <template v-if="suite"><dt>{{ label("data") }}</dt><dd>{{ dataset?.name ?? label("noData") }}</dd></template>

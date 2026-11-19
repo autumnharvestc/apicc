@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, provide, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Table as ATable, Tag as ATag } from "ant-design-vue";
 import type { CaseOutcome } from "@apicc/core";
@@ -7,7 +7,8 @@ import type { CollectionLocator, ProjectLocator } from "../../../shared/location
 import type { LocalLaunchProps } from "../execution/localLaunch.js";
 import { useLaunchMessages } from "../execution/launchMessages.js";
 import { projectSessionKey } from "../stores/localIdentity.js";
-import { useWorkbenchPosition } from "../stores/workbenchPosition.js";
+import { useWorkbenchPosition, workbenchPositionKey } from "../stores/workbenchPosition.js";
+import RunWorkbench from "./RunWorkbench.vue";
 import LocalRunLaunch from "./LocalRunLaunch.vue";
 import LocalRunRecords from "./LocalRunRecords.vue";
 import EmptyState from "./EmptyState.vue";
@@ -25,6 +26,7 @@ const { t } = useI18n();
 const label = useLaunchMessages();
 const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
 const position = useWorkbenchPosition(() => projectKey.value);
+provide(workbenchPositionKey, position);
 const pane = computed({ get: () => position.value.runPane, set: value => { position.value.runPane = value; } });
 const file = ref("");
 const previewModule = ref<string | null>("");
@@ -103,17 +105,12 @@ async function selectObservation(record: Record<string, any>) {
 <template>
   <section class="run-view" data-testid="run-view">
     <EmptyState v-if="!workspace.tree || !props.projectLocator" :text="t('run.empty')" />
-    <template v-else>
-      <h1 class="run-heading">{{ t("nav.run") }}</h1>
-      <nav class="run-tabs" :aria-label="t('nav.run')">
-        <button type="button" :aria-current="pane === 'launch' ? 'page' : undefined" data-testid="run-launch-tab" @click="pane = 'launch'">{{ label('launch') }}</button>
-        <button type="button" :aria-current="pane === 'records' ? 'page' : undefined" data-testid="runs-history-btn" @click="pane = 'records'">{{ label('records') }}</button>
-      </nav>
+    <RunWorkbench v-else :pane="pane" @navigate="pane = $event">
       <LocalRunLaunch v-show="pane === 'launch'" v-bind="props" @records="openRecord" @open-debug-record="id => emit('open-debug-record', id)"
         @selection="(kind, id) => { previewModule = kind === 'module' ? id : null; }" />
       <LocalRunRecords v-if="pane === 'records' && props.projectLocator" :run="run" :workspace="workspace" :project="props.projectLocator"  :file="file" @opened="file = ''"
         :ai="ai" :report-error="reportError" @launch="pane = 'launch'" @locate-evidence="emit('locate-evidence', $event)" @collaboration="emit('collaboration', $event)" />
-      <template v-if="pane === 'launch' && matchingResultEnvironment && selectedCollectionLocator && previewModule !== null && (!previewModule || previewModule === selectedCollectionLocator.collectionId)">
+      <template v-if="pane === 'launch' && matchingResultEnvironment && selectedCollectionLocator && previewModule !== null && (!position.launchTarget || previewModule === selectedCollectionLocator.collectionId)">
       <div v-if="run.result" class="summary" data-testid="run-summary">
         <a-button v-if="ai && selectedCollectionLocator" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</a-button>
         <a-button v-if="selectedCollectionLocator" data-testid="collaboration-publish-current" @click="shareReport">{{ t('collaboration.publishToProject') }}</a-button>
@@ -168,23 +165,12 @@ async function selectObservation(record: Record<string, any>) {
         </template>
       </a-table>
       </template>
-    </template>
+    </RunWorkbench>
   </section>
 </template>
 
 <style scoped>
-.run-view {
-  padding: 16px;
-  min-width: 0;
-  font-size: 13px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.run-heading { font-size: 20px; margin: 0; }
-.run-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); }
-.run-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); padding: 6px 12px; cursor: pointer; font: inherit; }
-.run-tabs button[aria-current] { color: var(--accent); border-bottom-color: currentColor; }
+.run-view { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .summary {
   color: var(--text);
 }

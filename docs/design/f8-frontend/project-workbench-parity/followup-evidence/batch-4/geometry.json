@@ -1,0 +1,251 @@
+{
+  "cssViewport": [
+    1114,
+    627
+  ],
+  "devicePixelRatio": 1.5008976660682227,
+  "pngPixels": [
+    1672,
+    941
+  ],
+  "rectanglesInImagePixels": {
+    "R01-online-case.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 863,
+        "height": 679
+      },
+      "right": {
+        "x": 984,
+        "y": 204,
+        "width": 674,
+        "height": 679
+      },
+      "action": {
+        "x": 1480,
+        "y": 804,
+        "width": 156,
+        "height": 53
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      },
+      "previewTitle": {
+        "x": 1007,
+        "y": 286,
+        "width": 629,
+        "height": 45
+      },
+      "list": {
+        "x": 132,
+        "y": 438,
+        "width": 818,
+        "height": 419
+      }
+    },
+    "R02-local-case.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 863,
+        "height": 679
+      },
+      "right": {
+        "x": 984,
+        "y": 204,
+        "width": 674,
+        "height": 679
+      },
+      "action": {
+        "x": 1480,
+        "y": 804,
+        "width": 156,
+        "height": 53
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      },
+      "previewTitle": {
+        "x": 1007,
+        "y": 286,
+        "width": 629,
+        "height": 45
+      },
+      "list": {
+        "x": 132,
+        "y": 438,
+        "width": 818,
+        "height": 419
+      }
+    },
+    "R08-online-empty.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 863,
+        "height": 679
+      },
+      "right": {
+        "x": 984,
+        "y": 204,
+        "width": 674,
+        "height": 679
+      },
+      "action": {
+        "x": 1480,
+        "y": 804,
+        "width": 156,
+        "height": 53
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      },
+      "list": {
+        "x": 132,
+        "y": 438,
+        "width": 818,
+        "height": 419
+      }
+    },
+    "R08-local-empty.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 863,
+        "height": 679
+      },
+      "right": {
+        "x": 984,
+        "y": 204,
+        "width": 674,
+        "height": 679
+      },
+      "action": {
+        "x": 1480,
+        "y": 804,
+        "width": 156,
+        "height": 53
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      },
+      "list": {
+        "x": 132,
+        "y": 438,
+        "width": 818,
+        "height": 419
+      }
+    },
+    "R03-local-module.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 863,
+        "height": 679
+      },
+      "right": {
+        "x": 984,
+        "y": 204,
+        "width": 674,
+        "height": 679
+      },
+      "action": {
+        "x": 1468,
+        "y": 804,
+        "width": 168,
+        "height": 53
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      },
+      "previewTitle": {
+        "x": 1007,
+        "y": 286,
+        "width": 629,
+        "height": 45
+      },
+      "list": {
+        "x": 132,
+        "y": 438,
+        "width": 818,
+        "height": 258
+      }
+    }
+  }
+}

@@ -249,6 +249,51 @@ describe("RunView", () => {
     expect(wrapper.get('[data-testid="run-btn"]').attributes("disabled")).toBeDefined();
   });
 
+  it("restores the launch search and target per local project and clears the preview without starting a run", async () => {
+    const { wrapper, api, workspace, group, project, collectionNode } = await mountRunView();
+    const submit = vi.spyOn(api, "runCollection");
+    const second = await api.nodeCreate({kind:"project", parent:group.locator, name:project.label});
+    if (second.kind !== "project") throw Error("missing project");
+    await api.nodeCreate({kind:"collection",parent:second.locator,name:collectionNode.label});
+    await workspace.refresh(); await flushPromises();
+    const search = wrapper.get<HTMLInputElement>('[data-testid="launch-search"]');
+    await search.setValue(collectionNode.label); await chooseModule(wrapper, collectionNode.id); await flushPromises();
+    expect(wrapper.get(".launch-preview dl").text()).toContain("无环境");
+    await wrapper.setProps({projectLocator:second.locator}); await flushPromises();
+    expect(search.element.value).toBe(""); expect(wrapper.find(".launch-preview h3").exists()).toBe(false);
+    await search.setValue("other search");
+    await wrapper.setProps({projectLocator:project.locator}); await flushPromises();
+    expect(search.element.value).toBe(collectionNode.label);
+    expect(wrapper.get<HTMLInputElement>('input[type="radio"]:checked').element.value).toBe(collectionNode.id);
+    await wrapper.get('[data-testid="launch-clear"]').trigger("click"); await flushPromises();
+    expect(search.element.value).toBe(collectionNode.label);
+    expect(wrapper.find(".launch-preview h3").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="module-scope"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="run-btn"]').attributes("disabled")).toBeDefined();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("searches and submits a physical case by the name saved in the selected environment", async () => {
+    const {wrapper,api,workspace,project} = await mountRunView();
+    const assets = await api.listTestingAssets({root:workspace.root!,project:project.locator});
+    const locator = assets.cases[0]!.locator, edit = await api.apiGet(locator), base = edit.api.cases[0]!;
+    const env = await api.envCreate({locator:project.locator,name:"集成环境"});
+    edit.api.cases = [{...base,name:"基础订单",scope:"base"},{...base,name:"集成结算订单",scope:"集成环境"}];
+    await api.apiSave(locator,edit.api,edit.sourceApiRevision); await workspace.refresh();
+    await wrapper.setProps({environmentId:env.id}); await flushPromises();
+    const submit = vi.spyOn(api,"debugStart");
+    await wrapper.get('[data-testid="launch-kind"]').setValue("case");
+    await wrapper.get('[data-testid="launch-search"]').setValue("集成结算");
+    expect(wrapper.findAll('[data-testid="launch-target"]')).toHaveLength(1);
+    await wrapper.get('[data-testid="launch-target"]').setValue(true); await flushPromises();
+    expect(wrapper.get(".launch-preview h3").text()).toBe("集成结算订单");
+    expect(wrapper.get(".launch-preview dl").text()).toContain("集成结算订单");
+    expect(submit).not.toHaveBeenCalled();
+    await wrapper.get('[data-testid="run-btn"]').trigger("click"); await flushPromises();
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit.mock.calls[0]![0]).toMatchObject({environmentId:env.id,case:{caseId:base.id,scope:"集成环境"}});
+  });
+
   it("uses the project environment ID for a single case even when module execution cannot resolve its name", async () => {
     const { wrapper, api, workspace, project, collectionNode } = await mountRunView();
     await api.envCreate({ locator: project.locator, name: "Same name" });
@@ -290,6 +335,10 @@ describe("RunView", () => {
     });
     await wrapper.get('[data-testid="launch-target"]').setValue(true); await flushPromises(); await button.trigger("click");
     await vi.waitFor(() => expect(debugWait).toHaveBeenCalledTimes(1));
+    expect(wrapper.find('[data-testid="launch-cancel"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="launch-clear"]').trigger("click");
+    expect(wrapper.find('[data-testid="launch-cancel"]').exists()).toBe(false);
+    expect(button.attributes("disabled")).toBeDefined();
     await kind.setValue("suite"); finish(); await vi.waitFor(() => expect(run.caseRunning).toBe(false));
     expect(wrapper.find('[data-testid="launch-open-debug"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("通过 1 条");

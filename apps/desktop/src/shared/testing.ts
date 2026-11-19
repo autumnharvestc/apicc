@@ -36,7 +36,7 @@ export interface TestingAssets {
   suites: SuiteAsset[];
   environments: Array<{ id: string; name: string }>;
   collections: Array<{ id: string; name: string }>;
-  cases: Array<{ locator: ApiLocator; caseId: string; name: string; apiName?: string; caseName?: string; modulePath?: string; scopes: string[]; tags: string[] }>;
+  cases: Array<{ locator: ApiLocator; caseId: string; name: string; apiName?: string; caseName?: string; modulePath?: string; scopes: string[]; variants?: { scope: string; name: string }[]; tags: string[] }>;
   workflows: Array<{ id: string; name: string; status: string }>;
 }
 export function suiteCaseChoices(project: ContractProject, owner: TestingContext["project"]): TestingAssets["cases"] {
@@ -44,13 +44,17 @@ export function suiteCaseChoices(project: ContractProject, owner: TestingContext
   for (const collection of project.collections) {
     function visit(container: ContractCollection | ContractFolder, folderIds: string[], names: string[]) {
       for (const asset of container.apis) {
-        const byId = new Map<string, TestingAssets["cases"][number]>();
+        const byId = new Map<string, TestingAssets["cases"][number] & { variants: { scope: string; name: string }[] }>();
         for (const item of asset.cases) {
           const previous = byId.get(item.id);
-          if (previous) { previous.scopes.push(item.scope); continue; }
+          if (previous) {
+            previous.scopes.push(item.scope);
+            previous.variants.push({scope: item.scope, name: item.name});
+            continue;
+          }
           const apiName = asset.contract.metadata.name;
           const choice = { locator: { ...owner, collectionId: collection.id, folderIds, apiId: asset.contract.id }, caseId: item.id,
-            name: `${apiName} / ${item.name}`, apiName, caseName: item.name, modulePath: names.join(" / "), scopes: [item.scope], tags: item.tags ?? [] };
+            name: `${apiName} / ${item.name}`, apiName, caseName: item.name, modulePath: names.join(" / "), scopes: [item.scope], variants: [{scope: item.scope, name: item.name}], tags: item.tags ?? [] };
           byId.set(item.id, choice); cases.push(choice);
         }
       }

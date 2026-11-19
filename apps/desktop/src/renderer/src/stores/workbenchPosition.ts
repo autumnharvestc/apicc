@@ -20,6 +20,8 @@ export function newWorkbenchPosition() {
     recordListOnly: false,
     scheduleId: "",
     notification: null as NotificationPosition | null,
+    launchSearch: "",
+    pendingLocalLaunch: null as { kind: LaunchKind; id: string; token: string } | null,
     launchTarget: null as { kind: LaunchKind; id: string } | null,
     apiPath: "",
     responseByApi: {} as Record<string, boolean>,

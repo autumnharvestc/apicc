@@ -62,6 +62,16 @@ it("keeps online selection read-only, preserves the exact dispatched case and on
   try {
     const kind = panel.get('[data-testid="launch-kind"]');
     expect(kind.findAll("option").map(item => item.attributes("value"))).toEqual(["case","suite","workflow","stress"]);
+    const search = panel.get<HTMLInputElement>('[data-testid="launch-search"]');
+    await search.setValue("Second");
+    const filtered = panel.get('[data-testid="launch-target"]'); await filtered.setValue(true); await flushPromises();
+    expect(panel.get(".launch-preview h3").text()).toBe("Second");
+    expect(panel.get(".launch-preview dl").findAll("dt").map(item => item.text())).toEqual(["接口","用例","环境","执行位置"]);
+    await panel.get('[data-testid="launch-clear"]').trigger("click"); await flushPromises();
+    expect(search.element.value).toBe("Second");
+    expect(panel.find(".launch-preview h3").exists()).toBe(false);
+    expect(panel.get('[data-testid="run-btn"]').attributes("disabled")).toBeDefined();
+    await search.setValue("");
     const pick = panel.findAll('[data-testid="launch-target"]')[1]!;
     await pick.setValue(true); await flushPromises();
     expect(adapter.editor.locator).toBeNull(); expect(requests).toHaveLength(0);

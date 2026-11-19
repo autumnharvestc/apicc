@@ -20,7 +20,7 @@ const { t } = useI18n();
 const label = useLaunchMessages();
 const kinds = ["module", "case", "suite", "workflow", "stress"] as const;
 const position = useWorkbenchPosition(() => scope.value);
-const kind = computed<LaunchKind>({ get: () => position.value.launchTarget?.kind ?? "module", set: kind => { position.value.launchTarget = { kind, id: "" }; } });
+const kind = computed<LaunchKind>({ get: () => position.value.launchTarget?.kind ?? "module", set: kind => { position.value.launchSearch = ""; position.value.launchTarget = { kind, id: "" }; } });
 const selected = computed({ get: () => position.value.launchTarget?.id ?? "", set: id => { position.value.launchTarget = { kind: kind.value, id }; } });
 const catalog = shallowRef<TestingAssets | null>(null), plans = shallowRef<SavedStressPlan[]>([]);
 const collection = shallowRef<CollectionLaunchPreview>(), suitePreview = shallowRef<SuitePreview & { dataDigest?: string }>(), workflow = shallowRef<Workflow>();
@@ -30,8 +30,8 @@ const allowDraft = ref(false), inputs = shallowRef<Record<string, JsonValue>>(),
 const scope = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
 const plain = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const caseChoices = computed(() => (catalog.value?.cases ?? []).flatMap(row => row.scopes.map(caseScope => ({
-  id: JSON.stringify([row.locator, row.caseId, caseScope]), label: row.name,
-  detail: caseScope === "base" ? t("testWorkbench.baseCase") : caseScope,
+  id: JSON.stringify([row.locator, row.caseId, caseScope]), label: row.variants?.find(item => item.scope === caseScope)?.name ?? row.caseName ?? row.name,
+  detail: [row.apiName, caseScope === "base" ? undefined : caseScope].filter(Boolean).join(" · "), modulePath: row.modulePath,
   locator: row.locator, caseId: row.caseId, scope: caseScope,
 }))));
 const choices = computed(() => {
@@ -49,6 +49,14 @@ const intent = computed(() => JSON.stringify([scope.value, kind.value, selected.
 const busy = computed(() => starting.value || props.run.running || props.run.caseRunning || props.testing.running || props.workflowDesign.running || props.stress.running);
 const ownCase = computed(() => props.run.caseOwner && projectSessionKey(props.run.caseOwner.root, props.run.caseOwner.project) === scope.value);
 const ownWorkflow = computed(() => props.workflowDesign.activeRun && projectSessionKey(props.workflowDesign.activeRun.root, props.workflowDesign.activeRun.locator) === scope.value);
+const canCancel = computed(() => {
+  const pending = position.value.pendingLocalLaunch;
+  if (!pending || pending.kind !== kind.value || pending.id !== selected.value) return false;
+  return kind.value === "case" ? ownCase.value && props.run.caseRunning
+    : kind.value === "suite" ? props.testing.running && props.testing.current
+    : kind.value === "workflow" ? !!ownWorkflow.value
+    : kind.value === "stress" && props.stress.running && props.stress.planCurrent();
+});
 const archive = ref(""), debugHistoryId = ref("");
 let catalogueRead = 0, previewRead = 0, selectionEpoch = 0, alive = true;
 let lastPreview: { target: string; signature: string } | undefined;
@@ -125,7 +133,7 @@ const effectiveCase = computed(() => {
   return picked && collection.value?.cases.find(item => item.apiId === picked.locator.apiId && item.caseId === picked.caseId
     && item.scope === picked.scope && JSON.stringify(item.folderIds) === JSON.stringify(picked.locator.folderIds));
 });
-const apiCount = computed(() => new Set(collection.value?.cases.map(item => JSON.stringify([item.folderIds, item.apiId]))).size);
+const apiCount = computed(() => new Set([...(collection.value?.cases ?? []), ...(collection.value?.skipped ?? [])].map(item => JSON.stringify([item.folderIds, item.apiId]))).size);
 const caseTab = computed(() => chosenCase.value ? props.debug.requestTabForSession(apiSessionKey(props.workspace.root, chosenCase.value.locator)) : null);
 const caseState = computed(() => caseTab.value ? props.debug.requestTabs[caseTab.value.tabId] : undefined);
 const reason = computed(() => {
@@ -167,6 +175,8 @@ async function start(confirmOrigin = false) {
   const captured = intent.value, owner = scope.value, data = catalog.value;
   const selection = selectionEpoch;
   const stillSelected = () => alive && scope.value === owner && selection === selectionEpoch;
+  const ownerPosition = position.value, token = crypto.randomUUID();
+  ownerPosition.pendingLocalLaunch = {kind: kind.value, id: selected.value, token};
   starting.value = true;
   notice.value = ""; archive.value = ""; debugHistoryId.value = "";
   try {
@@ -213,36 +223,39 @@ async function start(confirmOrigin = false) {
       if (/run-launch-preview-changed|revision-conflict|root\/revision changed/.test(String(error))) changed();
       else { notice.value = launchError(error, label); props.reportError(error); }
     }
-  } finally { if (alive && scope.value === owner) starting.value = false; }
+  } finally {
+    if (ownerPosition.pendingLocalLaunch?.token === token) ownerPosition.pendingLocalLaunch = null;
+    if (alive && scope.value === owner) starting.value = false;
+  }
 }
 async function cancel() {
+  if (!canCancel.value) return;
   try {
-    if (ownCase.value && props.run.caseRunning && props.projectLocator) await props.run.cancelSavedCase(props.workspace.root, props.projectLocator);
-    else if (props.testing.running && props.testing.current) await props.testing.cancel();
-    else if (ownWorkflow.value) await props.workflowDesign.cancel();
-    else if (props.stress.running && props.stress.planCurrent()) await props.stress.stopPlan();
+    if (kind.value === "case" && props.projectLocator) await props.run.cancelSavedCase(props.workspace.root, props.projectLocator);
+    else if (kind.value === "suite") await props.testing.cancel();
+    else if (kind.value === "workflow") await props.workflowDesign.cancel();
+    else if (kind.value === "stress") await props.stress.stopPlan();
   } catch (error) { props.reportError(error); }
 }
 </script>
 
 <template>
-  <RunLaunchForm v-model:kind="kind" v-model:selected="selected" :kinds="kinds" :choices="choices" :reason="reason" :notice="notice"
+  <RunLaunchForm v-model:search="position.launchSearch" v-model:kind="kind" v-model:selected="selected" :kinds="kinds" :choices="choices" :reason="reason" :notice="notice"
     :loading="loading || reading" :busy="busy" :disabled="!!pendingOrigin || (!!workflow && !inputsValid)" @launch="start()">
     <dl>
-      <dt>{{ label('scope') }}</dt>
+      <template v-if="chosenCase"><dt>{{ label('api') }}</dt><dd>{{ effectiveCase?.apiName ?? chosenCase.detail }}</dd><dt>{{ t('run.case') }}</dt><dd>{{ chosenCase.label }}</dd></template>
+      <template v-else><dt>{{ label('scope') }}</dt>
       <dd v-if="kind === 'module'">{{ label('moduleScope') }}</dd>
       <dd v-else-if="suitePreview">{{ label('entries', {count: suitePreview.entries.length}) }}</dd>
       <dd v-else-if="workflow">{{ label('nodes', {count: workflow.nodes.length}) }}</dd>
-      <dd v-else-if="chosenCase">{{ effectiveCase?.apiName ?? chosenCase.label }} · {{ chosenCase.detail }}</dd>
-      <dd v-else>{{ label(kind) }}</dd>
-      <template v-if="kind === 'module' && collection"><dt>{{ label('applicable') }}</dt><dd>{{ label('apis', {count: apiCount}) }} · {{ label('cases', {count: collection.cases.length}) }}</dd></template>
-      <dt>{{ label('environment') }}</dt><dd>{{ actualEnv?.name ?? (actualEnvId ? label('environment-unavailable') : t('onlineExecution.baseEnvironment')) }}</dd>
+      <dd v-else>{{ label(kind) }}</dd></template>
+      <dt>{{ label('environment') }}</dt><dd>{{ actualEnv?.name ?? (actualEnvId ? label('environment-unavailable') : t('editor.noEnv')) }}<small v-if="actualEnv && (savedPlan?.plan.environmentId || (suite?.environmentId && !environmentId))"> · {{ label('planEnvironment') }}</small></dd>
       <dt>{{ label('location') }}</dt><dd>{{ label('local') }}</dd>
       <template v-if="suite"><dt>{{ label('data') }}</dt><dd>{{ catalog?.datasets.find(item => item.id === suite?.datasetId)?.name ?? label('noData') }}</dd></template>
       <template v-if="savedPlan"><dt>{{ label('maxVus') }}</dt><dd>{{ savedPlan.plan.maxVus }}</dd></template>
     </dl>
     <section v-if="kind === 'module' && collection" class="case-preview" data-testid="module-scope">
-      <header><h4>{{ label('previewCases') }}</h4><span>{{ label('cases', {count: collection.cases.length}) }}</span></header>
+      <header><h4>{{ label('previewCases') }}</h4><span>{{ label('apis', {count: apiCount}) }} · {{ label('cases', {count: collection.cases.length}) }}</span></header>
       <div class="case-scroll" v-if="collection.cases.length"><table>
         <thead><tr><th>{{ label('api') }}</th><th>{{ t('run.case') }}</th></tr></thead>
         <tbody><tr v-for="item in collection.cases" :key="JSON.stringify([item.folderIds,item.apiId,item.caseId,item.scope])">
@@ -260,7 +273,7 @@ async function cancel() {
       <button type="button" @click="stress.denyPlanTarget()">{{ t('stress.denyTarget') }}</button>
     </section>
     <template #actions>
-      <button v-if="ownCase || (testing.running && testing.current) || ownWorkflow || (stress.running && stress.planCurrent())" type="button" @click="cancel">{{ label('cancel') }}</button>
+      <button v-if="canCancel" type="button" data-testid="launch-cancel" @click="cancel">{{ label('cancel') }}</button>
       <button v-if="debugHistoryId" type="button" data-testid="launch-open-debug" @click="emit('open-debug-record', debugHistoryId)">{{ label("inspect") }}</button>
       <button v-if="archive" type="button" data-testid="launch-open-record" @click="emit('records', archive)">{{ label('inspect') }}</button>
     </template>
