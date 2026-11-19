@@ -137,7 +137,6 @@ function setLoopMax(value: number) { if (props.node?.kind !== 'loop') return; if
       <WfControlFields v-if="node.kind === 'assert' || node.kind === 'condition'" mode="predicate" :predicate="node.predicate" @predicate="setNode({ predicate: $event })" />
       <template v-if="node.kind === 'subflow' || node.kind === 'loop'">
         <WfControlFields mode="call" :call="node" :workflows="workflows" @call="setNode($event)" @navigate="emit('navigate', $event)" />
-        <p class="hint">{{ t('wf.control.callIsolation') }}</p>
       </template>
       <template v-if="node.kind === 'loop'">
         <label>{{ t('wf.control.loopMode') }}<select :value="node.count === undefined ? 'while' : 'count'" data-testid="wf-loop-mode" @change="setNode(text($event) === 'count' ? { count: 1, while: undefined } : { count: undefined, while: initialPredicate() })"><option value="count">{{ t('wf.control.count') }}</option><option value="while">{{ t('wf.control.while') }}</option></select></label>
@@ -146,7 +145,6 @@ function setLoopMax(value: number) { if (props.node?.kind !== 'loop') return; if
         <label>{{ t('wf.control.maxIterations') }}<input type="number" min="1" max="10000" :value="node.maxIterations" data-testid="wf-loop-max" @change="number($event, setLoopMax, 1, 10000)" /></label>
         <label><input type="checkbox" :checked="!!node.until" data-testid="wf-until-enable" @change="setNode({ until: checked($event) ? initialPredicate() : undefined })" />{{ t('wf.control.until') }}</label>
         <WfControlFields v-if="node.until" mode="predicate" :predicate="node.until" @predicate="setNode({ until: $event })" />
-        <p class="hint">{{ t('wf.control.loopHint') }}</p>
       </template>
       <template v-if="node.kind === 'parallel'">
         <label>{{ t('wf.control.join') }}<select :value="node.join" data-testid="wf-join" @change="setNode({ join: text($event) as 'all' | 'any-success' })"><option value="all">{{ t('wf.control.all') }}</option><option value="any-success">{{ t('wf.control.anySuccess') }}</option></select></label>
@@ -155,7 +153,6 @@ function setLoopMax(value: number) { if (props.node?.kind !== 'loop') return; if
           <button type="button" :disabled="node.branches.length <= 2" @click="setNode({ branches: node.branches.filter((_, i) => i !== index) })">{{ t('common.delete') }}</button>
         </fieldset>
         <button type="button" data-testid="wf-branch-add" @click="addBranch">{{ t('wf.control.addBranch') }}</button>
-        <p class="hint">{{ t('wf.control.parallelHint') }}</p>
       </template>
       <h4>{{ t('wf.control.policy') }}</h4>
       <label>{{ t('wf.control.nodeTimeout') }}<input type="number" min="1" max="3600000" :value="policy.timeoutMs ?? ''" data-testid="wf-node-timeout" @change="text($event) === '' ? setPolicy({ timeoutMs: undefined }) : number($event, value => setPolicy({ timeoutMs: value }), 1, 3600000)" /></label>
@@ -178,7 +175,6 @@ function setLoopMax(value: number) { if (props.node?.kind !== 'loop') return; if
           <label v-if="role === 'onError'">{{ t('wf.control.errorMode') }}<select :value="policy.onError?.mode" data-testid="wf-error-mode" @change="setPolicy({ onError: { ...policy.onError!, mode: text($event) as 'propagate' | 'recover' } })"><option value="propagate">{{ t('wf.control.propagate') }}</option><option value="recover">{{ t('wf.control.recover') }}</option></select></label>
         </template>
       </fieldset>
-      <p class="hint">{{ t('wf.control.cancelCleanupHint') }}</p>
     </template>
     <p v-if="error" role="alert" data-testid="wf-field-error" class="field-error">{{ error }}</p>
   </div>

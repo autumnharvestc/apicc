@@ -237,7 +237,8 @@ describe("project Mock panel", () => {
     const draftText = JSON.stringify({ ...config, seed: "not-saved" }, null, 2);
     await wrapper.get('[data-testid="mock-config"]').setValue(draftText);
     expect(wrapper.find('[data-testid="mock-unsaved"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="mock-start-saved-note"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="mock-unsaved"]').text()).toContain("最近一次保存");
+    expect(wrapper.find('[data-testid="mock-start-saved-note"]').exists()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(2_000);
     expect(api.mockGet).toHaveBeenCalledTimes(2);

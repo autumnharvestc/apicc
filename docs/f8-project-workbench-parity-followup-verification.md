@@ -52,3 +52,26 @@
 | R06 | 「订单夜间回归」通知显示执行失败、通知发生时等待归档、Webhook 成功投递一次并返回 HTTP 200。由「查看本次运行」进入记录可见具体的断言失败节点；由「查看计划」定位到定时配置。查看后可返回同一条通知。另用已暂停的库存计划核对没有关联执行的通知。 |
 
 R05 点预览后可直接读出服务端返回的 11 月 20 日、21 日 02:00（UTC+08:00）。保存和启用均保持可见。三个相关面板共 153 项、执行回执与详情另 4 项定向测试通过，桌面类型检查通过。[第五批实拍与执行记录](design/f8-frontend/project-workbench-parity/followup-evidence/batch-5/README.md)
+
+## 第六批 · 旁注与联合验收
+
+| 验收项 | 结果与证据 |
+| --- | --- |
+| 文案及使用指南 | 逐项核对了 53 个组件中的 143 处中英文长文案，另记 6 条动态或同行说明，并检查每个工作区的短文案、空态和弹层。条件性错误、授权、影响与恢复动作保留在相应控件附近。套件隔离、执行生命周期、工作流和缓存机理归入从 README 可达的指南。[中英文处置表](design/f8-frontend/project-workbench-parity/followup-evidence/batch-6/copy-audit.md) · [桌面工作台使用指南](desktop-workbench-guide.md) |
+| 调试历史 | 同一份 200 历史中的两个交换可分别读出方法、地址、状态与耗时，另有真实 503 及缺乏交换证据的旧记录。原始报文和遮罩后的详情可展开。切换记录后选择标识与正文同步，收起前次展开的原始信息；浏览历史不会发送请求。 |
+| 权限与可读性 | Viewer 可用键盘到达只读原因，实际撤权后可用 Enter 返回仍有权访问的同级项目。英文深色窄窗可显示长数据集名，在表内横向滚动，保持保存按钮及底栏可达。正式定向回归 104 项及桌面类型检查通过。 |
+| 同一候选联验 | 十四个定稿场景在同一 Windows Electron 构建逐张采集。两个本地项目与一个在线项目六次切换，业务请求保持 35、代理任务保持 4。两端各显式运行一次带两行数据的用例，接收器新增四个预期 GET，均为 200，并分别定位到各自的记录。同名数据集取消切换保留原草稿；从通知进入两处关联再返回仍未读；压测改变目标再切回时仍需重确认。[联合行为、取证条件及补图来源](design/f8-frontend/project-workbench-parity/followup-evidence/batch-6/README.md) |
+
+十四个主场景对应渲染源码树 `726feb8d9a652d6d7c83b41cda0e08f8eec5ac63`。部分旁注前后对比与键盘焦点补图取自第六批较早候选，联合验收逐项注记了来源。两名 GPT-6.2 Astra xhigh 子代理分别承担开发和独审，各批采用受影响测试与实机验证。
+
+## 分批提交
+
+| 批次 | 提交 | 可复查的产物 |
+| --- | --- | --- |
+| 基线 | `daddcbab` | 获准的计划及十四张定稿 |
+| 1 | `f64de362` | [目录、草稿和跨项目恢复](design/f8-frontend/project-workbench-parity/followup-evidence/batch-1/README.md) |
+| 2 | `825a9c9f` | [用例和资产身份](design/f8-frontend/project-workbench-parity/followup-evidence/batch-2/README.md) |
+| 3 | `e5d27cbc`、`3fd82cc5` | [数据集、套件和压测](design/f8-frontend/project-workbench-parity/followup-evidence/batch-3/README.md) |
+| 4 | `1494fb1b` | [双端发起任务](design/f8-frontend/project-workbench-parity/followup-evidence/batch-4/README.md) |
+| 5 | `b7556507` | [任务记录、定时任务与通知](design/f8-frontend/project-workbench-parity/followup-evidence/batch-5/README.md) |
+| 6 | 与本验收记录一并提交 | [最终定稿和实机并排图册](design/f8-frontend/project-workbench-parity/followup-evidence/batch-6/comparison.html) |

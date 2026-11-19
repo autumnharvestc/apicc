@@ -1873,7 +1873,7 @@ describe("DebugHistory filters", () => {
     }
   });
 
-  it("shows the selected history delete action in the active locale", async () => {
+  it("shows localized captured exchange facts and keeps raw evidence secondary when switching exchanges", async () => {
     const previousLocale = localStorage.getItem("apicc.locale");
     try {
       for (const [locale, label] of [["zh-CN", "删除记录"], ["en", "Delete record"]] as const) {
@@ -1881,7 +1881,10 @@ describe("DebugHistory filters", () => {
         const history = reactive({
           filter: { limit: 50, offset: 0 }, items: [], diagnostics: [], error: null, loading: false, nextOffset: null,
           selected: { record: { historyId: "selected-history", result: {
-            identityAvailable: false, replay: { identityAvailable: false, available: false }, exchanges: [],
+            identityAvailable: false, replay: { identityAvailable: false, available: false }, exchanges: [
+              { order: 1, transportState: "responded", durationMs: 11.70513, observation: "http-hop", request: { method: "GET", url: "/orders", body: { kind: "none" } }, response: { status: 503, body: { kind: "text", text: "[REDACTED]" } } },
+              { order: 2, transportState: "failed", failureStage: "request-prepare", failureCode: "CONFIG" },
+            ],
           } } },
           preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
           load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
@@ -1895,7 +1898,26 @@ describe("DebugHistory filters", () => {
         try {
           await flushPromises();
           expect(expectBody("debug-history-delete").text()).toBe(label);
-          expect(expectBody("debug-history-delete").text()).not.toBe("debugLoop.deleteRecord");
+          const facts = () => expectBody("debug-history-exchange-facts").text();
+          expect(facts()).toContain("GET /orders");
+          expect(facts()).toContain("HTTP 503");
+          expect(facts()).toContain("11.71 ms");
+          const raw = expectBody("debug-history-raw").element as HTMLDetailsElement;
+          expect(raw.open).toBe(false);
+          raw.open = true;
+          expect(raw.textContent).toContain("[REDACTED]");
+          const picker = wrapper.findAllComponents({ name: "ASelect" }).find(control => control.attributes("data-testid") === "debug-history-exchange")!;
+          picker.vm.$emit("update:value", 2);
+          await flushPromises();
+          expect(facts()).not.toContain("HTTP 503");
+          expect(facts()).toContain(locale === "en" ? "Request preparation" : "准备请求");
+          expect(facts()).toContain(locale === "en" ? "Not collected" : "未采集");
+          expect(facts()).toContain("CONFIG");
+          expect((expectBody("debug-history-raw").element as HTMLDetailsElement).open).toBe(false);
+          history.selected.record = { ...history.selected.record, historyId: "direct-link", result: { ...history.selected.record.result, exchanges: history.selected.record.result.exchanges.slice(0, 1) } };
+          await flushPromises();
+          expect(picker.props("value")).toBe(1);
+          expect(facts()).toContain("HTTP 503");
         } finally {
           wrapper.unmount();
         }
@@ -1981,7 +2003,7 @@ describe("DebugHistory filters", () => {
         mode: "free", identityAvailable: true, sourceProjectRevision: "project-rev",
         source: { sourceKind: "free", project, draftId },
         replay: { mode: "free", sourceKind: "free", project, draftId, request, requestTemplate: request, parameters: {}, fields: [], available: true, identityAvailable: true },
-        exchanges: [{ order: 1, transportState: "complete", request, intent: { available: true, fields: [] } }],
+        exchanges: [{ order: 1, transportState: "responded", request, intent: { available: true, fields: [] } }],
       } } },
       preferences: { enabled: true, retentionDays: 30, maxRecords: 1000 },
       load: vi.fn(async () => {}), refresh: vi.fn(async () => {}), updatePreferences: vi.fn(async () => {}),
@@ -2008,12 +2030,23 @@ describe("DebugHistory filters", () => {
     await expectBody("debug-history-replay").trigger("click");
     await flushPromises();
     expect(replayFree).toHaveBeenCalledExactlyOnceWith({ historyId: item.historyId, exchangeOrder: 1, project, draftId });
+    expect(expectBody(`history-${item.historyId}`).attributes("aria-current")).toBe("true");
+    await wrapper.setProps({ debug: { restoredFields: [], restoredSourceAvailable: false, freeRestoredPreview: { project, draftId, request, parentHistoryId: item.historyId, fields: [] } } as never });
+    restoreFree.mockResolvedValueOnce({ sourceChanged: false, sourceAvailable: false });
+    await expectBody("debug-history-restore").trigger("click");
+    await flushPromises();
+    expect(expectBody("debug-history-free-readonly-restore").text()).toContain("GET https://example.test/free");
+    expect(expectBody("debug-history-free-readonly-restore").find("details").attributes("open")).toBeUndefined();
+    history.selected.record = { ...history.selected.record, historyId: "another-record" };
+    await flushPromises();
+    expect(bodyFind("debug-history-free-readonly-restore")).toBeNull();
+    expect(expectBody(`history-${item.historyId}`).attributes("aria-current")).toBeUndefined();
 
     await wrapper.setProps({ projectLocator: { ...project, projectId: "other-project" } });
     expect((expectBody("debug-history-restore").element as HTMLButtonElement).disabled).toBe(true);
     expect((expectBody("debug-history-replay").element as HTMLButtonElement).disabled).toBe(true);
     expect(bodyFind("debug-history-switch-project")).not.toBeNull();
-    expect(restoreFree).toHaveBeenCalledTimes(1);
+    expect(restoreFree).toHaveBeenCalledTimes(2);
     expect(replayFree).toHaveBeenCalledTimes(1);
   });
 
@@ -2039,7 +2072,7 @@ describe("DebugHistory filters", () => {
       result: {
         mode: "case", locator, identityAvailable: true,
         replay: { mode: "case", case: caseIdentity, requestTemplate: template, parameters: {}, fields: [], identityAvailable: true, available: false },
-        exchanges: [{ order: 1, transportState: "complete", request: exchangeRequest, intent: { parameters: {}, fields: [], available: false } }],
+        exchanges: [{ order: 1, transportState: "responded", request: exchangeRequest, intent: { parameters: {}, fields: [], available: false } }],
       },
     };
     const v2Record = {
@@ -2048,7 +2081,7 @@ describe("DebugHistory filters", () => {
         mode: "case", identityAvailable: true,
         source: { sourceKind: "asset", locator, sourceApiRevision: "api-revision" },
         replay: { mode: "case", sourceKind: "asset", case: caseIdentity, requestTemplate: template, parameters: {}, fields: [capturedField], identityAvailable: true, available: true },
-        exchanges: [{ order: 1, transportState: "complete", request: exchangeRequest, intent: { parameters: {}, fields: [capturedField], available: false } }],
+        exchanges: [{ order: 1, transportState: "responded", request: exchangeRequest, intent: { parameters: {}, fields: [capturedField], available: false } }],
       },
     };
     const history = reactive({

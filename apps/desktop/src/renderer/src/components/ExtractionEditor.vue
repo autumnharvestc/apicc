@@ -77,7 +77,6 @@ function remove(index: number) { if (!props.readOnly) { delete errors[props.item
       <button type="button" :disabled="readOnly" @click="remove(index)">{{ t('testing.remove') }}</button>
       <p v-if="rowError(row)" role="alert">{{ rowError(row) }}</p>
     </div>
-    <p class="hint">{{ t('testing.extractionHint') }}</p>
     <button type="button" data-testid="extraction-add" :disabled="readOnly || items.length >= 64" @click="add">{{ t('testing.addExtraction') }}</button>
   </div>
 </template>

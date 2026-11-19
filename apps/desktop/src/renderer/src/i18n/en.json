@@ -46,7 +46,7 @@
   "desktopPresentation": {"draftSummary": "Current draft overview", "advanced": "Advanced configuration · Raw JSON", "enabled": "Enabled", "disabled": "Disabled", "empty": "No configuration entries", "status": {"draft": "Draft", "published": "Published", "deprecated": "Deprecated"}, "auth": {"none": "No authentication", "bearer": "Bearer token", "basic": "Basic authentication", "apikey": "API key", "componentRef": "Authentication component"}, "mockStatus": {"starting": "Starting", "running": "Running", "reloading": "Reloading", "invalid": "Invalid configuration", "stopping": "Stopping", "stopped": "Stopped"}, "seed": "Random seed", "enabledContracts": "Enabled contracts", "rules": "Rules (matching order)", "rule": "Rule / contract", "condition": "Match conditions", "response": "Response", "source": "Response source", "delay": "Delay (ms)", "inheritResponse": "Inherit response", "allRequests": "No additional conditions", "conditionSource": {"body": "Request body", "path": "Path", "query": "Query", "header": "Header"}, "exists": "Exists", "equals": "Equals", "responseSource": {"literal": "Literal body", "schema": "Generated from schema", "example": "Example reference"}, "payload": "View response body", "bindings": "Response binding", "duration": "Duration (ms)", "invalidProfiles": "Invalid configuration draft. Open advanced configuration and correct it before saving.", "tls": "TLS verification", "tlsDetails": "Certificates and secret references", "defaultTls": "Default verification; no custom target TLS", "proxyTls": "Proxy TLS verification", "targetTls": "Target TLS", "noPaths": "Not configured", "deleteVariable": "Delete variable {index}", "rawComponent": "Component contract (JSON)"},
   "runRecords": {"attempts":"Attempts","httpStatus":"Response status","channelVersion":"Channel version","cancelledLocal":"This local run was cancelled.","pendingArchive":"Awaiting archive","currentName":"{name} (current name)","workflowAssertion":"Workflow assertion failed","environmentId":"Environment ID {id}","currentAgentName":"Current accessible name for the recorded agent ID","localHistory":"Run history","onlineHistory":"Run history","recent":"Latest 20 agent tasks","details":"View","actualEnvironment":"Recorded environment","caseResults":"Case results","openReport":"View report","settings":"Settings","scheduleConfig":"Plan settings","scheduleMore":"Plan management","planHistory":"Run history","noticeList":"Notifications","noticeResult":"Execution result","delivery":"Notification delivery","selectEvent":"Select a notification to see its execution and delivery.","planPolicy":"Scheduling policy and resources","enablePlan":"Enable plan…","saveSettings":"Save changes","status":"Status","conclusion":"Verdict","time":"Time","refresh":"Refresh","actualLocation":"Execution location","planList":"Plans","recordedAt":"Time","technical":"Technical details"},
   "runWorkbench": {"search":{"case":"Search cases by name","module":"Search modules by name","suite":"Search suites by name","workflow":"Search workflows by name","stress":"Search load test plans by name"},"pick":{"case":"Select a case to preview its execution.","module":"Select a module to preview its cases.","suite":"Select a suite to preview its execution.","workflow":"Select a workflow to preview its execution.","stress":"Select a plan to preview this load test."}},
-  "testAssets": {"datasetSource":"Dataset source {number}","fileSource":"File source {number}","processes":"Worker processes","origins":"Authorized targets","confirmTarget":"Confirm targets and location","startStress":"Start stress test","targetMissing":"The stress target is unavailable. Select a case or workflow in this project and save the plan.","virtualUsers":"Virtual users","durationSeconds":"Duration (seconds)","loadSettings":"More load settings","searchPlans":"Search plans","pickPlan":"Select a stress plan","choosePlan":"Select a plan from the list on the left.","newPlanHint":"Use New to create a stress plan.","planConfig":"Plan settings","thisRun":"This run","followEnvironment":"Follow project ({name})","explicit":"Selected entries","dataset":"Dataset","sequence":"Order","invalidCell":"Row {row}, {column} requires a {type} value.","removeColumns":"Remove the columns {names} and their values from this draft?","saved":"Saved","new":"New","saveDataset":"Save dataset","saveSuite":"Save suite","pickDataset":"Select a dataset","pickSuite":"Select a suite","chooseDataset":"Select a dataset from the list on the left to view and edit it.","chooseSuite":"Select a suite from the list on the left to view and edit it.","rowCount":"{rows} rows · {columns} columns","searchDatasets":"Search datasets","searchSuites":"Search suites","row":"Row","order":"Execution order","addCases":"Add cases","types":{"string":"Text","number":"Number","boolean":"Boolean","null":"Null","missing":"Missing","json":"JSON","mixed":"Mixed types"},"cellType":"Type for row {row} · {column}","columns":"Manage columns","clear":"Clear selection","editName":"Edit name"},
+  "testAssets": {"readOnly":"Read-only project. Test assets cannot be changed.","datasetSource":"Dataset source {number}","fileSource":"File source {number}","processes":"Worker processes","origins":"Authorized targets","confirmTarget":"Confirm targets and location","startStress":"Start stress test","targetMissing":"The stress target is unavailable. Select a case or workflow in this project and save the plan.","virtualUsers":"Virtual users","durationSeconds":"Duration (seconds)","loadSettings":"More load settings","searchPlans":"Search plans","pickPlan":"Select a stress plan","choosePlan":"Select a plan from the list on the left.","newPlanHint":"Use New to create a stress plan.","planConfig":"Plan settings","thisRun":"This run","followEnvironment":"Follow project ({name})","explicit":"Selected entries","dataset":"Dataset","sequence":"Order","invalidCell":"Row {row}, {column} requires a {type} value.","removeColumns":"Remove the columns {names} and their values from this draft?","saved":"Saved","new":"New","saveDataset":"Save dataset","saveSuite":"Save suite","pickDataset":"Select a dataset","pickSuite":"Select a suite","chooseDataset":"Select a dataset from the list on the left to view and edit it.","chooseSuite":"Select a suite from the list on the left to view and edit it.","rowCount":"{rows} rows · {columns} columns","searchDatasets":"Search datasets","searchSuites":"Search suites","row":"Row","order":"Execution order","addCases":"Add cases","types":{"string":"Text","number":"Number","boolean":"Boolean","null":"Null","missing":"Missing","json":"JSON","mixed":"Mixed types"},"cellType":"Type for row {row} · {column}","columns":"Manage columns","clear":"Clear selection","editName":"Edit name"},
   "testWorkbench": {
     "baseCase": "Base case",
     "caseList": "Test cases",
@@ -112,7 +112,7 @@
     "scopes": { "base": "Base" },
     "consoleLevels": { "log": "Log", "info": "Info", "warn": "Warning", "error": "Error" }
   },
-  "executionCacheSettings": {
+  "executionCacheSettings": {"cleanupDetails":"Cleanup effects",
     "title": "Online execution cache",
     "localOnly": "Saved on this device only. Saving applies to inactive caches that are safe to release.",
     "maxInactiveContexts": "Inactive context limit",
@@ -427,6 +427,20 @@
     "closeConfirm": "Unsaved changes or running requests in this request tab will be discarded. Close this tab?"
   },
   "debugLoop": {
+    "rawExchange": "Raw exchange details",
+    "sourceDetails": "Source identifiers",
+    "projectId": "Project ID",
+    "draftId": "Draft ID",
+    "httpStatus": "HTTP status",
+    "transportLabel": "Request progress",
+    "elapsed": "Duration",
+    "captureSource": "Capture source",
+    "requestBody": "Request body",
+    "responseBody": "Response body",
+    "restoreDetails": "Captured request and source identifiers",
+    "transport": {"prepared":"Prepared","entered":"Transport started","headers-received":"Response headers received","responded":"Response received","failed":"Transport failed"},
+    "observed": {"http-hop":"HTTP exchange","legacy-text":"Legacy text capture"},
+    "fieldState": {"redacted":"Redacted","missing":"Missing","truncated":"Truncated"},
     "settingsTitle": "Debug settings",
     "settingsNote": "Settings override this invocation. Defaults are 10 seconds for connect and 30 seconds for other timeouts. Response limit caps at 128 MiB and upload at 1 GiB.",
     "settings": "Settings",
@@ -439,7 +453,7 @@
     "uploadLimitBytes": "Upload limit (bytes)",
     "responseLimitBytes": "Response limit (bytes)",
     "cookiesTitle": "Current API cookie jar",
-    "cookiesNote": "Cookie values are never shown. The jar belongs to the main-process session and is not saved with cases or history.",
+    "cookiesNote": "Only cookie names and attributes are shown.",
     "cookieName": "Name",
     "cookieDomain": "Domain",
     "cookiePath": "Path",
@@ -516,7 +530,7 @@
     "historyEnabled": "Save new debug history",
     "retentionDays": "Retention days",
     "maxRecords": "Maximum records",
-    "historyPreferencesNote": "These settings are local to this app, not the project. Disabling history keeps existing records.",
+    "historyPreferencesNote": "Turning off history keeps existing records.",
     "savePreferences": "Save settings",
     "request": "Request",
     "requestMode": "Request mode",
@@ -1582,7 +1596,7 @@
       "importers": "Importers"
     },
     "empty": "No plugins registered",
-    "emptyGuide": "Register plugins in the user-level manifest ~/.apicc/plugins.json and restart to load them; failures never block startup and their reasons are shown here. See docs/plugins.md for authoring and publishing.",
+    "emptyGuide": "Register plugins in ~/.apicc/plugins.json and restart. See docs/plugins.md.",
     "refresh": "Refresh"
   },
   "wf": {
@@ -1594,7 +1608,7 @@
       "ops": { "eq": "Equals", "neq": "Not equal", "lt": "Less than", "lte": "Less or equal", "gt": "Greater than", "gte": "Greater or equal", "exists": "Exists", "notExists": "Missing", "and": "All AND", "or": "Any OR", "not": "Invert NOT" },
       "name": "Name", "uniqueName": "Names must be nonempty and unique", "numberRange": "Enter an integer from {min} to {max}", "addCondition": "Add condition", "addMapping": "Add mapping", "outputName": "Child output name", "targetVariable": "Parent local variable", "required": "Required", "default": "Default JSON (blank means absent)", "addInput": "Add input", "workflow": "Referenced workflow", "openReference": "Open referenced workflow", "inputMappings": "Child input mappings", "outputMappings": "Child output → parent variable", "inputs": "Workflow input definitions", "outputs": "Workflow output definitions", "concurrency": "Leaf request concurrency (1–32, not VU/RPS)", "rootTimeout": "Root deadline ms (default 300000)", "delay": "Delay ms", "callIsolation": "Child variables are isolated; only successful explicit outputs publish. Remote effects and cookies do not roll back. v1 children retain existing script dependencies.",
       "loopMode": "Loop mode", "count": "Fixed count", "while": "Entry predicate while", "maxIterations": "Iteration limit (default 100, max 10000)", "until": "Stop after successful iteration until", "countBudget": "Count cannot exceed the iteration limit", "loopHint": "Zero iterations publish no outputs. A true while predicate after the limit fails. Data rows and loop iterations are independent; suite rows do not advance implicitly.", "join": "Join rule", "all": "AND · all succeed", "anySuccess": "OR · first success wins", "branch": "Branch {n}", "addBranch": "Add branch", "parallelHint": "AND output targets must not conflict. OR publishes only the recorded winner, cancels losers and waits for drain. Branch variables and cookies are isolated; cookies never merge into the parent.",
-      "policy": "Node policy", "nodeTimeout": "Body deadline ms (blank inherits)", "retry": "Retry request node", "maxAttempts": "Attempts including first (1–5)", "retryKinds": { "transport": "Transport", "http": "HTTP", "assertion": "Assertion", "extraction": "Extraction" }, "retryDelay": "Backoff ms (0–30000)", "backoff": "Backoff", "fixed": "Fixed", "exponential": "Exponential (capped at 30000ms)", "allowSideEffects": "I confirm repeated remote side effects", "retryHint": "Every retry repeats all selected data rows and original container operations for this request node. Remote effects and cookies do not roll back. Non GET/HEAD/OPTIONS requires confirmation; even GET may have side effects and a failure does not prove the server received nothing.",
+      "policy": "Node policy", "nodeTimeout": "Body deadline ms (blank inherits)", "retry": "Retry request node", "maxAttempts": "Attempts including first (1–5)", "retryKinds": { "transport": "Transport", "http": "HTTP", "assertion": "Assertion", "extraction": "Extraction" }, "retryDelay": "Backoff ms (0–30000)", "backoff": "Backoff", "fixed": "Fixed", "exponential": "Exponential (capped at 30000ms)", "allowSideEffects": "I confirm repeated remote side effects", "retryHint": "A retry repeats all selected rows. Remote effects and cookies persist. The server may already have handled the request.",
       "onError": "Error handler onError", "finally": "Cleanup finally", "none": "None", "handlerTimeout": "Handler deadline ms (default 5000, max 30000)", "errorMode": "Error mode", "propagate": "Propagate original failure", "recover": "Recover eligible failure on handler success", "cancelCleanupHint": "User/ancestor cancellation, root deadline or OR loss starts no new network handler or finally. Started calls must drain. Local timeout handlers have independent bounded signals and cannot extend the root deadline.", "port": "Edge port", "normalPort": "Normal successor", "truePort": "True", "falsePort": "False", "runInputs": "Run inputs (blank uses default or omits)", "stop": "Stop", "stopping": "Stopping · waiting for drain",
       "logicalVerdict": "Final logical verdict", "rawRows": "Actual execution rows", "rawFailed": "Raw failed rows", "requestFacts": "Protocol facts: started {started} / completed {completed} / HTTP exchanges {http}", "mode": "Report mode", "invocation": "Invocation", "visit": "Node visit", "attempt": "Attempt {n}", "iteration": "Iteration {n}", "recovered": "Recovered failure", "primary": "Current primary failure", "secondary": "Secondary failure", "winner": "Recorded winner", "loser": "Loser / non-winner", "cleanupFailed": "Local resource cleanup failed", "locate": "Locate current asset", "notCollected": "Exact location was not collected", "trace": "Execution trace", "truncated": "Trace truncated: showing {shown} / {total} events", "currentAssetHint": "Locates the current asset; no historical snapshot replay.", "findings": "Draft findings (saving allowed; resolve before run/enable)", "outputConflict": "Output target conflict", "entryCount": "v2 requires a unique entry", "fanOut": "Ordinary nodes cannot fan out implicitly", "conditionPorts": "Condition successors must use distinct true/false ports", "missingReference": "Referenced workflow is missing", "graphIncomplete": "Graph contains disconnected nodes"
     },
@@ -1828,7 +1842,7 @@
     "failure": { "transport": "Transport failure", "http": "HTTP failure", "script": "Script failure", "assertion": "Assertion failure", "extraction": "Extraction failure", "config": "Configuration error", "aborted": "Cancelled" },
     "transport": { "prepared": "Prepared", "entered": "Started", "headers-received": "Headers received", "responded": "Responded", "failed": "Failed" },
     "observation": { "http-hop": "HTTP exchange", "legacy-text": "Legacy text" },
-    "stage": { "request": "Request", "response": "Response", "connect": "Connection", "headers": "Response headers", "body": "Body", "prepare": "Preparation" }
+    "stage": {"request-prepare": "Request preparation", "response-headers": "Response headers", "response-body": "Response body", "redirect-prepare": "Redirect preparation", "request": "Request", "response": "Response", "connect": "Connection", "headers": "Response headers", "body": "Body", "prepare": "Preparation" }
   },
   "environmentShortcut": {
     "manage": "Manage environments",

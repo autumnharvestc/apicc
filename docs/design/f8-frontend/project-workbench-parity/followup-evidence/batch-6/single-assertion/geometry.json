@@ -1,0 +1,161 @@
+{
+  "cssViewport": [
+    1114,
+    627
+  ],
+  "devicePixelRatio": 1.5008976660682227,
+  "pngPixels": [
+    1672,
+    941
+  ],
+  "rectanglesInImagePixels": {
+    "T01-online-case.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 117,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 321,
+        "height": 679
+      },
+      "middle": {
+        "x": 441,
+        "y": 204,
+        "width": 256,
+        "height": 679
+      },
+      "right": {
+        "x": 707,
+        "y": 204,
+        "width": 952,
+        "height": 679
+      },
+      "save": {
+        "x": 1471,
+        "y": 255,
+        "width": 111,
+        "height": 44
+      },
+      "run": {
+        "x": 1243,
+        "y": 255,
+        "width": 104,
+        "height": 44
+      },
+      "stress": {
+        "x": 1357,
+        "y": 255,
+        "width": 104,
+        "height": 44
+      },
+      "more": {
+        "x": 1592,
+        "y": 255,
+        "width": 45,
+        "height": 45
+      },
+      "extract": {
+        "x": 738,
+        "y": 667,
+        "width": 889,
+        "height": 35
+      },
+      "post": {
+        "x": 738,
+        "y": 795,
+        "width": 889,
+        "height": 35
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    },
+    "T02-local-case.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 117,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 321,
+        "height": 679
+      },
+      "middle": {
+        "x": 441,
+        "y": 204,
+        "width": 256,
+        "height": 679
+      },
+      "right": {
+        "x": 707,
+        "y": 204,
+        "width": 952,
+        "height": 679
+      },
+      "save": {
+        "x": 1471,
+        "y": 255,
+        "width": 111,
+        "height": 44
+      },
+      "run": {
+        "x": 1243,
+        "y": 255,
+        "width": 104,
+        "height": 44
+      },
+      "stress": {
+        "x": 1357,
+        "y": 255,
+        "width": 104,
+        "height": 44
+      },
+      "more": {
+        "x": 1592,
+        "y": 255,
+        "width": 45,
+        "height": 45
+      },
+      "extract": {
+        "x": 738,
+        "y": 667,
+        "width": 889,
+        "height": 35
+      },
+      "post": {
+        "x": 738,
+        "y": 795,
+        "width": 889,
+        "height": 35
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    }
+  }
+}

@@ -2714,7 +2714,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @collaboration="chooseCollaborationTarget"
           />
           <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
-          <TestWorkbench v-else-if="view === 'test'" :pane="moduleMemory.test.pane" @update:pane="page => page !== 'stress' && onTestPane(page)">
+          <TestWorkbench v-else-if="view === 'test'" :pane="moduleMemory.test.pane" :read-only="workspace.readOnly || !!testing.view?.readOnly" @update:pane="page => page !== 'stress' && onTestPane(page)">
             <template #navigation>
           <TestSidebar
             :workspace="workspace"
@@ -2856,7 +2856,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
       <a-button v-if="onlineDirectory.structurePending.value" size="small" @click="onlineDirectory.reconcileStructure()">{{ t('onlineDirectory.verify') }}</a-button>
       <a-button v-if="onlineDirectory.structureReadyToRetry.value" size="small" @click="onlineDirectory.reconcileStructure(true)">{{ t('onlineDirectory.retry') }}</a-button>
     </div>
-    <aside v-if="pendingCollaborationSource" class="collaboration-drawer" role="dialog" data-testid="collaboration-target-picker"><h2>{{ t('collaboration.chooseTarget') }}</h2><p>{{ t('collaboration.localNoNetwork') }}</p><p v-if="!online.loggedIn || !online.projects.length">{{ t('collaboration.connectTarget') }}</p><select v-model="collaborationTargetId" data-testid="collaboration-target"><option value="">{{ t('collaboration.chooseTarget') }}</option><option v-for="project in online.projects" :key="project.id" :value="project.id">{{ online.activeName }} · {{ online.activeWorkspace?.name }} / {{ project.name }}</option></select><button :disabled="!online.executionContext(collaborationTargetId)" data-testid="collaboration-prepare-local" @click="prepareLocalCollaboration().catch(reportError)">{{ t('collaboration.prepareLocal') }}</button><button @click="pendingCollaborationSource = null">{{ t('collaboration.close') }}</button></aside>
+    <aside v-if="pendingCollaborationSource" class="collaboration-drawer" role="dialog" data-testid="collaboration-target-picker"><h2>{{ t('collaboration.chooseTarget') }}</h2><p v-if="!online.loggedIn || !online.projects.length">{{ t('collaboration.connectTarget') }}</p><select v-model="collaborationTargetId" data-testid="collaboration-target"><option value="">{{ t('collaboration.chooseTarget') }}</option><option v-for="project in online.projects" :key="project.id" :value="project.id">{{ online.activeName }} · {{ online.activeWorkspace?.name }} / {{ project.name }}</option></select><button :disabled="!online.executionContext(collaborationTargetId)" data-testid="collaboration-prepare-local" @click="prepareLocalCollaboration().catch(reportError)">{{ t('collaboration.prepareLocal') }}</button><button @click="pendingCollaborationSource = null">{{ t('collaboration.close') }}</button></aside>
     <aside v-if="collaboration.visible" class="collaboration-drawer" role="dialog" :aria-label="t('collaboration.title')"><button @click="collaboration.close().catch(reportError)">{{ t('collaboration.close') }}</button><CollaborationPanel :collaboration="collaboration" :saved="online.execution.view ? { revision: online.execution.view.assets.version, manifestHash: online.execution.view.assets.manifestHash } : undefined" :dirty="online.editorDirty || onlineProjectAdapter.editor.dirty || onlineProjectAdapter.testing.dirty || onlineProjectAdapter.workflowDesign.dirty" /></aside>
   </a-layout>
   </ConfigProvider>

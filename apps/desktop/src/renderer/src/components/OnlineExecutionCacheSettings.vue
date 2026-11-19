@@ -79,8 +79,7 @@ function save() {
       <dt>{{ t('executionCacheSettings.inactivePayload') }}</dt><dd data-testid="execution-cache-payload" :title="t('executionCacheSettings.rawBytes', { bytes: usage.inactivePayloadBytes })">{{ payloadMiB }}</dd>
     </dl>
     <p v-if="usage.overLimit" role="status" class="warning" data-testid="execution-cache-over-limit">{{ t('executionCacheSettings.overLimit') }}</p>
-    <p class="hint">{{ t('executionCacheSettings.protection') }}</p>
-    <ul class="cache-notes"><li>{{ t('executionCacheSettings.cleanupHint') }}</li><li>{{ t('executionCacheSettings.restoreHint') }}</li><li>{{ t('executionCacheSettings.ttlHint') }}</li><li>{{ t('executionCacheSettings.estimateHint') }}</li></ul>
+    <details><summary>{{ t('executionCacheSettings.cleanupDetails') }}</summary><ul class="cache-notes"><li>{{ t('executionCacheSettings.cleanupHint') }}</li><li>{{ t('executionCacheSettings.restoreHint') }}</li><li>{{ t('executionCacheSettings.ttlHint') }}</li><li>{{ t('executionCacheSettings.estimateHint') }}</li></ul></details>
   </section>
 </template>
 

@@ -9,6 +9,7 @@ import { createI18nInstance } from '../../../src/renderer/src/i18n/index.js';
 import { OnlineJobSchema, OnlineLocalResultSchema, type OnlineExecutionInput } from '../../../src/shared/online/execution.js';
 import { FullOnlineJobSchema } from '../../../src/shared/online/execution.js';
 import { stressV2Report } from '../../helpers/stressV2.js';
+import OnlineExecutionDetails from '../../../src/renderer/src/components/online/OnlineExecutionDetails.vue';
 import OnlineExecutionPanel from '../../../src/renderer/src/components/online/OnlineExecutionPanel.vue';
 import { defaultAgentConfig,defaultPolicyConfig,ProjectExecutionAgentsSchema } from '@apicc/execution/contract';
 enableAutoUnmount(afterEach);
@@ -24,6 +25,27 @@ function panelFixture(port: Parameters<typeof createOnlineExecutionStore>[0]) {
   return { store, i18n, view: mount(OnlineStressPanel, { props: { execution: store }, global: { plugins: [i18n] } }) };
 }
 describe('online stress plan entry', () => {
+  it('shows agent script approval only for the selected agent in both execution views', async () => {
+    const f = panelFixture({ onlineExecution: async () => [] });
+    const global = { plugins: [f.i18n], stubs: { AModal: { template: '<div><slot /></div>' } } };
+    const views = [mount(OnlineExecutionPanel, { props: { execution: f.store }, global }), mount(OnlineExecutionDetails, { props: { execution: f.store, open: true }, global })];
+    const approval = '[data-testid="agent-script-approval"]';
+    for (const view of views) expect(view.find(approval).exists()).toBe(false);
+    f.store.agents = { canManageScripts: false, policy: defaultPolicyConfig, agents: [{ id: '7', name: 'Agent', policy: defaultPolicyConfig, configuration: { status: 'applied' }, scriptGrant: { version: '0', scope: 'script-version' } }] } as typeof f.store.agents;
+    f.store.location = { kind: 'agent', agentId: '7' };
+    await flushPromises();
+    for (const view of views) {
+      expect(view.get(approval).text()).toContain('ADMIN');
+      expect(view.find(approval + ' a').exists()).toBe(false);
+    }
+    f.store.agents = { ...f.store.agents!, canManageScripts: true };
+    await flushPromises();
+    for (const view of views) expect(view.get(approval + ' a').attributes('href')).toContain('agentId=7');
+    f.store.location = { kind: 'local' };
+    await flushPromises();
+    for (const view of views) expect(view.find(approval).exists()).toBe(false);
+    f.store.setVisible(false);
+  });
   // Break caught: dotted cache reason keys fall back to internal codes in the actual jobs table.
   it.each([['cache.input','等待输入缓存容量','Waiting for input cache capacity'],['cache.result','等待报告缓存容量','Waiting for report cache capacity']])('final two fixes renders cache wait %s in both languages and keeps unknown reasons',async(code,zh,en)=>{
     const f=panelFixture({onlineExecution:async()=>[]});f.i18n.global.locale.value='zh-CN';

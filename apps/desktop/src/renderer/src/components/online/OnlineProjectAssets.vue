@@ -410,7 +410,7 @@ async function publish() { const item = props.localProjects.find(item => item.pr
       <template v-if="execution.project && !blank">
         <EnvPanel v-if="moduleView === 'envs'" class="asset-scroll" :envs="adapter.envs" :workspace="adapter.workspace" :project-locator="adapter.locator()" :report-error="reportError" />
         <WfDesigner v-if="moduleView === 'wf'" class="asset-scroll" :ai="ai" :workflow-design="adapter.workflowDesign" :wf-list="adapter.wfList" :workspace="adapter.workspace" :project-locator="adapter.locator()" :bind-index="bindIndex" :report-error="reportError" :external-run="workflowRun" :external-run-issue="businessRunIssue" @stress-workflow="loc => openStress({ kind: 'workflow', workflowId: loc.workflowId })" />
-        <TestWorkbench v-if="moduleView === 'test' || stressVisited" v-show="moduleView === 'test'" :pane="testPage" online @update:pane="page => action(() => changeTestPage(page))">
+        <TestWorkbench v-if="moduleView === 'test' || stressVisited" v-show="moduleView === 'test'" :pane="testPage" online :read-only="readOnly" @update:pane="page => action(() => changeTestPage(page))">
           <template v-if="testPage !== 'stress'" #navigation>
             <TestSidebar :workspace="adapter.workspace" :active-project-locator="adapter.locator()"
               :api-available="apiAvailable" :active-api-locator="entries.find(item => JSON.stringify(item.locator) === selectedApi)?.locator ?? null"

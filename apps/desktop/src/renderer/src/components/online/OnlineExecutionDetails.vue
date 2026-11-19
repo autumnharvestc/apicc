@@ -39,19 +39,16 @@ function status(value: string) { const key = `onlineExecution.states.${value}`; 
         </template>
       </dl>
       <p v-if="agent && (!agent.scriptsAllowed || agent.scriptGrant.version === '0')">{{ t('projectWorkbench.noScriptApproval') }}</p>
-      <p>{{ t('onlineExecution.scriptCapability') }}</p>
       <p v-if="agent?.scriptGrant.scope === 'project'">{{ t('onlineExecution.projectTrustRisk') }}</p>
-      <details>
+      <details v-if="agent" data-testid="agent-script-approval">
         <summary>{{ t('onlineExecution.scripts') }}</summary>
         <p>{{ t('onlineExecution.scriptRisk') }}</p>
         <a v-if="approvalUrl" :href="approvalUrl" target="_blank" rel="noopener noreferrer">{{ t('onlineExecution.approvalEntry') }}</a>
         <p v-else>{{ t('onlineExecution.askAdmin') }}</p>
       </details>
-      <p>{{ t('onlineExecution.pluginDifference') }}</p>
-      <ul v-if="execution.localPlugins">
+      <ul v-if="execution.location.kind === 'local' && execution.localPlugins">
         <li v-for="plugin in execution.localPlugins.plugins" :key="plugin.key">{{ plugin.name }} · {{ plugin.version ?? '—' }} · {{ plugin.kind === 'loaded' ? t('onlineExecution.pluginLoaded') : plugin.error ?? status(plugin.kind) }}</li>
       </ul>
-      <p>{{ t(execution.location.kind === 'local' ? 'onlineExecution.localLifetime' : 'onlineExecution.agentLifetime') }}</p>
     </section>
   </a-modal>
 </template>

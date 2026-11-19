@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { TestingPane } from "../../../shared/testing.js";
 
 type Page = TestingPane | "stress";
-const props = defineProps<{ pane: Page; online?: boolean }>();
+const props = defineProps<{ pane: Page; online?: boolean; readOnly?: boolean }>();
 defineEmits<{ "update:pane": [page: Page] }>();
 const { t } = useI18n();
 const pages = computed<Page[]>(() => props.online
@@ -14,7 +14,7 @@ const labels = { "api-cases": "test.apiCases", scenario: "test.scenarios", suite
 <template>
   <section class="test-workbench" data-testid="test-workbench">
     <header>
-      <h1 data-testid="sider-title">{{ t("nav.test") }}</h1>
+      <div class="test-title"><h1 data-testid="sider-title">{{ t("nav.test") }}</h1><span v-if="readOnly" role="status" tabindex="0" data-testid="test-readonly">{{ t('testAssets.readOnly') }}</span></div>
       <nav :aria-label="t('nav.test')">
         <button v-for="page in pages" :key="page" type="button" :data-testid="`test-tab-${page}`"
           :class="{active: pane === page}" :aria-current="pane === page ? 'page' : undefined" @click="$emit('update:pane', page)">{{ t(labels[page]) }}</button>
@@ -29,6 +29,8 @@ const labels = { "api-cases": "test.apiCases", scenario: "test.scenarios", suite
 .test-workbench { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--workbench-background); container-type: inline-size; }
 header { flex: none; border-bottom: 1px solid var(--border); }
 h1 { margin: 0; padding: 12px 17px 3px; font-size: 22px; line-height: 1.35; font-weight: 650; color: var(--text); }
+.test-title { display: flex; align-items: baseline; flex-wrap: wrap; }
+.test-title span { color: var(--text-muted); font-size: 13px; padding-inline: 12px; }
 nav { display: flex; padding-inline: 10px; overflow-x: auto; }
 nav button { font: inherit; font-weight: 500; cursor: pointer; flex: none; padding: 7px 13px 8px; color: var(--text); border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; }
 nav button[aria-current] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }

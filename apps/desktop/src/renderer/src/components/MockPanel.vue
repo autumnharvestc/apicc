@@ -224,7 +224,6 @@ onBeforeUnmount(() => {
     <header v-if="!embedded || state?.simulated"><h3 v-if="!embedded">{{ t("mockPanel.title") }}</h3><span v-if="state?.simulated" data-testid="mock-simulated">{{ t("mockPanel.simulated") }}</span></header>
     <label class="mock-label" for="mock-config">{{ t("mockPanel.config") }}</label>
     <p v-if="hasUnsavedDraft" class="mock-note" data-testid="mock-unsaved">{{ t("mockPanel.unsaved") }}</p>
-    <p v-if="state" class="mock-note" data-testid="mock-start-saved-note">{{ t("mockPanel.savedSemantics") }}</p>
     <p v-if="draftIsStale" class="mock-note" data-testid="mock-stale-draft">{{ t("mockPanel.staleDraft") }}</p>
     <section v-if="parsedConfig.success" class="draft-summary" data-testid="mock-config-summary">
       <h4>{{ t('desktopPresentation.draftSummary') }}</h4>

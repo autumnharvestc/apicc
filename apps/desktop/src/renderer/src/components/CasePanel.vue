@@ -523,7 +523,6 @@ function removeOp(kind: "pre" | "post", index: number) {
           <a-textarea v-if="selected.requestOverride" :value="overrideJson" :disabled="readOnly" :rows="8"
             :aria-label="t('debugLoop.caseRequest')" data-testid="case-request-override-json" @update:value="updateRequestOverride" />
           <span v-if="overrideError" class="override-error" role="alert" data-testid="case-request-override-error">{{ overrideError }}</span>
-          <span class="note">{{ t("debugLoop.cookiesNotSavedWithCase") }}</span>
         </details>
         <section class="case-card">
         <div class="assertion-toolbar">

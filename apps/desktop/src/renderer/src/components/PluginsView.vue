@@ -32,7 +32,6 @@ const reasonDetail = (p: PluginLoadEntry): string => {
 <template>
   <section class="plugins-view" data-testid="plugins-view">
     <div class="head"><strong>{{ t('plugins.title') }}</strong><button data-testid="plugins-refresh" :disabled="plugins.loading" @click="plugins.refresh()">{{ t('plugins.refresh') }}</button></div>
-    <p class="muted">{{ t('plugins.refreshHint') }}</p>
     <p v-if="plugins.hostVersion">{{ t('plugins.hostVersion') }}: {{ plugins.hostVersion }} · {{ t('plugins.apiVersion') }} 1</p>
     <p v-if="!plugins.enabled" role="status">{{ t('plugins.globallyDisabled') }}</p>
     <p v-if="plugins.error" role="alert" data-testid="plugins-error-alert">{{ plugins.error }}</p>
