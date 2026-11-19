@@ -99,6 +99,10 @@ describe("desktop contract workspace session", () => {
       expect(preview.outerRows).toBe(2);
       expect(preview.plan.entries[0]!.cases[0]!.locator).toMatchObject({ apiId: IDS.sharedApi, scope: "base", folderIds: [] });
       const output = await api.runSuite(input);
+      expect(output.result).not.toHaveProperty("archiveProject");
+      const archive = (await api.runsList()).find(row => row.file === output.archiveFile);
+      expect(archive).toMatchObject({ kind: "suite", archiveProject: project, archiveDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(await api.runsGet(archive!.file, { scope: project, digest: archive!.archiveDigest })).toEqual(output.result);
       expect(output.result.total).toBe(2);
       expect(output.result.suite?.total).toBe(2);
       expect(output.result.suite?.definitionRevision).toBe(preview.plan.definitionRevision);

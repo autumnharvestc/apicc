@@ -9,10 +9,11 @@ import type { DebugCredentialHost } from "./credentialHost.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
 import { validateWorkflowRunOptions } from "@apicc/core";
 import { importDatasetContent, exportDatasetContent } from "./datasetExchange.js";
+import type { ProjectLocator } from "../shared/locations.js";
 
 /** Host-only orchestration. The captured plan/data stay here for C1 evidence projection. */
 export function createTestingController(session: ReturnType<typeof createSession>, registrySource: () => Promise<PluginRegistry>, credentials: DebugCredentialHost,
-  storage?: { persist(path: string, result: RunResult): { value: RunResult; warning?: string }; render?: boolean }) {
+  storage?: { persist(path: string, result: RunResult, archiveProject?: ProjectLocator): { value: RunResult; warning?: string }; render?: boolean }) {
   const active = new Map<string, { owner: object; input: SuiteInvocation; abort: AbortController }>();
   const evidenceRuns = new Map<string, { owner: object; input: EvidenceInvocation; abort: AbortController }>();
   const defaultOwner = {};
@@ -108,17 +109,19 @@ export function createTestingController(session: ReturnType<typeof createSession
       const result = await new SuiteRunner({ registry }).run({ ...prepared.run, preparedTestData: data }, plan, { workspaceRoot: input.context.root, signal: abort.signal,
         observeCaseExecution: (execution, identity) => evidence.observe(execution, { ...identity, workflowId: plan.entries.find((entry) => entry.id === identity.entryId)?.workflowId }) });
       ensureCurrent();
-      const safe = { ...evidence.projectRun(suiteToRunResult(result)), archiveProject: input.context.project };
+      const report = evidence.projectRun(suiteToRunResult(result));
       const outDir = join(input.context.root, ".apicc", "runs");
-      const persisted = storage ? storage.persist(join(outDir, `suite-run-${result.suiteRunId}.json`), safe) : persistExecutionJson(join(outDir, `suite-run-${result.suiteRunId}.json`), safe, boundary, () => "安全 JSON 报告保存失败");
-      if (!storage && !persisted.warning) writeRunScope(input.context.root, `suite-run-${result.suiteRunId}.json`, input.context.project);
+      const filename = `suite-run-${result.suiteRunId}.json`, path = join(outDir, filename);
+      const persisted = storage ? storage.persist(path, report, input.context.project) : persistExecutionJson(path, report, boundary, () => "安全 JSON 报告保存失败");
+      const safe = persisted.value;
+      if (!storage && !persisted.warning) writeRunScope(input.context.root, filename, input.context.project);
       if (persisted.warning) { safe.reportFailure = true; safe.warnings = [...(safe.warnings ?? []), persisted.warning]; }
       else if (storage?.render !== false) for (const format of plan.reporters) if (format !== "json") {
         try { const reporter = registry.getReporter(format); if (!reporter) throw new Error("报告格式未注册"); await reporter.render(safe, outDir, { alreadyProjected: true }); }
         catch { safe.reportFailure = true; safe.warnings = [...(safe.warnings ?? []), `${format} 报告渲染失败；安全 JSON 已保留`]; }
       }
       ensureCurrent();
-      return { invocationId: input.invocationId, context: input.context, result: safe, ...(persisted.warning ? {} : { archiveFile: `suite-run-${result.suiteRunId}.json` }) };
+      return { invocationId: input.invocationId, context: input.context, result: safe, ...(persisted.warning ? {} : { archiveFile: filename }) };
     } catch (error) { throw boundary.error(error); }
     finally { active.delete(input.invocationId); }
   }

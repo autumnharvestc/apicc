@@ -12,7 +12,7 @@ import type { DebugInput } from "../shared/types.js";
 import type { ResponseSnapshot } from "../shared/types.js";
 import { writeRunScope } from "./runs.js";
 import { createDebugController } from "./debugController.js";
-import { selectCollectionCases } from "../shared/collection-launch.js";
+import { selectCollectionCases } from "./collectionLaunch.js";
 
 type Session = ReturnType<typeof createSession>;
 

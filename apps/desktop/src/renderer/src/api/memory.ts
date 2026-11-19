@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCollection as runMemoryCollection } from "../../../main/debug.js";
-import { previewCollectionLaunch } from "../../../shared/collection-launch.js";
+import { previewCollectionLaunch } from "../../../main/collectionLaunch.js";
 import {
   renderDocumentHtml,
   renderDocumentMarkdown,
@@ -198,7 +198,7 @@ export function createMemoryApi(options?: { root?: string; stressClient?: Memory
   let problems: LoadProblem[] = [];
   // 运行历史内存样例（新→旧，与主进程 listRuns 排序一致）：runCollection 产出，
   // runsList/runsGet 读回；runSeq 保证同毫秒多次运行不重名（对齐 Runner 落盘文件名语义）。
-  const runs: Array<{ file: string; result: RunResult & { archiveProject?: ProjectLocator } }> = [];
+  const runs: Array<{ file: string; result: RunResult; archiveProject?: ProjectLocator }> = [];
   const memoryDebugInvocations = new Map<string, { invocation: DebugInvocation; startedAt: string }>();
   let runSeq = 0;
   // 压测历史（M2-D3 任务 1）：stressRun/stop 收尾产出（文件名与主进程同构 stress-<apiId>-<ts>.json）。
@@ -406,14 +406,20 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
   }, createCredentialHost(session, () => secretStore));
   const testingRegistry = createDefaultRegistry();
   for (const name of ["http", "websocket", "soap"] as const) testingRegistry.registerProtocol({ name, canHandle: (request) => request.protocol === name, execute: (request, context) => stressClient.execute(request, context) });
-  const testing = createTestingController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), { persist(path, value) { runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: value }); return { value }; }, render: false });
+  const testing = createTestingController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), {
+    persist(path, value, archiveProject) {
+      runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: value, archiveProject });
+      return { value };
+    },
+    render: false,
+  });
   function testingReadContext<T extends { root: string }>(context: T): T {
     if (!session.root || context.root !== root) throw new Error("Testing root context changed");
     return { ...context, root: session.root };
   }
   const workflowRuns = createWorkflowController(session, async () => testingRegistry, createCredentialHost(session, () => secretStore), {
     persist(path, result, archiveProject) {
-      runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result: { ...result, archiveProject } });
+      runs.unshift({ file: path.split(/[\\/]/).at(-1)!, result, archiveProject });
       return {};
     },
   });
@@ -1130,7 +1136,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         if (root !== input.preview.root) throw new Error("run-launch-preview-changed");
         const { workspaceId, groupId, projectId } = input.locator;
         return runMemoryCollection(session, { ...input, preview: { ...input.preview, root: session.root! } }, testingRegistry,
-          createCredentialHost(session, () => secretStore), (file, result) => runs.unshift({ file, result: { ...result, archiveProject: {workspaceId, groupId, projectId} } }));
+          createCredentialHost(session, () => secretStore), (file, result) => runs.unshift({ file, result, archiveProject: { workspaceId, groupId, projectId } }));
 
       }
       const firstApi = (container: ContractCollection | ContractFolder): ApiAsset | undefined => {
@@ -1156,7 +1162,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       const startedAt = new Date().toISOString();
       const { workspaceId, groupId, projectId } = input.locator;
       const run = {
-        projectId, archiveProject: { workspaceId, groupId, projectId },
+        projectId,
         collectionId: collection.id,
         collectionName: collection.name,
         ...(input.envName == null ? {} : { envName: input.envName }),
@@ -1168,16 +1174,16 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
         cases: [outcome],
       };
       const archiveFile = `run-memory-${String(++runSeq).padStart(4, "0")}.json`;
-      runs.unshift({ file: archiveFile, result: run });
+      runs.unshift({ file: archiveFile, result: run, archiveProject: { workspaceId, groupId, projectId } });
       return { ...run, archiveFile };
     },
 
     async runsList(): Promise<Array<RunSummaryDTO | StressRunSummaryDTO>> {
-      const collectionRows: RunSummaryDTO[] = runs.map(({ file, result }) => ({
+      const collectionRows: RunSummaryDTO[] = runs.map(({ file, result, archiveProject }) => ({
         kind: result.suite ? "suite" : result.workflowId ? "workflow" : result.kind ?? "collection",
         projectId: result.projectId ?? result.suite?.projectId,
-        archiveProject: result.archiveProject,
-        archiveDigest: result.archiveProject ? onlineHash(JSON.stringify(result)) : undefined,
+        archiveProject,
+        archiveDigest: archiveProject ? onlineHash(JSON.stringify(result)) : undefined,
         file,
         collectionName: result.collectionName,
         startedAt: result.startedAt,
@@ -1209,7 +1215,7 @@ function newNodeDTO<K extends Extract<NodeLocator["kind"], "group" | "project" |
       const collection = runs.find((r) => r.file === file);
       const stress = stressRuns.find((r) => r.file === file);
       if (proof) {
-        const owner = collection?.result.archiveProject ?? stressRunOwners.get(file)?.scope;
+        const owner = collection?.archiveProject ?? stressRunOwners.get(file)?.scope;
         if (!owner || !session.locateProject(proof.scope) || owner.workspaceId !== proof.scope.workspaceId || owner.groupId !== proof.scope.groupId || owner.projectId !== proof.scope.projectId) return null;
         const value = collection?.result ?? memoryStressReport(proof.scope, file);
         if (proof.digest && onlineHash(JSON.stringify(value)) !== proof.digest) return null;

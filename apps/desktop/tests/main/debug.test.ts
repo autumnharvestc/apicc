@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDefaultRegistry } from "@apicc/core";
 import { createSession } from "../../src/main/session.js";
-import { previewCollectionLaunch } from "../../src/shared/collection-launch.js";
+import { previewCollectionLaunch } from "../../src/main/collectionLaunch.js";
 import { runCollection, sendDebug } from "../../src/main/debug.js";
 import { createDebugController } from "../../src/main/debugController.js";
 import type { DebugCredentialHost, PreparedDesktopExecutionRun } from "../../src/main/credentialHost.js";

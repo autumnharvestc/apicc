@@ -6,7 +6,7 @@ import { createSession } from "../../../src/main/session.js";
 import { createOnlineClient } from "../../../src/main/online/client.js";
 import type { OnlineClient } from "../../../src/main/online/client.js";
 import type { TokenStore } from "../../../src/main/online/tokenStore.js";
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -104,9 +104,22 @@ describe("online:* 频道接线", () => {
       await f.deps.handle('online:login', {}, { baseUrl: 'https://control.test', username: 'alice', password: 'password8' }); await f.deps.handle('online:workspace:open', {}, { workspaceId: '11', name: 'Workspace', myRole: 'EDITOR' });
       const projectRef = { workspaceId: IDS.workspace, groupId: IDS.groupOne, projectId: IDS.projectOne }, event = { sender: owner };
       const displayed = kind === 'collection' ? await f.deps.handle('run:collection', event, { locator: { ...projectRef, collectionId: IDS.collectionOne } }) : kind === 'suite' ? await f.deps.handle('testing:suite:run', event, { invocationId: randomUUID(), context: { root, revision: f.session.revision!, project: projectRef }, locator: { ...projectRef, suiteId } }) : await f.deps.handle('wf:run', event, { locator: { ...projectRef, workflowId }, invocationId: randomUUID(), root });
-      expect(displayed).toBeTruthy(); const count = f.calls.length;
-      const result = await f.deps.handle('online:collaboration', event, { operation: 'preview-local', context: { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } }, title: 'Selected native result', source: { kind: 'current', project: projectRef, expectedReportDigest: await aiReportDigest(displayed) } });
-      expect(result).toMatchObject({ stage: 'local', artifact: { kind: 'report', source: { trust: 'member-claim' } } }); expect(f.calls).toHaveLength(count);
+      const count = f.calls.length;
+      const preview = { operation: 'preview-local' as const, context: { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } }, title: 'Selected native result' };
+      const { archiveFile, ...withoutReceipt } = displayed;
+      expect(archiveFile).toMatch(/\.json$/);
+      const path = join(root, '.apicc', 'runs', archiveFile!);
+      const report = JSON.parse(readFileSync(path, 'utf8'));
+      expect(report).not.toHaveProperty('archiveProject');
+      const digest = createHash('sha256').update(JSON.stringify(report)).digest('hex');
+      const expected = { stage: 'local', artifact: { kind: 'report', source: { trust: 'member-claim', digest }, report: { verdict: 'passed', sourceCategory: 'run' } } };
+      const current = { ...preview, source: { kind: 'current' as const, project: projectRef, expectedReportDigest: await aiReportDigest(displayed) } };
+      expect(await f.deps.handle('online:collaboration', event, current)).toMatchObject(expected);
+      await expect(f.deps.handle('online:collaboration', { sender: {} }, current)).rejects.toThrow('collaboration-source-unavailable');
+      await expect(f.deps.handle('online:collaboration', event, { ...current, source: { ...current.source, expectedReportDigest: await aiReportDigest(withoutReceipt) } })).rejects.toThrow('collaboration-source-unavailable');
+      const archive = { ...preview, source: { kind: 'run' as const, project: projectRef, file: archiveFile! } };
+      expect(await f.deps.handle('online:collaboration', event, archive)).toMatchObject(expected);
+      expect(f.calls).toHaveLength(count);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('routes the collaboration member read through the actual IPC sender and bound session', async () => {

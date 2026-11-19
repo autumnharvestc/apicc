@@ -32,7 +32,8 @@ import { scanDirFiles, writeFiles } from "./online/migrate.js";
 import type { OnlineClient } from "./online/client.js";
 import type { TokenStore } from "./online/tokenStore.js";
 import { runCollection, sendDebug, workspaceRunsDir } from "./debug.js";
-import { previewCollectionLaunch, type CollectionLaunchInput } from "../shared/collection-launch.js";
+import type { CollectionLaunchInput } from "../shared/collection-launch.js";
+import { previewCollectionLaunch } from "./collectionLaunch.js";
 import { createDebugController } from "./debugController.js";
 import { createDesktopDebugHistoryStore } from "./debugHistory.js";
 import { listRuns, readRun, readScopedStressRun, listScopedStressRuns } from "./runs.js";
@@ -869,9 +870,10 @@ export function createIpcDeps(options: IpcDepsOptions) {
       case IpcChannel.RunCollection: {
         const input = a[0] as RunCollectionInput, context = session.captureDraftWriteContext();
         const run = await runCollection(session, input, () => pluginsRuntime.registry(), credentials);
+        const { archiveFile: _archiveFile, ...report } = run;
         const { workspaceId, groupId, projectId } = input.locator;
-        await aiSources?.rememberReport(owner, context, { workspaceId, groupId, projectId }, run, run);
-        await rememberCollaborationReport(owner, context, { workspaceId, groupId, projectId }, run, run);
+        await aiSources?.rememberReport(owner, context, { workspaceId, groupId, projectId }, report, run);
+        await rememberCollaborationReport(owner, context, { workspaceId, groupId, projectId }, report, run);
         return run satisfies RunResult;
       }
       case IpcChannel.PreviewCollection: {
