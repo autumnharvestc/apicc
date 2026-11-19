@@ -37,7 +37,7 @@ const terminalReasons = [
   ['schedule-rejected', '计划触发已拒绝', 'Scheduled trigger rejected'], ['schedule-cancelled', '计划触发已取消', 'Scheduled trigger cancelled'],
   ['schedule-deleted', '计划已删除', 'Schedule deleted'],
 ] as const;
-function fixture(crossProject = false) {
+function fixture(crossProject = false, runInput?: (input: Record<string, any>) => Promise<unknown>) {
   const page = JSON.parse(readFileSync(resolve('../../server/src/test/resources/notifications/center.json'), 'utf8'));
   const delivery = JSON.parse(readFileSync(resolve('../../server/src/test/resources/notifications/history.json'), 'utf8')).items[0].deliveries[0];
   const response = NotificationPageSchema.parse({ ...page, items: page.items.map((item: any) => ({ ...item, workspaceId: '11', projectId: '33', link: '/workspaces/11/projects/33/schedules/' + item.scheduleId, notificationState: 'failed', deliveries: [delivery] })) });
@@ -45,6 +45,7 @@ function fixture(crossProject = false) {
   let listGate: Promise<void> | undefined;
   const api = { assertionOperators: async () => [], onlineExecution: async (input: Record<string, any>) => {
     calls.push(input);
+    if (runInput && (input.operation === 'run' || input.operation === 'report')) return runInput(input);
     if (input.operation === 'status') return {jobId:'701',executionId:'702',agentId:'5',state:'running',cancelState:'none',executionReleased:false,canCancel:false,view:'active-status',scope:input.context.scope};
     return [];
   }, onlineScheduling: async (input: Record<string, any>) => { calls.push(input);
@@ -67,6 +68,26 @@ function fixture(crossProject = false) {
     execution.project=project; execution.saved=JSON.stringify(project);return true;
   } }, global: { plugins: [i18n] } }) };
 }
+it("recovers the selected pending local run after the host returns a cancellation with uncertain request execution", async () => {
+  let rejectRun!: (error: Error) => void;
+  const f = fixture(false, async input => input.operation === 'run' ? new Promise((_, reject) => { rejectRun = reject; })
+    : {executionId:input.runId,verdict:'cancelled',executionFact:'uncertain',reasonCode:'local-run-cancelled'});
+  try {
+    await f.view.get('[data-testid="run-pane-records"]').trigger("click"); await flushPromises();
+    const pending = f.execution.run({kind:'workflow',workflowId:'00000000-0000-4000-8000-000000000091'}).catch(error => error.message);
+    await flushPromises();
+    const id = f.execution.submissions[0]!.runId;
+    await f.view.get(`[data-record="${id}"]`).trigger("click"); await flushPromises();
+    expect(f.execution.report).toBeNull();
+    rejectRun(Error('local-run-cancelled')); await pending; await flushPromises();
+    const info = f.view.get('[data-testid="selected-execution-facts"]');
+    expect(info.text()).toContain('已结束'); expect(info.text()).toContain('已取消'); expect(info.text()).toContain('是否执行尚不确定');
+    expect(f.view.get('.record-failure').text()).toBe('本次本机运行已取消。');
+    expect(f.calls.filter(call => call.operation === 'report').map(call => call.runId)).toEqual([id]);
+    expect(f.calls.filter(call => call.operation === 'run')).toHaveLength(1);
+  } finally { f.execution.setVisible(false); }
+});
+
 it("preserves the explicit record list when leaving and returning to Run", async () => {
   const f = fixture();
   try {
@@ -116,7 +137,8 @@ it('offers the current member notification center inside the project navigation'
   try {
     expect(f.view.get('nav.run-tabs').text()).toContain('通知');
     await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
-    expect(f.view.text()).toContain('当前成员有权项目');
+    expect(f.view.get('.event-list h2').text()).toBe('通知列表');
+    expect(f.view.get('.event-name strong').text()).toBe('每日回归');
   } finally { f.execution.setVisible(false); }
 });
 
@@ -125,13 +147,13 @@ it('shows in-app read state and external failure separately from an uncollected 
   try {
     await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('每日回归');
-    expect(f.view.text()).toContain('投递失败'); expect(f.view.text()).toContain('执行结论：未采集');
+    expect(f.view.text()).toContain('投递失败'); expect(f.view.get('.notice-detail dl dd').text()).toBe('未采集');
     expect(f.view.text()).toContain('Webhook'); expect(f.view.text()).toContain('站内未读'); expect(f.view.text()).toContain('UTC');
     await f.view.get('[data-testid="notification-read"]').trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('站内已读');
     expect(f.calls.find(c => c.operation === 'markNotificationRead')).toEqual({ operation: 'markNotificationRead', context, id: '6' });
     f.i18n.global.locale.value = 'en'; await flushPromises();
-    expect(f.view.text()).toContain('Delivery failed'); expect(f.view.text()).toContain('Execution verdict: Not collected');
+    expect(f.view.text()).toContain('Delivery failed'); expect(f.view.get('.notice-detail dl dd').text()).toBe('Not collected');
     expect(f.view.find('pre').exists()).toBe(false);
   } finally { f.execution.setVisible(false); }
 });
@@ -169,7 +191,7 @@ it('keeps a failed execution verdict distinct from its failed delivery', async (
     await f.view.findAll('nav.run-tabs button').find(button => button.text() === '通知')!.trigger('click'); await flushPromises();
     const page = f.online.schedules.notifications!;
     f.online.schedules.notifications = NotificationPageSchema.parse({ ...page, items: page.items.map(event => ({ ...event, eventKind: 'failed', reasonCode: 'execution-failed', jobId: '78', executionId: '79', verdict: 'failed', reportState: 'archived', evidenceState: 'complete' })) }); await flushPromises();
-    expect(f.view.text()).toContain('执行结论：失败'); expect(f.view.text()).toContain('投递失败');
+    expect(f.view.get('.notice-detail dl dd').text()).toBe('失败'); expect(f.view.get('.delivery-list').text()).toContain('投递失败');
   } finally { f.execution.setVisible(false); }
 });
 it('shows an in-app-only event without inventing an external delivery', async () => {
@@ -212,13 +234,16 @@ it("opens a cross-project status beyond the recent page and restores the unread 
   const f=fixture(true);
   try {
     await f.view.get('[data-testid="run-pane-notifications"]').trigger('click'); await flushPromises();
-    const first = f.view.get('.notifications article');
+    const first = f.view.get('.notice-detail');
     expect(first.findAll('.links button').map(b=>b.text())).toEqual(['查看计划','查看本次运行']);
     expect(first.get('[data-testid="notification-run"]').attributes('disabled')).toBeDefined();
     expect(first.text()).toContain('此通知没有关联运行');
     await f.view.get('[data-testid="notification-more"]').trigger('click'); await flushPromises();
     (f.view.get('.event-scroll').element as HTMLElement).scrollTop=72;
-    await f.view.findAll('[data-testid="notification-run"]')[1]!.trigger('click'); await flushPromises();
+    await f.view.findAll('[data-event]')[1]!.trigger('click'); await flushPromises();
+    await f.view.get('[data-testid="notification-refresh"]').trigger('click'); await flushPromises();
+    expect(f.view.get('.notice-detail h2').text()).toBe('Other project schedule');
+    await f.view.get('[data-testid="notification-run"]').trigger('click'); await flushPromises();
     expect(f.execution.resultSelection).toMatchObject({kind:'agent',job:{jobId:'701',executionId:'702',view:'active-status'}});
     expect(f.calls.find(c=>c.operation==='originalJob')).toMatchObject({context:{scope:{projectId:'44'}},jobId:'701',executionId:'702'});
     expect(f.view.get('[data-testid="selected-execution-facts"]').text()).toContain('702');

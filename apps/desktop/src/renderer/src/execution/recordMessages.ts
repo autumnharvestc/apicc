@@ -35,9 +35,10 @@ export function useRecordMessages() {
   return (key: keyof typeof messages.en) => messages[locale.value === "zh-CN" ? "zh-CN" : "en"][key];
 }
 
-export function recordTime(value: unknown, locale: string): string | undefined {
+export function recordTime(value: unknown, locale: string, compact = false): string | undefined {
   const epoch = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
   if (!Number.isFinite(epoch) || !Number.isFinite(new Date(epoch).getTime())) return undefined;
+  if (compact) return new Intl.DateTimeFormat(locale, {timeZone:"UTC",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(epoch);
   return new Intl.DateTimeFormat(locale, { timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hourCycle: "h23" }).format(epoch) + " UTC";
 }

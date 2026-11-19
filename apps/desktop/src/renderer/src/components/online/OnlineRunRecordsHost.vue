@@ -35,7 +35,12 @@ const selected = computed(() => e.value.resultSelection);
 const selectedJob = computed(() => selected.value?.kind === "agent" && "job" in selected.value ? selected.value.job : undefined);
 const jobKey = (j: OnlineJob) => [j.agentId,j.jobId,j.executionId].join("/");
 const selectedKey = computed(() => selectedJob.value ? jobKey(selectedJob.value) : selected.value && "runId" in selected.value ? selected.value.runId : "");
-function code(value?: string) { return value ? te("onlineExecution.states."+value) ? t("onlineExecution.states."+value) : value : msg("notRecorded"); }
+function code(value?: string) {
+  if (!value) return msg("notRecorded");
+  if (value === "stress") return t("run.kindStress");
+  for (const ns of ["onlineExecution.states", "stress.workbench.verdict", "executionLabels"]) if (te(ns + "." + value)) return t(ns + "." + value);
+  return value;
+}
 function go(pane: OnlineRunPane, revealing = false) { workbench.value.revealingRecord = revealing; issue.value = ""; intent++; emit("update:pane", pane); }
 watch(() => [props.active, e.value.context, e.value.visible, props.pane, schedules.value.selected], () => { intent++; issue.value = ""; }, { flush: "sync" });
 watch(() => e.value.context, () => { position.value = null; });
@@ -61,7 +66,7 @@ const rows = computed(() => {
     result.push({ key, job, run: receipt, name: full ? facts?.targetName || receipt?.targetName || code(full.task.target.kind) + " " + number : number,
       targetId: facts?.targetId, agentName: full ? facts?.agentName || receipt?.locationName : undefined, kind: target?.kind,
       time: facts?.startedAt ?? (full ? receipt?.submittedAt : undefined), started: facts?.startedAt !== undefined,
-      state: code(job.state), verdict: report ? code(report.verdict) : full && typeof full.summary?.verdict === "string" ? code(full.summary.verdict) : undefined });
+      state: code(job.state), verdict: report?.verdict ?? (full && typeof full.summary?.verdict === "string" ? full.summary.verdict : undefined) });
   }
   for (const receipt of e.value.submissions) {
     if (receipt.agentRef && !receipt.job) continue;
@@ -69,15 +74,45 @@ const rows = computed(() => {
     const local = receipt.result?.output;
     result.push({key:receipt.runId,run:receipt,name:receipt.targetName || code(receipt.target.kind) + " #" + shortRecordId(receipt.runId),kind:receipt.target.kind,time:receipt.submittedAt,
       state:local || receipt.localReport ? code("ended") : receipt.pending ? msg("awaiting") : msg("uncertain"),
-      verdict:local?.kind === "failure" || local?.kind === "stress-failure" ? code("failed") : local?.kind === "stress" ? code(local.result.verdict.status) :
-        local?.kind === "debug" ? code(local.result.error || local.result.failureKind || local.result.run.failed ? "failed" : "passed") :
-        local ? code(local.kind === "suite" ? local.result.suite?.verdict : local.result.verdict) : receipt.localReport ? code(receipt.localReport.verdict) : undefined });
+      verdict:local?.kind === "failure" || local?.kind === "stress-failure" ? "failed" : local?.kind === "stress" ? local.result.verdict.status :
+        local?.kind === "debug" ? (local.result.error || local.result.failureKind || local.result.run.failed ? "failed" : "passed") :
+        local ? (local.kind === "suite" ? local.result.suite?.verdict : local.result.verdict) : receipt.localReport?.verdict });
   }
   e.value.jobs.forEach(job => addJob(job));
   if (selectedJob.value) addJob(selectedJob.value);
   return result;
 });
 const selectedRow = computed(() => rows.value.find(row => row.key === selectedKey.value));
+const selectedLocal = computed(() => {
+  const row = selectedRow.value?.run;
+  return props.active && props.pane === "records" && !hideDetail.value && row?.location.kind === "local" ? row : undefined;
+});
+async function recoverLocal(run: RunRecord) {
+  if (run.pending || run.result || !scopesMatch(run.context, e.value.context)) return;
+  try { await e.value.selectSubmission(run.runId); }
+  catch { if (selectedLocal.value === run) issue.value = msg("unavailable"); }
+}
+watch(() => [selectedLocal.value?.runId, selectedLocal.value?.pending] as const, ([id, pending], [previous, wasPending]) => {
+  const run = selectedLocal.value;
+  if (run && id === previous && wasPending && !pending && !run.localReport) void recoverLocal(run);
+});
+async function refreshRecords() {
+  const run = selectedLocal.value;
+  await e.value.refresh();
+  if (run && selectedLocal.value === run) await recoverLocal(run);
+}
+async function cancelRow(row: Row) {
+  const context = e.value.context;
+  try {
+    if (row.job?.canCancel && row.job.state !== "ended" && row.job.cancelState !== "requested") await e.value.cancel(row.job);
+    else if (row.run?.location.kind === "local" && row.run.runId === e.value.activeLocalRunId) await e.value.cancelLocal();
+  } catch (error) { if (scopesMatch(context,e.value.context)) props.reportError(error); }
+}
+watch(() => [props.pane,e.value.context,props.active] as const, async () => {
+  if (props.pane !== "records" || !props.active) return;
+  await nextTick();
+  if (list.value) list.value.scrollTop = workbench.value.recordScrollTop;
+}, {immediate:true});
 async function choose(row: Row) {
   schedules.value.navigationIntent++;
   workbench.value.onlineRecord = row.job ? { jobId: row.job.jobId, executionId: row.job.executionId, agentId: row.job.agentId }
@@ -184,7 +219,7 @@ async function backToNotification() {
   } catch { if (n===store.navigationIntent) issue.value=msg("unavailable"); }
 }
 function changePane(pane: OnlineRunPane) { schedules.value.navigationIntent++; schedules.value.returnTo=null; schedules.value.paneRequest=null; position.value=null; go(pane); }
-function returnList() { workbench.value.onlineRecord = null; hideDetail.value=true; nextTick(() => list.value?.querySelector<HTMLElement>('button[aria-current="true"]')?.focus()); }
+function returnList() { workbench.value.onlineRecord = null; hideDetail.value=true; nextTick(() => list.value?.querySelector<HTMLElement>('[aria-current="true"] .record-link')?.focus()); }
 const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing.dirty || props.adapter.workflowDesign.dirty || props.online.editorDirty);
 </script>
 <template>
@@ -193,17 +228,27 @@ const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing
     <button v-else-if="position && pane==='records'" class="return" @click="position=null;go('schedules')">{{ msg("returnSchedule") }}</button>
     <p v-if="issue" role="alert">{{ issue }}</p>
     <OnlineRunLaunch v-if="pane==='launch'" :execution="e" :adapter="adapter" :read-only="readOnly" :dirty-stress-plan-id="dirtyStressPlanId" :report-error="reportError" @records="inspectLaunch" />
-    <div v-show="pane==='records'" class="records-layout" data-testid="online-run-records"><aside ref="list" class="record-list">
-      <h3>{{ msg("records") }}</h3><p>{{ msg("recent") }}</p><p>{{ msg("session") }}</p>
-      <div class="record-actions"><button @click="e.refresh()">{{ t("onlineExecution.refreshNow") }}</button><details><summary>{{ msg("settings") }}</summary><label>{{ t("onlineExecution.refresh") }} <input type="number" min="1" max="2147483647" :value="e.statusRefreshMs" @change="event => { try {e.setRefreshMs(Number((event.target as HTMLInputElement).value))} catch(err){reportError(err)} }" /> ms</label></details></div>
+    <div v-show="pane==='records'" class="records-layout" data-testid="online-run-records"><aside ref="list" class="record-list" @scroll="workbench.recordScrollTop = ($event.currentTarget as HTMLElement).scrollTop">
+      <header class="record-heading"><h2>{{ t('runRecords.onlineHistory') }}</h2><div class="record-tools">
+        <button :aria-label="t('onlineExecution.refreshNow')" @click="refreshRecords">{{ t('runRecords.refresh') }}</button>
+        <details class="list-settings"><summary>{{ t('runRecords.settings') }}</summary><div><p>{{ msg("recent") }}</p><p>{{ msg("session") }}</p>
+          <label>{{ t("onlineExecution.refresh") }} <input type="number" min="1" max="2147483647" :value="e.statusRefreshMs" @change="event => { try {e.setRefreshMs(Number((event.target as HTMLInputElement).value))} catch(err){reportError(err)} }" /> ms</label></div></details>
+      </div></header>
       <p v-if="!rows.length">{{ msg("noRecords") }}</p><button v-if="!rows.length" @click="changePane('launch')">{{ msg("launch") }}</button>
-      <button v-for="row in rows" :key="row.key" class="record-row" :aria-current="row.key===selectedKey" :data-record="row.key" @click="choose(row)"><strong :title="[row.name,row.job?.jobId ?? row.run?.runId,row.targetId].filter(Boolean).join(' · ')">{{ row.name }}</strong>
-        <small>{{ row.job || row.run?.location.kind==='agent' ? t("onlineExecution.agent") : t("onlineExecution.local") }}<template v-if="row.agentName"> · {{ row.agentName }}</template> · {{ row.kind ? code(row.kind) : t("onlineExecution.statusOnly") }}</small>
-        <small>{{ row.state }}<template v-if="row.verdict"> · {{ row.verdict }}</template></small><small :title="row.time!==undefined ? String(row.time) : undefined">{{ recordTime(row.time,locale) ?? msg("notRecorded") }}</small></button>
-    </aside><article class="record-detail"><button v-if="selected && !hideDetail" @click="returnList">{{ msg("back") }}</button>
-      <template v-if="selectedRow && !hideDetail"><h3 :title="selectedRow.targetId">{{ selectedRow.name }}</h3>
-        <p v-if="selectedRow.time!==undefined">{{ selectedRow.started ? t("onlineExecution.startedAt") : msg("submitted") }} · <time :title="String(selectedRow.time)">{{ recordTime(selectedRow.time,locale) }}</time></p>
-        <p v-else>{{ msg("time") }} · {{ msg("notRecorded") }}</p></template>
+      <table v-else class="record-table"><thead><tr><th>{{ t('onlineExecution.task') }}</th><th>{{ t('runRecords.time') }} · UTC</th><th>{{ t('runRecords.status') }}</th><th>{{ t('runRecords.conclusion') }}</th><th>{{ t('onlineExecution.actions') }}</th></tr></thead>
+        <tbody><tr v-for="row in rows" :key="row.key" class="record-row" :aria-current="row.key===selectedKey" :data-record="row.key" @click="choose(row)">
+          <th scope="row"><button class="record-link" :title="[row.name,row.job?.jobId ?? row.run?.runId,row.targetId].filter(Boolean).join(' · ')" @click.stop="choose(row)">{{ row.name }}</button></th>
+          <td><time v-if="row.time !== undefined" :title="recordTime(row.time,locale)" :datetime="String(row.time)">{{ recordTime(row.time,locale,true) }}</time><template v-else>{{ msg('notRecorded') }}</template></td><td>{{ row.state }}</td>
+          <td><span v-if="row.verdict" class="verdict" :data-verdict="row.verdict">{{ code(row.verdict) }}</span><template v-else>—</template></td>
+          <td><button v-if="row.job?.canCancel && row.job.state !== 'ended'" :disabled="row.job.cancelState === 'requested'" @click.stop="cancelRow(row)">{{ t('onlineExecution.cancel') }}</button>
+            <button v-else-if="row.run?.runId === e.activeLocalRunId && e.activeLocalRunId" @click.stop="cancelRow(row)">{{ t('onlineExecution.cancel') }}</button>
+            <button v-else class="view-record" @click.stop="choose(row)">{{ t('runRecords.details') }}</button></td>
+        </tr></tbody>
+      </table>
+    </aside><article class="record-detail">
+      <header v-if="selectedRow && !hideDetail" class="record-heading"><h2 :title="selectedRow.targetId">{{ selectedRow.name }}</h2>
+        <span v-if="selectedRow.verdict" class="verdict" :data-verdict="selectedRow.verdict">{{ code(selectedRow.verdict) }}</span>
+        <button class="record-back" @click="returnList">{{ msg("back") }}</button></header>
       <p v-if="hideDetail || !selected">{{ msg("pick") }}</p><OnlineExecutionPanel v-show="!hideDetail && (selected || e.error)" :execution="e" report-only :ai="ai" @collaboration="emit('collaboration',$event)" />
     </article></div>
     <OnlineSchedulesPanel v-if="pane==='schedules'" :execution="e" :schedules="schedules" :draft-dirty="dirty" @report="scheduleReport" />
@@ -212,5 +257,5 @@ const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing
 </template>
 <style scoped src="../../styles/run-records.css"></style>
 <style scoped>
-.return{border:0;background:transparent;padding:7px 10px;cursor:pointer;font:inherit}.return{align-self:flex-start;color:var(--accent)}input[type=number]{max-width:92px}.record-detail{padding:12px}.record-detail :deep(.execution){border:0;padding:8px 2px}.record-actions{align-items:baseline}
+.return{border:0;background:transparent;padding:7px 10px;cursor:pointer;font:inherit}.return{align-self:flex-start;color:var(--accent)}input[type=number]{max-width:92px}.record-detail :deep(.execution){border:0;padding:8px 2px}.record-actions{align-items:baseline}
 </style>

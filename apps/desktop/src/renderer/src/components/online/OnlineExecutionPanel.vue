@@ -7,7 +7,7 @@ import { isFullOnlineJob } from '../../../../shared/online/execution.js';
 import { reportingUnits } from "@apicc/core/report/units";
 import { onlineSessionErrorKey } from '../../i18n/index.js';
 import { useRecordMessages } from '../../execution/recordMessages.js';
-import { jobRecordFacts, outputEnvironment, shortRecordId } from '../../execution/recordFacts.js';
+import { jobRecordFacts, outputEnvironment, shortRecordId, workflowFailure } from '../../execution/recordFacts.js';
 import ResponseViewer from "../ResponseViewer.vue";
 import WfResultDrawer from "../WfResultDrawer.vue";
 import CaseEvidencePanel from "../CaseEvidencePanel.vue";
@@ -63,7 +63,7 @@ const recordedScriptTimeout = computed(() => local.value?.scriptTimeoutMs ?? ful
 const recordedRuntime = computed(() => stressSelected.value ? stressSummary.value?.runtime.runtimeCompatibilityId : fullSelected.value?.task.runtimeCompatibilityId ?? local.value?.runtimeCompatibilityId);
 function shortIdentity(value: string) { return value.length > 64 ? `${value.slice(0, 48)}…${value.slice(-8)}` : value; }
 const agent = computed(() => props.execution.location.kind === "agent" ? props.execution.agents?.agents.find(agent => agent.id === (props.execution.location as { agentId: string }).agentId) : undefined);
-const raw = ref(false);
+const raw = ref(false), reportExpanded = ref(false);
 const selectionKey = computed(() => JSON.stringify(props.execution.resultSelection ?? [props.execution.selectedJobId, local.value?.runId, report.value?.executionId]));
 function analyzeReport() {
   const context = props.execution.context, displayed = local.value ?? report.value, key = selectionKey.value;
@@ -76,8 +76,8 @@ function analyzeReport() {
   void props.ai.prepareReportAnalysis({ source: { kind: 'online', context }, report: { kind: 'online', runId, location }, displayed,
     isCurrent: () => selectionKey.value === key && (local.value ?? report.value) === displayed && JSON.stringify(props.execution.context) === sourceKey });
 }
-watch(selectionKey, () => { raw.value = false; });
-function label(code: string | undefined) { if (!code) return t('onlineExecution.notCollected'); if(code==='stress')return t('stress.title');if (code === 'expired') return t('onlineExecution.expiredArchive'); const key = `onlineExecution.states.${code}`; const reason = `onlineExecution.reasons.${code}`; const refusal = `startRejectionLabels.${code}`; return te(key) ? t(key) : te(reason) ? t(reason) : te(refusal) ? t(refusal) : te(`stressFinal.codes.${code}`)?t(`stressFinal.codes.${code}`):code; }
+watch(selectionKey, () => { raw.value = false; reportExpanded.value = false; });
+function label(code: string | undefined) { if (!code) return t('onlineExecution.notCollected'); if(code==='local-run-cancelled')return t('runRecords.cancelledLocal'); if(code==='stress')return t('run.kindStress'); if(te(`stress.workbench.verdict.${code}`))return t(`stress.workbench.verdict.${code}`);if (code === 'expired') return t('onlineExecution.expiredArchive'); const key = `onlineExecution.states.${code}`; const reason = `onlineExecution.reasons.${code}`; const refusal = `startRejectionLabels.${code}`; return te(key) ? t(key) : te(reason) ? t(reason) : te(refusal) ? t(refusal) : te(`stressFinal.codes.${code}`)?t(`stressFinal.codes.${code}`):code; }
 function capacityReason(reason:string){const key=`stressPresentation.waiting.${reason.startsWith('stress.')?reason.slice(7):''}`;return te(key)?t(key):te(`stressFinal.codes.${reason}`)?t(`stressFinal.codes.${reason}`):reason;}
 function capacityValue(dimension:string,value:number){return dimension==='maxRps'?`${value} ${t('stressPresentation.rpsUnit')}`:dimension==='metricMemoryBytes'?`${Number((value/1048576).toFixed(2))} MiB`:`${value} ${dimension==='processes'?t('stressPresentation.processUnit'):dimension==='requestConcurrency'?t('stressPresentation.requestUnit'):dimension==='jobs'?t('stressPresentation.jobs'):'VU'}`;}
 const logicalVerdict = computed(() => {
@@ -105,6 +105,12 @@ const receipt = computed(() => {
   return props.execution.submissions?.find(item => selection && ('runId' in selection ? selection.runId === item.runId : item.job?.jobId === selection.job.jobId && item.job.executionId === selection.job.executionId && item.job.agentId === selection.job.agentId));
 });
 const jobFacts = computed(() => fullSelected.value ? jobRecordFacts(fullSelected.value,props.execution.view,report.value) : undefined);
+const recordedAgent = computed(() => {
+  const job = fullSelected.value;
+  if (!job) return undefined;
+  const current = props.execution.agents?.agents.find(item => item.id === job.agentId);
+  return jobFacts.value?.agentName || receipt.value?.locationName || (current && t("runRecords.currentName",{name:current.name}));
+});
 const requestFact = computed(() => {
   if (report.value?.executionFact) return label(report.value.executionFact);
   const value = output.value;
@@ -115,31 +121,37 @@ const requestFact = computed(() => {
   return value.result.requestFacts ? label(value.result.requestFacts.requestStarted > 0 ? "started" : "not-started") : msg("notRecorded");
 });
 const failureText = computed(() => {
-  if (report.value?.reasonCode || fullSelected.value?.summary?.reasonCode) return label(report.value?.reasonCode ?? String(fullSelected.value?.summary?.reasonCode));
   const value = output.value;
-  if (!value) return "";
-  if (value.kind === "failure" || value.kind === "stress-failure") return value.error;
-  if (value.kind === "debug") return value.result.error ?? value.result.outcomes.flatMap(row => row.assertions).find(a => !a.pass)?.message;
-  if (value.kind === "suite") return value.result.cases.find(row => row.error)?.error ?? value.result.cases.flatMap(row => row.assertions).find(a => !a.pass)?.message;
-  if (value.kind === "workflow") return value.result.nodeResults.find(row => row.error)?.error;
-  return "";
+  let detail: string | undefined;
+  if (value?.kind === "failure" || value?.kind === "stress-failure") detail = value.error;
+  if (value?.kind === "debug") detail = value.result.outcomes.flatMap(row => row.assertions).find(a => !a.pass)?.message ?? value.result.error;
+  if (value?.kind === "suite") detail = value.result.cases.flatMap(row => row.assertions).find(a => !a.pass)?.message
+    ?? value.result.cases.find(row => row.error)?.error ?? value.result.suite?.entries?.find(row => row.error)?.error;
+  if (value?.kind === "workflow") {
+    const recorded = value.result.report?.workflow?.entries.find(row => row.error);
+    const node = value.result.nodeResults.find(row => row.error);
+    detail = value.result.report?.cases.flatMap(row => row.assertions).find(a => !a.pass)?.message
+      ?? workflowFailure(recorded ?? (node && {...node,nodeKind:node.kind}),t("runRecords.workflowAssertion"));
+  }
+  const code = report.value?.reasonCode ?? fullSelected.value?.summary?.reasonCode;
+  return detail || (typeof code === "string" ? label(code) : "");
 });
 const environmentFacts = computed(() => jobFacts.value
   ? { id:jobFacts.value.environmentId, name:jobFacts.value.environmentName } : outputEnvironment(output.value));
 const recordedEnvironment = computed(() => {
-  const selection = props.execution.resultSelection, task = fullSelected.value?.task;
+  const task = fullSelected.value?.task;
   const value = output.value;
   const id = environmentFacts.value.id ?? receipt.value?.environmentId, name = environmentFacts.value.name;
   if (name) return name;
   if (id) return receipt.value?.environmentId === id && receipt.value.environmentName ? receipt.value.environmentName : shortRecordId(id);
   if (task?.target.kind === 'suite' && !receipt.value && value?.kind !== 'suite') return msg('notRecorded');
-  if (task || selection?.kind === 'local') return t('onlineExecution.baseEnvironment');
+  if (task || receipt.value || local.value) return t('onlineExecution.baseEnvironment');
   return msg('notRecorded');
 });
 </script>
 <template>
-  <section class="execution online-surface" data-testid="online-execution-panel">
-    <button v-if="local && local.output.kind !== 'stress-failure'" data-testid="collaboration-publish-result" @click="emit('collaboration', {context: execution.context!, source:{kind:'online-local',runId:local.runId}})">{{ t('collaboration.publishToProject') }}</button>
+  <section class="execution online-surface" :class="{'record-mode': reportOnly}" data-testid="online-execution-panel">
+    <button v-if="!reportOnly && local && local.output.kind !== 'stress-failure'" data-testid="collaboration-publish-result" @click="emit('collaboration', {context: execution.context!, source:{kind:'online-local',runId:local.runId}})">{{ t('collaboration.publishToProject') }}</button>
     <div v-if="!reportOnly" class="toolbar">
       <label>{{ t('onlineExecution.location') }}<select :value="execution.location.kind === 'local' ? 'local' : execution.location.agentId" :disabled="execution.running" data-testid="online-execution-location" @change="location"><option value="local">{{ t('onlineExecution.local') }}</option><option v-for="item in execution.agents?.agents" :key="item.id" :value="item.id" :disabled="item.availability !== 'available' || item.configuration.status !== 'applied'">{{ item.name }} · {{ label(item.availability) }}</option></select></label>
       <label>{{ t('onlineExecution.environment') }}<select v-model="execution.environmentId" :disabled="execution.running" data-testid="online-execution-environment"><option :value="undefined">{{ t('onlineExecution.baseEnvironment') }}</option><option v-for="env in execution.project?.environments" :key="env.id" :value="env.id">{{ env.name }}</option></select></label>
@@ -175,19 +187,21 @@ const recordedEnvironment = computed(() => {
     </div>
     </template>
     <section v-if="execution.resultSelection || selected || local || report" data-testid="online-selected-run">
-      <button v-if="ai && execution.context && output && output.kind !== 'stress-failure'" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
-      <h4>{{ t('onlineExecution.recordedRun') }}</h4>
+      <h4 v-if="!reportOnly">{{ t('onlineExecution.recordedRun') }}</h4>
       <p v-if="selected && !fullSelected">{{ t('onlineExecution.statusOnly') }}</p>
+      <p v-if="failureText" class="record-failure" role="alert">{{ failureText }}</p>
       <dl class="summary" data-testid="selected-execution-facts">
-        <div><dt>{{ msg("recordId") }}</dt><dd>{{ selected?.executionId ?? receipt?.runId ?? local?.runId ?? msg("notRecorded") }}</dd></div>
-        <div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ selected ? label(selected.state) : local ? label("ended") : receipt?.pending ? msg("awaiting") : msg("notRecorded") }}</dd></div>
+        <div v-if="selected && !fullSelected"><dt>{{ msg("recordId") }}</dt><dd>{{ selected.executionId }}</dd></div>
+        <div v-if="!selected || fullSelected"><dt>{{ t('onlineExecution.environment') }}</dt><dd :title="environmentFacts.id ?? receipt?.environmentId">{{ recordedEnvironment }}</dd></div>
+        <div v-if="!selected || fullSelected"><dt>{{ t('onlineExecution.location') }}</dt><dd :title="selected?.agentId">{{ selected ? t('onlineExecution.agent') + ' · ' + (recordedAgent || '#' + shortRecordId(selected.agentId)) : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
+
+        <div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ selected ? label(selected.state) : local || report && ["passed","failed","cancelled","timed-out","aborted","no-data","incomplete"].includes(report.verdict) ? label("ended") : receipt?.pending ? msg("awaiting") : msg("notRecorded") }}</dd></div>
         <div v-if="!selected || fullSelected"><dt>{{ msg("receipt") }}</dt><dd>{{ selected || local || report ? msg("accepted") : receipt?.pending ? msg("submitting") : msg("uncertain") }}</dd></div>
         <div v-if="!selected || fullSelected"><dt>{{ t("onlineExecution.verdict") }}</dt><dd>{{ report || local ? logicalVerdict : selected ? verdict(selected) : msg("notRecorded") }}</dd></div>
         <div v-if="!selected || fullSelected"><dt>{{ msg("requests") }}</dt><dd>{{ requestFact }}</dd></div>
         <div v-if="selected"><dt>{{ t("onlineExecution.release") }}</dt><dd>{{ label(selected.executionReleased ? 'released' : 'retained') }}</dd></div>
         <div v-if="fullSelected || local || report"><dt>{{ t("onlineExecution.archive") }}</dt><dd>{{ execution.resultSelection?.kind === 'local' || local ? msg("sessionReport") : label(fullSelected?.reportState) }}</dd></div>
       </dl>
-      <p v-if="failureText" role="alert">{{ failureText }}</p>
       <p v-if="selected && selected.cancelState !== 'none'">{{ label('cancel-' + selected.cancelState) }}</p>
       <p v-if="fullSelected?.capacityWaitReason">{{ capacityReason(fullSelected.capacityWaitReason) }}</p>
       <p v-if="fullSelected?.capacityWait">{{ t('stressCapacity.used') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.used) }} · {{ t('stressCapacity.requested') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.requested) }} · {{ t('stressCapacity.limit') }} {{ capacityValue(fullSelected.capacityWait.dimension,fullSelected.capacityWait.limit) }} <span v-if="fullSelected.capacityWait.draining">{{ t('stressCapacity.draining') }}</span></p>
@@ -195,12 +209,12 @@ const recordedEnvironment = computed(() => {
       <button v-if="receipt?.location.kind === 'local' && receipt.runId === execution.activeLocalRunId" @click="action(() => execution.cancelLocal())">{{ t("onlineExecution.cancel") }}</button>
       <p v-if="stressSelected && !stressSummary">{{t('stressPresentation.metadataNotCollected')}}</p>
       <StressExecutionSummaryView v-if="stressSelected && stressSummary && !report && !local" :execution="stressSummary" />
-      <dl v-if="!selected || fullSelected" class="summary">
-        <div><dt>{{ t('onlineExecution.location') }}</dt><dd :title="selected?.agentId">{{ selected ? t('onlineExecution.agent') + ' · ' + (jobFacts?.agentName || receipt?.locationName || '#' + shortRecordId(selected.agentId)) : local || execution.resultSelection?.kind === 'local' ? t('onlineExecution.local') : t('onlineExecution.notCollected') }}</dd></div>
-        <div><dt>{{ t('onlineExecution.environment') }}</dt><dd :title="environmentFacts.id ?? receipt?.environmentId">{{ recordedEnvironment }}</dd></div>
-      </dl>
       <details v-if="!selected || fullSelected" :key="selected?.executionId ?? receipt?.runId"><summary>{{ msg("technical") }}</summary><dl class="summary">
+        <div><dt>{{ msg("recordId") }}</dt><dd>{{ selected?.executionId ?? receipt?.runId ?? local?.runId ?? msg("notRecorded") }}</dd></div>
+        <div v-if="output?.kind === 'workflow' && output.result.nodeResults.some(row => row.error)"><dt>{{ t('onlineExecution.failureReason') }}</dt><dd>{{ output.result.nodeResults.find(row => row.error)?.error }}</dd></div>
         <div v-if="fullSelected"><dt>{{ msg('jobId') }}</dt><dd>{{ fullSelected.jobId }}</dd></div>
+        <div v-if="jobFacts?.startedAt !== undefined || receipt?.submittedAt"><dt>{{ jobFacts?.startedAt !== undefined ? t('onlineExecution.startedAt') : msg('submitted') }}</dt><dd><time :title="String(jobFacts?.startedAt ?? receipt?.submittedAt)">{{ date(jobFacts?.startedAt ?? receipt?.submittedAt) }}</time></dd></div>
+        <div v-if="report?.reasonCode"><dt>{{ t('onlineExecution.failureReason') }}</dt><dd>{{ report.reasonCode }}</dd></div>
         <div v-if="jobFacts?.targetId"><dt>{{ msg('target') }}</dt><dd>{{ jobFacts.targetId }}</dd></div>
         <div><dt>{{ t('onlineExecution.snapshot') }}</dt><dd :title="fullSelected?.task.manifestHash ?? local?.manifestHash">{{ fullSelected?.task.snapshotId ?? local?.snapshotId ?? t('onlineExecution.notPrepared') }} · {{ (fullSelected?.task.manifestHash ?? local?.manifestHash)?.slice(0, 12) }}</dd></div>
         <div><dt>{{ t('onlineExecution.dispatch') }}</dt><dd>{{ label(fullSelected?.task.dispatchKind) }}</dd></div>
@@ -210,7 +224,10 @@ const recordedEnvironment = computed(() => {
       </dl></details>
     </section>
     <section v-if="report || local" data-testid="online-execution-report">
-      <h4>{{ msg("report") }}</h4>
+      <header class="report-heading"><h4>{{ t("runRecords.caseResults") }}</h4><button v-if="reportOnly" :aria-expanded="reportExpanded" data-testid="record-open-report" @click="reportExpanded = !reportExpanded">{{ t("runRecords.openReport") }}</button></header>
+      <div v-show="!reportOnly || reportExpanded">
+      <button v-if="ai && execution.context && output && output.kind !== 'stress-failure'" data-testid="ai-analyze-report" :disabled="ai.suggestLoading" @click="analyzeReport">{{ t('ai.analyzeReport') }}</button>
+      <button v-if="reportOnly && local && local.output.kind !== 'stress-failure'" data-testid="collaboration-publish-result" @click="emit('collaboration', {context: execution.context!, source:{kind:'online-local',runId:local.runId}})">{{ t('collaboration.publishToProject') }}</button>
       <p>{{ t('onlineExecution.verdict') }}: {{ logicalVerdict }} · {{ t('onlineExecution.requestFact') }}: {{ requestFact }}</p>
       <p v-if="report?.reasonCode" role="alert">{{ label(report.reasonCode) }}</p>
       <template v-if="output?.kind === 'failure'"><p role="alert">{{ t('onlineExecution.failureReason') }}: {{ output.error }}</p><ul v-if="output.result.warnings?.length" :aria-label="t('onlineExecution.evidenceWarnings')"><li v-for="(warning, index) in output.result.warnings" :key="index">{{ warning }}</li></ul></template>
@@ -237,6 +254,7 @@ const recordedEnvironment = computed(() => {
       <button v-if="stressReport" data-testid="online-stress-export" @click="exportStressHtml">{{t('stressPresentation.export')}}</button>
       <section v-if="baseline" data-testid="online-stress-comparison"><h4>{{t('stressPresentation.baseline')}}</h4><button @click="baseline=null">{{t('stressPresentation.clear')}}</button><p v-if="comparison && !comparison.directlyComparable">{{t('stressPresentation.notComparable')}}</p><ul><li v-for="reason in comparison?.reasons" :key="reason">{{t(`stressPresentation.reasons.${reason}`)}}</li></ul><ul><li v-for="reason in coreComparisonReasons" :key="reason">{{coreComparisonReason(reason)}}</li></ul><div v-if="comparison?.metrics" class="task-scroll"><table><thead><tr><th>{{t('stress.metricName')}}</th><th>{{t('stress.workbench.baseline')}}</th><th>{{t('stress.workbench.report')}}</th><th>Δ</th><th>Δ %</th></tr></thead><tbody><tr v-for="(metric,key) in comparison.metrics" :key="key"><th>{{metricName(key)}}</th><td>{{metricValue(key,metric.base)}}</td><td>{{metricValue(key,metric.candidate)}}</td><td>{{metricValue(key,metric.absolute)}}</td><td>{{metric.relative===null?t('stress.workbench.notComputable'):(metric.relative*100).toFixed(2)+'%'}}</td></tr></tbody></table></div></section>
       <details :key="selectionKey" @toggle="raw = ($event.target as HTMLDetailsElement).open"><summary>{{ t('onlineExecution.raw') }}</summary><textarea v-if="raw" readonly :value="JSON.stringify(report ?? local, null, 2)" /></details>
+      </div>
     </section>
   </section>
 </template>
@@ -247,4 +265,13 @@ const recordedEnvironment = computed(() => {
 .summary,.current-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:10px}.summary div,.current-summary div{min-width:0;background:var(--subtle);border:1px solid var(--border);border-radius:8px;padding:10px 12px}.summary dt,.current-summary dt{color:var(--text-muted)}.summary dd,.current-summary dd{margin:5px 0 0;overflow-wrap:anywhere;font-weight:500}
 .task-scroll{overflow:auto;max-height:260px;border:1px solid var(--border);border-radius:8px;margin:12px 0}table{white-space:nowrap}.hint{color:var(--text-muted)}textarea{width:100%;height:220px;resize:vertical}section>button{margin:6px 8px 6px 0}section>h4{margin-top:18px}section>details{border-top:1px solid var(--border);margin-top:12px;padding-top:6px}
 
+.record-mode { padding: 0; border: 0; }
+.record-mode .summary { display: block; margin: 10px 0; }
+.record-mode .summary div { display: grid; grid-template-columns: minmax(max-content,34%) minmax(0,1fr); border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 5px 4px; background: transparent; }
+.record-mode .summary dt { color: var(--text); }
+.record-mode .summary dd { margin: 0; }
+.record-mode .record-failure { margin: 10px 0; font-size: 16px; color: var(--fail); font-weight: 600; }
+.report-heading { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); margin-top: 14px; padding-top: 12px; }
+.report-heading h4 { margin: 0; }
+.report-heading button { color: var(--accent); border: 0; background: transparent; }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useWorkbenchPosition } from "../stores/workbenchPosition.js";
 import type { EvidenceIdentity, RunResult, StressComparison } from "@apicc/core";
@@ -11,6 +11,7 @@ import type { useRunStore } from "../stores/run.js";
 import type { useWorkspaceStore } from "../stores/workspace.js";
 import type { AiStore } from "../stores/ai.js";
 import { caseEvidenceIdentity } from "../ai/evidenceNavigation.js";
+import { shortRecordId, workflowFailure } from "../execution/recordFacts.js";
 import { recordTime, useRecordMessages } from "../execution/recordMessages.js";
 import CaseEvidencePanel from "./CaseEvidencePanel.vue";
 import RunSummaryView from "./RunSummaryView.vue";
@@ -31,7 +32,8 @@ const runReport = computed(() => report.value?.kind === "stress" ? null : report
 const stress = computed(() => report.value?.kind === "stress" ? report.value.report : null);
 const selectedFile = ref(""), baseline = ref(""), comparison = shallowRef<StressComparison | null>(null);
 const rerunTarget = shallowRef<EvidenceIdentity | null>(null), issue = ref(""), loading = ref(false);
-const legacyOpen = ref(false);
+const legacyOpen = ref(false), list = ref<HTMLElement>(), showReport = ref(false);
+watch(selectedFile, () => { showReport.value = false; });
 let listGeneration = 0, detailGeneration = 0;
 onBeforeUnmount(() => { listGeneration++; detailGeneration++; });
 const knownScopes = computed(() => props.workspace.tree?.children.flatMap(group => group.children ?? []).filter(node => node.kind === "project").map(node => node.locator) ?? []);
@@ -46,19 +48,25 @@ const legacy = computed(() => rows.value.filter(row => ownership(row) === "legac
 const trusted = computed(() => !!selected.value?.archiveProject && ownership(selected.value) === "current");
 function label(code?: string) {
   if (!code) return msg("notRecorded");
-  for (const ns of ["executionLabels","onlineExecution.states","stressFinal.codes"]) if (te(ns + "." + code)) return t(ns + "." + code);
+  for (const ns of ["executionLabels","onlineExecution.states","stress.workbench.verdict","stressFinal.codes"]) if (te(ns + "." + code)) return t(ns + "." + code);
   return code;
 }
 const kind = (row: RunSummary) => t(row.kind === "collection" ? "run.kindCollection" : row.kind === "stress" ? "run.kindStress" : "onlineExecution.states." + row.kind);
 const title = (row: RunSummary) => row.kind === "stress" ? row.target?.kind === "case" ? row.target.caseId : row.target?.workflowId ?? kind(row) : row.collectionName;
-const verdict = (row: RunSummary) => label(row.kind === "stress" ? row.verdict : row.logicalVerdict ?? ((row.reportingUnits?.failed ?? row.failed) ? "failed" : "passed"));
+const verdictCode = (row: RunSummary) => row.kind === "stress" ? row.verdict : row.logicalVerdict ?? ((row.reportingUnits?.failed ?? row.failed) ? "failed" : "passed");
+const verdict = (row: RunSummary) => label(verdictCode(row));
 const facts = computed(() => {
   const r = runReport.value, s = stress.value;
-  const env = r?.envName || (r?.suite?.environmentId ?? r?.executionIdentity?.environmentId ?? (s && 'formatVersion' in s && s.formatVersion === 2 ? s.environmentId : undefined));
+  const id = r?.suite?.environmentId ?? r?.executionIdentity?.environmentId ?? (s && 'formatVersion' in s && s.formatVersion === 2 ? s.environmentId : undefined);
   const hasBaseEvidence = s && 'formatVersion' in s && s.formatVersion === 2 && s.environmentId === null || !!(r?.executionIdentity || r?.suite);
-  return { environment: env || (hasBaseEvidence ? t("run.envNone") : msg("notRecorded")),
-    reason: r?.workflow?.entries.find(v => v.error)?.error ?? r?.suite?.entries?.find(v => v.error)?.error ??
-      r?.cases.find(v => v.error)?.error ?? r?.cases.flatMap(v => v.assertions ?? []).find(a => !a.pass)?.message };
+  const project = props.workspace.tree?.children.flatMap(group => group.children ?? []).find(node => node.kind === "project"
+    && node.locator.workspaceId === props.project.workspaceId && node.locator.groupId === props.project.groupId && node.locator.projectId === props.project.projectId);
+  const currentName = id && project?.kind === "project" && trusted.value && project.envs?.find(env => env.id === id)?.name;
+  const failedNode = r?.workflow?.entries.find(v => v.error);
+  return { environment: r?.envName || (currentName ? t("runRecords.currentName",{name:currentName}) : id ? t("runRecords.environmentId",{id:shortRecordId(id)}) : hasBaseEvidence ? t("run.envNone") : msg("notRecorded")),
+    id, rawReason: failedNode?.error,
+    reason: r?.cases.flatMap(v => v.assertions ?? []).find(a => !a.pass)?.message ?? workflowFailure(failedNode,t("runRecords.workflowAssertion"))
+      ?? r?.cases.find(v => v.error)?.error ?? r?.suite?.entries?.find(v => v.error)?.error };
 });
 function closeDetail() { detailGeneration++; selected.value = null; report.value = null; issue.value = ""; rerunTarget.value = null; }
 async function open(row: RunSummary) {
@@ -82,6 +90,8 @@ async function refresh(file?: string | null) {
     const values = await props.run.readArchiveList();
     if (token !== listGeneration) return;
     rows.value = values;
+    await nextTick(); if (token !== listGeneration) return;
+    if (list.value) list.value.scrollTop = position.value.recordScrollTop;
     const restore = !file && position.value.localRecord;
     if (file || restore) {
       const row = file ? current.value.find(item => item.file === file)
@@ -123,12 +133,15 @@ async function exportStress() { if (selected.value && trusted.value) try { await
 </script>
 <template>
   <section class="records-layout" data-testid="local-run-records">
-    <aside class="record-list">
-      <h3>{{ msg("records") }}</h3><button @click="refresh()" :disabled="loading">{{ msg("refresh") }}</button>
+    <aside ref="list" class="record-list" @scroll="position.recordScrollTop = ($event.currentTarget as HTMLElement).scrollTop">
+      <header class="record-heading"><h2>{{ t("runRecords.localHistory") }}</h2><button :aria-label="msg('refresh')" :title="msg('refresh')" @click="refresh()" :disabled="loading">{{ t("runRecords.refresh") }}</button></header>
       <template v-if="!loading && !current.length"><p>{{ msg("noRecords") }}</p><button @click="emit('launch')">{{ msg("launch") }}</button></template>
-      <button v-for="row in current" :key="row.file" class="record-row" :data-file="row.file" :aria-current="selectedFile === row.file" @click="open(row)">
-        <strong :title="title(row)">{{ title(row) }}</strong><small>{{ kind(row) }} · {{ verdict(row) }}</small><small :title="row.startedAt">{{ recordTime(row.startedAt,locale) ?? msg("notRecorded") }}</small>
-      </button>
+      <table v-if="current.length" class="record-table"><thead><tr><th>{{ t('onlineExecution.task') }}</th><th>{{ t('runRecords.time') }} · UTC</th><th>{{ t('runRecords.status') }}</th><th>{{ t('runRecords.conclusion') }}</th></tr></thead>
+        <tbody><tr v-for="row in current" :key="row.file" class="record-row" :data-file="row.file" :aria-current="selectedFile === row.file" @click="open(row)">
+          <th scope="row"><button class="record-link" :title="title(row)" @click.stop="open(row)">{{ title(row) }}</button></th>
+          <td :title="recordTime(row.startedAt,locale)">{{ recordTime(row.startedAt,locale,true) ?? msg("notRecorded") }}</td>
+          <td>{{ label('ended') }}</td><td><span class="verdict" :data-verdict="verdictCode(row)">{{ verdict(row) }}</span></td>
+        </tr></tbody></table>
       <details v-if="legacy.length" :open="legacyOpen" @toggle="legacyOpen = ($event.target as HTMLDetailsElement).open">
         <summary>{{ msg("legacy") }} ({{ legacy.length }})</summary>
         <button v-for="row in legacy" :key="row.file" class="record-row" :data-file="row.file" :aria-current="selectedFile === row.file" @click="open(row)"><strong>{{ title(row) }}</strong><small>{{ row.file }}</small><small>{{ recordTime(row.startedAt,locale) }}</small></button>
@@ -137,13 +150,18 @@ async function exportStress() { if (selected.value && trusted.value) try { await
     <article class="record-detail">
       <p v-if="issue" role="alert">{{ issue }}</p><p v-if="!selected">{{ msg("pick") }}</p>
       <template v-if="selected">
-        <button @click="position.localRecord = null; closeDetail()">{{ msg("back") }}</button><h3>{{ title(selected) }}</h3>
-        <p v-if="ownership(selected) === 'legacy'">{{ msg("legacyHint") }}</p>
-        <dl><div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ label("ended") }}</dd></div><div><dt>{{ t("onlineExecution.verdict") }}</dt><dd>{{ verdict(selected) }}</dd></div>
-          <div><dt>{{ t("onlineExecution.environment") }}</dt><dd>{{ facts.environment }}</dd></div><div><dt>{{ msg("position") }}</dt><dd>{{ selected.archiveProject ? t("onlineExecution.local") : msg("notRecorded") }}</dd></div>
-          <div><dt>{{ t("onlineExecution.startedAt") }}</dt><dd><time :title="selected.startedAt">{{ recordTime(selected.startedAt, locale) ?? msg("notRecorded") }}</time></dd></div>
-        </dl><p v-if="facts.reason" role="alert">{{ facts.reason }}</p>
-        <details><summary>{{ msg("technical") }}</summary><p>{{ selected.file }}</p></details>
+        <header class="record-heading"><h2>{{ title(selected) }}</h2><span class="verdict" :data-verdict="verdictCode(selected)">{{ verdict(selected) }}</span>
+          <button class="record-back" @click="position.localRecord = null; closeDetail()">{{ msg("back") }}</button></header>
+        <p v-if="ownership(selected) === 'legacy'">{{ msg("legacyHint") }}</p><p v-if="facts.reason" class="record-failure" role="alert">{{ facts.reason }}</p>
+        <dl class="record-facts"><div><dt>{{ t("runRecords.actualEnvironment") }}</dt><dd :title="facts.id ?? undefined">{{ facts.environment }}</dd></div>
+          <div><dt>{{ msg("position") }}</dt><dd>{{ selected.archiveProject ? t("onlineExecution.local") : msg("notRecorded") }}</dd></div>
+          <div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ label("ended") }}</dd></div>
+          <div><dt>{{ t("onlineExecution.archive") }}</dt><dd>{{ report ? label("archived") : msg("notRecorded") }}</dd></div>
+        </dl>
+        <details><summary>{{ msg("technical") }}</summary><p>{{ selected.file }}</p><p v-if="facts.rawReason">{{ facts.rawReason }}</p><p>{{ t('onlineExecution.startedAt') }} · {{ recordTime(selected.startedAt,locale) }}</p></details>
+        <header v-if="report" class="record-heading report-heading"><h3>{{ t('runRecords.caseResults') }}</h3>
+          <button class="record-back" :aria-expanded="showReport" @click="showReport = !showReport">{{ t('runRecords.openReport') }}</button></header>
+        <div v-show="showReport">
         <div v-if="report && trusted" class="record-actions">
           <button @click="emit('collaboration', {kind: stress ? 'stress' : 'run', file:selected.file, project:{...project}})">{{ t("collaboration.publishToProject") }}</button>
           <button v-if="ai && runReport" :disabled="ai.suggestLoading" @click="analyze">{{ t("ai.analyzeReport") }}</button>
@@ -160,6 +178,7 @@ async function exportStress() { if (selected.value && trusted.value) try { await
           </details>
           <div v-if="rerunTarget" class="record-actions"><span>{{ msg("confirmRerun") }}</span><button @click="rerun">{{ msg("rerun") }}</button><button @click="rerunTarget=null">{{ msg("cancel") }}</button></div>
         </template>
+        </div>
       </template>
     </article>
   </section>

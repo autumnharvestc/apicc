@@ -5,6 +5,13 @@ import { apiLocatorKey, sameProjectLocator } from "../wf/wfBindings.js";
 type Output = OnlineLocalResult["output"];
 type Target = FullOnlineJob["task"]["target"];
 
+export function workflowFailure(row: { error?: string; label?: string; nodeKind?: string; failureKind?: string } | undefined, assertionLabel: string) {
+  if (!row?.error) return undefined;
+  const reason = row.error === "Workflow assertion failed" && (row.nodeKind === "assert" || row.failureKind === "assertion")
+    ? assertionLabel : row.error;
+  return row.label ? `${row.label} · ${reason}` : reason;
+}
+
 export function shortRecordId(value: string) {
   return value.length > 14 ? value.slice(0, 6) + "…" + value.slice(-4) : value;
 }

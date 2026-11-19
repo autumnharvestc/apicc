@@ -1,0 +1,287 @@
+{
+  "cssViewport": [
+    1114,
+    627
+  ],
+  "devicePixelRatio": 1.5008976660682227,
+  "pngPixels": [
+    1672,
+    941
+  ],
+  "rectanglesInImagePixels": {
+    "R04-online-record.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 934,
+        "height": 679
+      },
+      "right": {
+        "x": 1056,
+        "y": 204,
+        "width": 603,
+        "height": 679
+      },
+      "detailHeading": {
+        "x": 1075,
+        "y": 223,
+        "width": 541,
+        "height": 42
+      },
+      "table": {
+        "x": 129,
+        "y": 303,
+        "width": 895,
+        "height": 275
+      },
+      "action": {
+        "x": 1514,
+        "y": 228,
+        "width": 102,
+        "height": 33
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    },
+    "R07-local-record.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 934,
+        "height": 679
+      },
+      "right": {
+        "x": 1056,
+        "y": 204,
+        "width": 603,
+        "height": 679
+      },
+      "detailHeading": {
+        "x": 1075,
+        "y": 223,
+        "width": 564,
+        "height": 42
+      },
+      "table": {
+        "x": 129,
+        "y": 283,
+        "width": 895,
+        "height": 227
+      },
+      "action": {
+        "x": 1537,
+        "y": 228,
+        "width": 102,
+        "height": 33
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    },
+    "R06-online-notification.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 761,
+        "height": 679
+      },
+      "right": {
+        "x": 882,
+        "y": 204,
+        "width": 776,
+        "height": 679
+      },
+      "mark": {
+        "x": 1499,
+        "y": 223,
+        "width": 117,
+        "height": 48
+      },
+      "plan": {
+        "x": 902,
+        "y": 572,
+        "width": 351,
+        "height": 48
+      },
+      "run": {
+        "x": 1265,
+        "y": 572,
+        "width": 351,
+        "height": 48
+      },
+      "delivery": {
+        "x": 902,
+        "y": 647,
+        "width": 715,
+        "height": 35
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    },
+    "R05-online-schedule.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 511,
+        "height": 679
+      },
+      "right": {
+        "x": 633,
+        "y": 204,
+        "width": 1026,
+        "height": 679
+      },
+      "heading": {
+        "x": 652,
+        "y": 223,
+        "width": 987,
+        "height": 65
+      },
+      "history": {
+        "x": 1525,
+        "y": 223,
+        "width": 114,
+        "height": 48
+      },
+      "preview": {
+        "x": 652,
+        "y": 722,
+        "width": 137,
+        "height": 48
+      },
+      "actions": {
+        "x": 652,
+        "y": 783,
+        "width": 987,
+        "height": 80
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    },
+    "R05-server-preview.png": {
+      "title": {
+        "x": 96,
+        "y": 69,
+        "width": 1576,
+        "height": 67
+      },
+      "tabs": {
+        "x": 96,
+        "y": 136,
+        "width": 1576,
+        "height": 53
+      },
+      "left": {
+        "x": 110,
+        "y": 204,
+        "width": 511,
+        "height": 679
+      },
+      "right": {
+        "x": 633,
+        "y": 204,
+        "width": 1026,
+        "height": 679
+      },
+      "heading": {
+        "x": 652,
+        "y": 223,
+        "width": 987,
+        "height": 65
+      },
+      "history": {
+        "x": 1525,
+        "y": 223,
+        "width": 114,
+        "height": 48
+      },
+      "preview": {
+        "x": 652,
+        "y": 654,
+        "width": 137,
+        "height": 48
+      },
+      "dates": {
+        "x": 652,
+        "y": 709,
+        "width": 964,
+        "height": 75
+      },
+      "actions": {
+        "x": 652,
+        "y": 783,
+        "width": 987,
+        "height": 80
+      },
+      "status": {
+        "x": 0,
+        "y": 896,
+        "width": 1672,
+        "height": 45
+      }
+    }
+  }
+}

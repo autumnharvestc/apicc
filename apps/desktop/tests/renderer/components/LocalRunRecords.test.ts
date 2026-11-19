@@ -20,6 +20,21 @@ it("shows the recorded environment name, readable duration and task refresh acti
   view.unmount();
 });
 
+it("shows the failed workflow node and distinguishes a current environment name from a recorded name", async () => {
+  const project = {workspaceId:"w",groupId:"g",projectId:"p"};
+  const summary = {kind:"workflow",file:"night.json",collectionName:"Night regression",startedAt:"2030-01-01T08:11:22Z",projectId:"p",archiveProject:project,archiveDigest:"a".repeat(64),logicalVerdict:"failed"};
+  const report = {...summary,cases:[],executionIdentity:{environmentId:"env-at-run"},workflow:{entries:[{label:"故意失败的断言",nodeKind:"assert",failureKind:"assertion",error:"Workflow assertion failed"}]}};
+  const workspace = {root:"/fixture",tree:{children:[{children:[{kind:"project",locator:project,envs:[{id:"env-at-run",name:"集成环境"}]}]}]}};
+  const {i18n} = createI18nInstance(); i18n.global.locale.value = 'zh-CN';
+  const view = mount(LocalRunRecords,{props:{project,workspace:workspace as never,run:{readArchiveList:async()=>[summary],readArchive:async()=>report} as never,reportError:vi.fn()},global:{plugins:[i18n]}});
+  try {
+    await flushPromises(); await view.get('[data-file="night.json"]').trigger("click"); await flushPromises();
+    expect(view.get('.record-failure').text()).toBe("故意失败的断言 · 工作流断言失败");
+    expect(view.get('.record-facts dd').text()).toBe("集成环境（当前名称）");
+    expect(view.get('.record-detail details').text()).toContain("Workflow assertion failed");
+  } finally { view.unmount(); }
+});
+
 it("does not reopen a replacement with the same legacy filename and no digest", async () => {
   const position = newWorkbenchPosition(), project = { workspaceId: "a", groupId: "b", projectId: "c" };
   position.localRecord = { file: "daily.json", legacy: true };

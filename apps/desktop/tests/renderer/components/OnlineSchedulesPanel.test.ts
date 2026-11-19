@@ -234,7 +234,7 @@ it('opens a saved schedule with its fixed identity and readable snapshot summary
   const f = projectFixture(true);
   try {
     await openSchedules(f);
-    expect(f.view.text()).toContain('查看计划');
+    expect(f.view.get('[data-testid="schedule-open"]').text()).toContain('每日回归');
     await f.view.get('[data-testid="schedule-open"]').trigger('click'); await flushPromises();
     expect(f.view.text()).toContain('快照版本'); expect(f.view.text()).toContain('9007199254740995');
     expect(f.view.get('[data-testid="schedule-fingerprint"]').attributes('title')).toBe('a'.repeat(64));
@@ -295,7 +295,7 @@ it('uses only server preview candidates for daily weekly and six-field rules in 
     await openSchedules(f); expect(f.view.text()).toContain('服务器预览');
     await f.view.get('[data-testid="schedule-rule-mode"]').setValue('weekly');
     await f.view.get('[data-testid="schedule-weekday"]').setValue('MON');
-    await f.view.get('[data-testid="schedule-hour"]').setValue('9'); await f.view.get('[data-testid="schedule-minute"]').setValue('30');
+    await f.view.get('[data-testid="schedule-time"]').setValue('09:30');
     await f.view.get('[data-testid="schedule-zone"]').setValue('America/New_York');
     await f.view.get('[data-testid="schedule-preview"]').trigger('click'); await flushPromises();
     expect(f.calls.find(c => c.operation === 'preview')!.input.rule).toEqual({ kind: 'cron', expression: '0 30 9 * * MON', timeZone: 'America/New_York', dstOverlap: 'first' });
@@ -352,7 +352,7 @@ it('prepares refresh differences from the fixed saved revision and updates only 
 it('clears only search while preserving the selected status filter', async () => {
   const f = projectFixture(true);
   try {
-    await openSchedules(f); expect(f.view.text()).toContain('清除搜索');
+    await openSchedules(f); expect(f.view.find('[data-testid="schedule-clear-search"]').exists()).toBe(false);
     await f.view.get('[data-testid="schedule-filter"]').setValue('enabled');
     await f.view.get('[data-testid="schedule-search"]').setValue('missing');
     await f.view.get('[data-testid="schedule-clear-search"]').trigger('click'); await flushPromises();
@@ -377,7 +377,7 @@ it('shows a bilingual version conflict without overwriting the saved row or the 
 it('reads original occurrence history with millisecond zone, delay, queue and genuinely uncollected actual facts', async () => {
   const f = projectFixture(true);
   try {
-    await inspectSaved(f); expect(f.view.text()).toContain('触发历史');
+    await inspectSaved(f); expect(f.view.get('[data-testid="schedule-history-open"]').text()).toBe('运行记录');
     await f.view.get('[data-testid="schedule-history-open"]').trigger('click'); await flushPromises();
     const history = f.view.get('[data-testid="schedule-history"]');
     for (const label of ['计划时间', '触发延迟', '排队', '实际运行', '执行结论', '归档', '通知', '未采集', '55000 ms', 'Asia/Shanghai']) expect(history.text()).toContain(label);
@@ -395,7 +395,8 @@ it('reads source observation facts and external delivery failure from independen
     await inspectSaved(f); expect(f.view.text()).toContain('通知历史');
     await f.view.get('[data-testid="schedule-notification-history-open"]').trigger('click'); await flushPromises();
     const history = f.view.get('[data-testid="schedule-notification-history"]');
-    for (const text of ['来源观察', '已记录事件', '站内关闭', 'Webhook', '投递失败', '通知待投递容量已满', '0 次']) expect(history.text()).toContain(text);
+    for (const text of ['来源观察', '已记录事件', '站内关闭', 'Webhook', '投递失败', '通知待投递容量已满']) expect(history.text()).toContain(text);
+    expect(history.get('.delivery-list').findAll('dd')[1]!.text()).toBe('0');
     expect(f.calls.find(c => c.operation === 'notificationHistory')).toEqual({ operation: 'notificationHistory', context: f.context, id: '9007199254740993', limit: 25 });
     expect(f.calls.filter(c => c.operation === 'history')).toEqual([]);
   } finally { f.execution.setVisible(false); }
@@ -544,33 +545,33 @@ it('shows the original workflow, environment and start time only from its author
     const job=selected.job, recordedId=job.task.target.kind==='workflow'?job.task.target.workflowId:'';
     const originalView=f.execution.view!;
     f.execution.view={...originalView, assets:{...originalView.assets,manifestHash:'c'.repeat(64)}};
-    const row=()=>f.view.get('[data-record="5/78/79"]'), title=()=>f.view.get('.record-detail h3');
+    const row=()=>f.view.get('[data-record="5/78/79"]'), title=()=>f.view.get('.record-detail h2');
     await flushPromises();
-    expect(row().get('strong').text()).toBe('工作流 #78'); expect(title().attributes('title')).toBe(recordedId);
+    expect(row().get('.record-link').text()).toBe('工作流 #78'); expect(title().attributes('title')).toBe(recordedId);
     expect(row().text()).toContain('未记录');
     const recordedProject={...f.project,id:job.task.contractProjectId,workflows:[{...f.project.workflows[0]!,id:recordedId,name:'Version-pinned workflow'}]};
     f.execution.view={...originalView,project:recordedProject, assets:{...originalView.assets,contractProjectId:job.task.contractProjectId,manifestHash:job.task.manifestHash}};
-    await flushPromises(); expect(row().get('strong').text()).toBe('Version-pinned workflow');
+    await flushPromises(); expect(row().get('.record-link').text()).toBe('Version-pinned workflow');
     f.execution.view={...originalView,assets:{...originalView.assets,manifestHash:'b'.repeat(64)}};
     const startedAt='2035-01-02T03:04:05.678Z', finishedAt='2035-01-02T03:04:06.789Z';
     const output={kind:'workflow' as const,result:{workflowId:recordedId,workflowName:'06 V2 预期失败与报告',status:'enabled' as const,
       startedAt,finishedAt,total:1,passed:0,failed:1,skipped:0,warnings:[],nodeResults:[],
       report:{collectionId:recordedId,collectionName:'Recorded run',envName:'原执行环境',startedAt,finishedAt,total:1,passed:0,failed:1,cases:[]}}};
     f.execution.report={executionId:'other',verdict:'failed',output}; await flushPromises();
-    expect(row().get('strong').text()).toBe('工作流 #78');
+    expect(row().get('.record-link').text()).toBe('工作流 #78');
     f.execution.report={executionId:'79',verdict:'failed',output:{...output,result:{...output.result,workflowId:'other-workflow'}}}; await flushPromises();
-    expect(row().get('strong').text()).toBe('工作流 #78'); expect(row().text()).toContain('未记录');
+    expect(row().get('.record-link').text()).toBe('工作流 #78'); expect(row().text()).toContain('未记录');
     expect(f.view.get('[data-testid="online-selected-run"]').text()).not.toContain('原执行环境');
     f.execution.report={executionId:'79',verdict:'failed',output}; await flushPromises();
-    expect(row().get('strong').text()).toBe('06 V2 预期失败与报告'); expect(title().text()).toBe('06 V2 预期失败与报告');
-    expect(row().text()).toContain('03:04:05.678 UTC');
-    expect(f.view.get('.record-detail time').attributes('title')).toBe(startedAt);
+    expect(row().get('.record-link').text()).toBe('06 V2 预期失败与报告'); expect(title().text()).toBe('06 V2 预期失败与报告');
+    expect(row().get('time').attributes('title')).toContain('03:04:05.678 UTC');
+    expect(row().get('time').attributes('datetime')).toBe(startedAt);
     expect(f.view.get('[data-testid="online-selected-run"]').text()).toContain('原执行环境');
     const minimal=OnlineJobSchema.parse({jobId:'78',executionId:'79',agentId:'5',view:'active-status',scope:f.context.scope,state:'running',cancelState:'none',executionReleased:false,canCancel:false});
     await f.execution.inspect(minimal); f.execution.report={executionId:'79',verdict:'failed',output}; await flushPromises();
-    expect(row().get('strong').text()).toBe('#78'); expect(f.view.find('[data-testid="online-execution-report"]').exists()).toBe(false);
+    expect(row().get('.record-link').text()).toBe('#78'); expect(f.view.find('[data-testid="online-execution-report"]').exists()).toBe(false);
     f.execution.jobs=[OnlineJobSchema.parse({...minimal,jobId:'9007199254740993000'})]; await flushPromises();
-    const longId=f.view.get('[data-record="5/9007199254740993000/79"] strong');
+    const longId=f.view.get('[data-record="5/9007199254740993000/79"] .record-link');
     expect(longId.text()).toBe('#900719…3000'); expect(longId.attributes('title')).toContain('9007199254740993000');
     expect(f.executionCalls.map(call=>call.operation)).toEqual(['status','report']);
   } finally { f.execution.setVisible(false); vi.unstubAllGlobals(); }
