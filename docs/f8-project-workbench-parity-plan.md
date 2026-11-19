@@ -2,7 +2,23 @@
 
 2026-11-18 制定，2026-11-19 获准实施三个批次。代码核对基线为 `cb4fe63d`。以下编号为验收要求，执行结果见[逐项验收记录](f8-project-workbench-parity-verification.md)。
 
-评审时先看[本地「运行 → 发起任务」样板](design/f8-frontend/project-workbench-parity/local-run-launch-proposal.png)，再对照[接口与底栏样板](design/f8-frontend/project-workbench-parity/api-status-bar.png)、[任务记录样板](design/f8-frontend/project-workbench-parity/run-records.png)和[已归档的交互设计](f8-project-workbench-parity-design.md)。本地样板中的「3 个用例」是所选环境下的用例数，同一接口可有多条；它不承诺会发出 3 次请求。
+「运行」的后续实施、独审与交付采用 2026-11-19 用户确认的[八张视觉定稿与逐场景验收标准](design/f8-frontend/project-workbench-parity/run-review-2026-11-19/README.md)，接口页继续对照[接口与底栏样板](design/f8-frontend/project-workbench-parity/api-status-bar.png)。原三批的业务验收见下表及[交互设计](f8-project-workbench-parity-design.md)。模块预览中的「3 个用例」指所选环境下的适用用例数，实际请求数由执行结果给出。
+
+## 下一轮施工待办（2026-11-19 补记）
+
+本轮归档的修复点、运行与测试的双端视觉统一以及客户端旁注排查，已纳入[获准实施的后续六批计划](f8-project-workbench-parity-followup-plan.md)。
+
+[「测试」六张视觉定稿与逐场景验收口径](design/f8-frontend/project-workbench-parity/testing-review-2026-11-19/README.md)
+
+**「测试」页双端采用新样板。** 本地现有的找接口、选用例、编辑用例三栏结构是设计起点。本地、在线都按新样板调整页头、列表选中态、详情和操作位置。数据集与套件都采用左侧列表、右侧详情。验收时用同一窗口尺寸、同一接口和用例、同一选中状态对照两端。保留本地「场景用例」、在线「压测计划」及各自已有入口。
+
+**压测确认与启动。** [压测计划定稿图](design/f8-frontend/project-workbench-parity/testing-review-2026-11-19/06-stress-plan.png)已移除独立的「待确认目标」标签和「确认后可开始压测」旁注。确认前突出「确认目标与执行位置」，「开始压测」禁用。确认成功后，满足其余执行条件才可点击「开始压测」。改变授权目标或执行位置后，回到待确认的按钮状态。确认与启动是两个独立操作。
+
+**新增任务：排查桌面客户端的解释性旁注（待实施）。**
+
+1. 逐页查看主页、项目侧栏各页、项目工具与设置，并覆盖本地和在线各自可达的视图。记录页面、出现条件、原文及处置；双端共用组件合并记录。
+2. 删除重复按钮名称或状态的旁白。值得保留的机制说明、长流程说明迁入对应的产品使用文档。按当前操作需要展示的内容就近放置，例如字段错误紧邻字段，授权失败原因紧邻确认操作，空态在列表或详情内给出可行的下一步。
+3. 验收时对照调整前后的实际页面，复核中英文与键盘操作。用压测分别验证待确认、已确认、目标变更需重新确认和启动受阻。必要的授权、失败原因及恢复操作应在相关组件内可见。
 
 ## 批次与交付边界
 

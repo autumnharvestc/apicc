@@ -6,8 +6,9 @@
 
 ## 确认样板
 
+- [本地与在线「测试」视觉定稿](design/f8-frontend/project-workbench-parity/testing-review-2026-11-19/README.md)。六图覆盖双端单接口用例、数据集选中与空态、套件及在线压测计划。两端共同采用新布局。
 - [接口工作区与项目底栏](design/f8-frontend/project-workbench-parity/api-status-bar.png)。看左侧「环境」管理入口、底栏两项当前值、向上展开的菜单，以及编辑区独立的响应栏。本地模式采用同一布局，只有本机可执行时省去执行位置选择器。
-- [运行与任务记录](design/f8-frontend/project-workbench-parity/run-records.png)。看左侧任务列表、右侧所选记录和底栏的区别。图中底栏是「预发布／预发代理」，所选历史记录是「集成环境／集成代理」。定稿时修正图中的状态图标：「已结束」用中性标识，绿色勾表示「通过」，失败原因在详情首屏可见。
+- [本地与在线「运行」视觉定稿](design/f8-frontend/project-workbench-parity/run-review-2026-11-19/README.md)。2026-11-19 用户确认八张样板及真机对照要求。「已结束」用中性标识，逻辑结论与失败原因在详情首屏可见。项目底栏显示后续手动执行的选择，历史记录显示该次实际环境和位置。
 
 ## 共同操作
 
@@ -38,7 +39,7 @@
 
 ## 本地与在线的运行入口
 
-两端进入「运行」后，前两个页签依次是「发起任务」「任务记录」。在线另有「定时任务」「通知」。本地保留「运行模块用例」，在线将该能力列入[低优先级需求池](backlog.md#execution-low-004)，本轮不提供该类型。此处归档交互约定；[本地发起任务样板](design/f8-frontend/project-workbench-parity/local-run-launch-proposal.png)供评审视觉布局。
+两端进入「运行」后，前两个页签依次是「发起任务」「任务记录」。在线另有「定时任务」「通知」。本地保留「运行模块用例」，在线将该能力列入[低优先级需求池](backlog.md#execution-low-004)，本轮不提供该类型。两端发起任务与本地模块用例分别参照[定稿图册](design/f8-frontend/project-workbench-parity/run-review-2026-11-19/gallery.html)中的图 01、02、03。
 
 | 操作 | 共同交互 | 与执行方式有关的差异 |
 | --- | --- | --- |
