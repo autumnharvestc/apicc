@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { useWorkbenchPosition } from "../../stores/workbenchPosition.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core/domain/execution-selection";
 import { resolveSuitePlan } from "@apicc/core/testing/selection";
 import { createReadonlyProjectAssetContext } from "@apicc/core/assets/context";
@@ -22,7 +23,9 @@ const emit = defineEmits<{ records: [runId: string] }>();
 const { t, te } = useI18n();
 const label = useLaunchMessages();
 const kinds = ["case", "suite", "workflow", "stress"] as const;
-const kind = ref<LaunchKind>("case"), selected = ref("");
+const position = useWorkbenchPosition(() => scopeKey.value);
+const kind = computed<LaunchKind>({ get: () => position.value.launchTarget?.kind ?? "case", set: kind => { position.value.launchTarget = { kind, id: "" }; } });
+const selected = computed({ get: () => position.value.launchTarget?.id ?? "", set: id => { position.value.launchTarget = { kind: kind.value, id }; } });
 const allowDraft = ref(false), origins = ref("");
 const inputs = ref<Record<string, JsonValue>>(), validInputs = ref(false);
 const busy = ref(false), launched = ref(""), notice = ref("");
@@ -125,8 +128,7 @@ const blocked = computed(() => {
   return "";
 });
 const reason = computed(() => blocked.value || (plan.value && !props.execution.isStressConfirmed(plan.value) ? t("onlineStress.confirmationRequired") : ""));
-watch(scopeKey, () => { kind.value = "case"; selected.value = ""; launched.value = ""; busy.value = false; notice.value = ""; }, { flush: "sync" });
-watch(kind, () => { selected.value = ""; }, { flush: "sync" });
+watch(scopeKey, () => { launched.value = ""; busy.value = false; notice.value = ""; }, { flush: "sync" });
 watch([kind, selected], () => { inputs.value = undefined; validInputs.value = false; allowDraft.value = false; origins.value = ""; }, { flush: "sync" });
 watch([scopeKey, kind, selected, () => props.execution.environmentId, environmentId, () => props.execution.location.kind,
   () => props.execution.location.kind === "agent" ? props.execution.location.agentId : undefined], () => {

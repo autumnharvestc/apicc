@@ -30,6 +30,7 @@ export interface EnvironmentDraft {
   feedback: SaveFeedback;
 }
 export interface ProjectDraft {
+  pane?: string;
   root: string;
   locator: ProjectLocator;
   globals: ProjectGlobalSettings;

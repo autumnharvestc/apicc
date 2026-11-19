@@ -73,7 +73,7 @@ function analyzeReport() {
 <template>
   <section class="suite-panel" data-testid="suite-panel">
     <header class="toolbar"><strong>{{ t('testing.suites') }}</strong><span v-if="testing.dirty" class="dirty-badge">{{ t('testing.unsaved') }}</span><button class="primary" data-testid="suite-save" :disabled="testing.readOnly || refreshingDisk || !suite || testing.busy || !!testing.diskConflict" @click="attempt(() => testing.save())">{{ t('testing.save') }}</button><button :disabled="testing.readOnly || refreshingDisk || !suite || testing.creating || testing.running || !!testing.diskConflict" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button></header>
-    <p v-if="error || testing.error" role="alert" class="error">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || testing.error }}</p>
+    <p v-if="error || testing.error" role="alert" class="error">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || (testing.error === "workbenchPosition.unavailable" ? t(testing.error) : testing.error) }}</p>
     <label class="evidence-setting">{{ t('caseEvidence.collection') }}<select v-model="testing.evidenceMode" :disabled="testing.running || testing.transitioning"><option value="none">{{ t('caseEvidence.modeNone') }}</option><option value="failures">{{ t('caseEvidence.modeFailures') }}</option><option value="all">{{ t('caseEvidence.modeAll') }}</option></select></label>
     <p v-if="!suite" class="empty-state">{{ t('testing.pickSuite') }}</p>
     <template v-else>

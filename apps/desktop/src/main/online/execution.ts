@@ -196,7 +196,10 @@ export function createOnlineExecutionHost(deps: { session: OnlineSession; fetch?
             const view = await member.assets(input.context, trusted.signal ?? new AbortController().signal);
             return isBlankOnlineProject(view.assets) ? { ...view, problems: [] } : view;
           } catch (error) {
-            if (error instanceof ExecutionHttpError && [401, 403, 404, 410].includes(error.status)) throw new Error("online-project-access-lost");
+            if (error instanceof ExecutionHttpError && [401, 403, 404, 410].includes(error.status)) {
+              binding.invalidateTree();
+              throw new Error("online-project-access-lost");
+            }
             throw error;
           }
         }

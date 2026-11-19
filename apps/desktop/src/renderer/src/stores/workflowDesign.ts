@@ -2,7 +2,8 @@ import { createPinia, defineStore } from "pinia";
 import { shallowRef } from "vue";
 import type { JsonValue, Workflow, WorkflowRunResult, WorkflowStatus } from "@apicc/core";
 import type { ApiccApi, WorkspaceRefreshResult } from "../../../shared/types.js";
-import type { WorkflowLocator } from "../../../shared/locations.js";
+import type { ProjectLocator, WorkflowLocator } from "../../../shared/locations.js";
+import { projectSessionKey } from "./localIdentity.js";
 import type { LocalWorkspaceContext } from "./localIdentity.js";
 import { currentDiskRead, diskProject, jsonCopy, sameDiskValue, type DiskDraftConflict } from "./diskDrafts.js";
 import { localTestingDependencies } from "../../../shared/workspace-testing-dependencies.js";
@@ -19,9 +20,17 @@ function sameLocator(left: WorkflowLocator | null, right: WorkflowLocator): bool
 }
 
 export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWorkspaceContext = () => ({ root: "", readOnly: false })) {
+  type ParkedWorkflow = {
+    locator: WorkflowLocator; workflow: Workflow; snapshot: string;
+    node: string | null; edge: string | null; viewport: { x: number; y: number; zoom: number };
+  };
+  const parked = new Map<string, ParkedWorkflow>();
+  let owner = "";
   return defineStore("workflowDesign", {
     state: () => ({
       root: null as string | null,
+      selectedNode: null as string | null, selectedEdge: null as string | null,
+      viewport: { x: 0, y: 0, zoom: 1 }, positionUnavailable: false,
       locator: null as WorkflowLocator | null,
       workflow: shallowRef<Workflow | null>(null),
       snapshot: "",
@@ -42,6 +51,43 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
       dirty: (state) => state.workflow !== null && JSON.stringify(state.workflow) !== state.snapshot,
     },
     actions: {
+      hasParkedDraft(root: string, project: ProjectLocator) {
+        const saved = parked.get(projectSessionKey(root, project));
+        return !!saved && JSON.stringify(saved.workflow) !== saved.snapshot;
+      },
+      evictPosition(root: string, project: ProjectLocator) {
+        parked.delete(projectSessionKey(root, project));
+        if (owner === projectSessionKey(root, project)) { this.unload(); owner = ""; }
+      },
+      activatePosition(root: string, project: ProjectLocator | null, workflows: readonly Workflow[], readOnly = false) {
+        const target = project ? projectSessionKey(root, project) : "";
+        if (owner === target) return;
+        if (this.locator && this.root && this.workflow) parked.set(projectSessionKey(this.root, this.locator), {
+          locator: this.locator, workflow: this.workflow, snapshot: this.snapshot,
+          node: this.selectedNode, edge: this.selectedEdge, viewport: this.viewport,
+        });
+        this.unload();
+        owner = target;
+        const saved = parked.get(target);
+        if (!saved) return;
+        parked.delete(target);
+        const current = workflows.find(item => item.id === saved.locator.workflowId);
+        if (!current) { this.positionUnavailable = true; return; }
+        const dirty = JSON.stringify(saved.workflow) !== saved.snapshot && !readOnly;
+        this.root = root; this.locator = saved.locator;
+        this.workflow = dirty ? saved.workflow : jsonCopy(current);
+        this.snapshot = dirty ? saved.snapshot : JSON.stringify(current);
+        this.selectedNode = this.workflow.nodes.some(item => item.id === saved.node) ? saved.node : null;
+        this.selectedEdge = this.workflow.edges.some(item => item.id === saved.edge) ? saved.edge : null;
+        this.viewport = saved.viewport;
+        if (dirty && !sameDiskValue(current, JSON.parse(saved.snapshot))) {
+          const epoch = this.loadEpoch;
+          this.diskConflict = { name: current.name, reason: "changed", restore: () => {
+            if (epoch !== this.loadEpoch || owner !== target) return;
+            this.workflow = jsonCopy(current); this.snapshot = JSON.stringify(current); this.diskConflict = null;
+          } };
+        }
+      },
       assertWritable() {
         if (getContext().readOnly) throw new Error("工作区处于只读模式，不能修改工作流");
       },
@@ -57,6 +103,7 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         if (!detail || epoch !== this.loadEpoch || getContext().root !== root) return;
         this.root = root;
         this.locator = fixed;
+        this.selectedNode = null; this.selectedEdge = null; this.viewport = { x: 0, y: 0, zoom: 1 }; this.positionUnavailable = false;
         this.workflow = JSON.parse(JSON.stringify(detail.workflow)) as Workflow;
         this.snapshot = JSON.stringify(this.workflow);
         this.diskConflict = null;
@@ -72,6 +119,7 @@ export function useWorkflowDesignStore(api: ApiccApi, getContext: () => LocalWor
         this.workflow = workflow;
       },
       unload() {
+        this.selectedNode = null; this.selectedEdge = null; this.viewport = { x: 0, y: 0, zoom: 1 }; this.positionUnavailable = false;
         this.loadEpoch += 1;
         this.root = null;
         this.locator = null;

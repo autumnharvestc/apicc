@@ -17,6 +17,12 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
   let diskEpoch = 0;
   const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
   const key = (root: string, project: ProjectLocator) => JSON.stringify([root, project.workspaceId, project.groupId, project.projectId]);
+  type Selection = {
+    dataset: DatasetAsset | null; suite: SuiteAsset | null; snapshot: string; creating: boolean;
+    pendingDatasetColumns: string | null; importPreview: Pick<DatasetAsset, "columns" | "rows"> | null;
+    dirty: boolean; revision: string;
+  };
+  const parked = reactive(new Map<string, Selection>());
   const store = reactive({
     view: null as TestingAssets | null,
     operators: [] as AssertionOperatorDTO[],
@@ -40,9 +46,11 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       return !!value && (store.creating || JSON.stringify(value) !== store.snapshot || store.pendingDatasetColumns !== null);
     },
     get current(): boolean {
-      if (!options.getActive) return !!store.view;
+      const loaded = store.view?.context;
+      if (!loaded) return false;
+      if (!options.getActive) return true;
       const current = options.getActive();
-      return !!current && activeKey === key(current.root, current.project);
+      return !!current && key(loaded.root, loaded.project) === key(current.root, current.project);
     },
     get readOnly(): boolean { return store.transitioning || !store.current || readonlyOverride || !!store.view?.readOnly || !!options.getActive?.()?.readOnly; },
     confirmLeave(discard = true): boolean {
@@ -66,7 +74,12 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       store.pendingDatasetColumns = null;
       store.diskConflict = null; store.saveFailure = null;
     },
+    hasDraft(root: string, project: ProjectLocator) {
+      const scope = key(root, project);
+      return scope === activeKey ? store.dirty : !!parked.get(scope)?.dirty;
+    },
     async evict(root: string, project: ProjectLocator) {
+      parked.delete(key(root, project));
       if (activeKey !== key(root, project)) return;
       return navigate(() => {
         generation++; activeKey = ""; store.view = null; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false; store.importPreview = null; store.preview = null; store.result = null; store.running = false; store.busy = false;
@@ -74,11 +87,18 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         store.pendingDatasetColumns = null;
       });
     },
-    async activate(root: string, project: ProjectLocator | null, readOnly = false) {
+    async activate(root: string, project: ProjectLocator | null, readOnly = false, retainSelection = false) {
       const target = project ? key(root, project) : "";
-      if (target !== activeKey && store.dirty && !store.confirmLeave()) return false;
+      if (!retainSelection && target !== activeKey && store.dirty && !store.confirmLeave()) return false;
       if (target === activeKey && store.view && !changing) { readonlyOverride = readOnly; return true; }
       return navigate(async () => {
+        if (retainSelection && activeKey !== target && store.view) {
+          if (store.dataset || store.suite) parked.set(activeKey, {
+            dataset: store.dataset, suite: store.suite, snapshot: store.snapshot, creating: store.creating, dirty: store.dirty,
+            pendingDatasetColumns: store.pendingDatasetColumns, importPreview: store.importPreview, revision: store.view.context.revision,
+          });
+          else parked.delete(activeKey);
+        }
         const token = ++generation;
         activeKey = target; readonlyOverride = readOnly;
         store.view = null; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false;
@@ -93,10 +113,44 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
           const operators = await api.assertionOperators();
           if (generation !== token || activeKey !== target) return false;
           store.view = view; store.operators = operators;
+          const saved = retainSelection ? parked.get(target) : undefined;
+          if (saved) {
+            const current = saved.dataset ? view.datasets.find(item => item.id === saved.dataset?.id)
+              : view.suites.find(item => item.id === saved.suite?.id);
+            parked.delete(target);
+            if (!saved.creating && !current) { store.error = "workbenchPosition.unavailable"; return true; }
+            const restoreSaved = () => {
+              if (generation !== token || target !== activeKey) return;
+              store.dataset = current && saved.dataset ? clone(current as DatasetAsset) : null;
+              store.suite = current && saved.suite ? clone(current as SuiteAsset) : null;
+              store.snapshot = JSON.stringify(current ?? null); store.creating = false;
+              store.importPreview = null; store.pendingDatasetColumns = null; store.diskConflict = null;
+            };
+            if (saved.dirty && !readOnly && !view.readOnly) {
+              store.dataset = saved.dataset; store.suite = saved.suite; store.snapshot = saved.snapshot;
+              store.creating = saved.creating; store.pendingDatasetColumns = saved.pendingDatasetColumns; store.importPreview = saved.importPreview;
+              if (saved.creating ? !!current : !sameDiskValue(current, JSON.parse(saved.snapshot)) || !!saved.suite && view.context.revision !== saved.revision)
+                store.diskConflict = { reason: "changed", name: (saved.dataset ?? saved.suite)!.name, restore: restoreSaved };
+            } else restoreSaved();
+          }
           return true;
         } catch (error) { if (generation === token) store.error = message(error); throw error; }
         finally { if (generation === token) store.busy = false; }
       });
+    },
+    validateSelection(assets: { datasets?: readonly DatasetAsset[]; suites?: readonly SuiteAsset[] }) {
+      if (!store.current || !store.view) return;
+      const datasetIds = new Set(assets.datasets?.map(item => item.id));
+      const suiteIds = new Set(assets.suites?.map(item => item.id));
+      store.view.datasets = store.view.datasets.filter(item => datasetIds.has(item.id));
+      store.view.suites = store.view.suites.filter(item => suiteIds.has(item.id));
+      if (store.creating) return;
+      if (store.dataset && !datasetIds.has(store.dataset.id)
+        || store.suite && !suiteIds.has(store.suite.id)) {
+        generation++; store.dataset = null; store.suite = null; store.snapshot = ""; store.pendingDatasetColumns = null;
+        store.preview = null; store.result = null; store.importPreview = null; store.diskConflict = null; store.saveFailure = null;
+        store.busy = false; store.error = "workbenchPosition.unavailable";
+      }
     },
     async select(kind: "dataset" | "suite", id: string) {
       if (!store.current || !store.view) return false;

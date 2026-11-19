@@ -19,11 +19,10 @@ export function isOnlineDirectoryBlank(view: OnlineProjectView | null): boolean 
 }
 
 export function labelOnlineProjectTree(root: OnlineTreeNodeDTO, project: ContractProject | null): OnlineTreeNodeDTO {
-  if (!project) return root;
   const names = new Map<string, { label: string; isDefault?: boolean; method?: string }>();
-  for (const collection of project.collections) {
+  for (const collection of project?.collections ?? []) {
     const id = `${root.id}/collections/${collection.id}`;
-    names.set(id, { label: collection.name, isDefault: isDefaultCollectionId(project.id, collection.id) });
+    names.set(id, { label: collection.name, isDefault: isDefaultCollectionId(project!.id, collection.id) });
     const walk = (container: Pick<typeof collection, "folders" | "apis">, path: string) => {
       for (const api of container.apis) names.set(`${path}/apis/${api.contract.id}/api.yaml`, { label: api.contract.metadata.name,
         method: api.contract.request.protocol === "websocket" ? undefined : api.contract.request.method });
@@ -35,7 +34,8 @@ export function labelOnlineProjectTree(root: OnlineTreeNodeDTO, project: Contrac
     };
     walk(collection, id);
   }
-  const map = (node: OnlineTreeNodeDTO): OnlineTreeNodeDTO => ({ ...node, ...names.get(node.id), children: node.children?.map(map) });
+  const map = (node: OnlineTreeNodeDTO): OnlineTreeNodeDTO => ({ ...node, ...names.get(node.id),
+    children: node.children?.filter(child => child.kind !== "file").map(map) });
   const mapped = map(root);
   const children = mapped.children ?? [];
   mapped.children = [...children.filter(child => !child.isDefault), ...children.filter(child => child.isDefault)];

@@ -7,6 +7,7 @@ import type { CollectionLocator, ProjectLocator } from "../../../shared/location
 import type { LocalLaunchProps } from "../execution/localLaunch.js";
 import { useLaunchMessages } from "../execution/launchMessages.js";
 import { projectSessionKey } from "../stores/localIdentity.js";
+import { useWorkbenchPosition } from "../stores/workbenchPosition.js";
 import LocalRunLaunch from "./LocalRunLaunch.vue";
 import LocalRunRecords from "./LocalRunRecords.vue";
 import EmptyState from "./EmptyState.vue";
@@ -22,9 +23,10 @@ const emit = defineEmits<{ (event: "open-debug-record", id: string): void; (even
 const props = defineProps<LocalLaunchProps & { ai?: AiStore }>();
 const { t } = useI18n();
 const label = useLaunchMessages();
-const pane = ref<"launch" | "records">("launch"), file = ref(""), recordsVisited = ref(false);
-watch(pane, value => { if (value === "records") recordsVisited.value = true; else file.value = ""; });
 const projectKey = computed(() => props.projectLocator ? projectSessionKey(props.workspace.root, props.projectLocator) : "");
+const position = useWorkbenchPosition(() => projectKey.value);
+const pane = computed({ get: () => position.value.runPane, set: value => { position.value.runPane = value; } });
+const file = ref("");
 const previewModule = ref<string | null>("");
 const matchingResultEnvironment = computed(() => (props.run.resultEnvironmentId ?? null) === props.environmentId);
 const selectedCollectionLocator = computed(() => props.run.target && projectSessionKey(props.run.targetRoot ?? "", props.run.target) === projectKey.value ? props.run.target : null);
@@ -33,7 +35,7 @@ function projectOfCollection(locator: CollectionLocator): ProjectLocator {
   return { workspaceId: locator.workspaceId, groupId: locator.groupId, projectId: locator.projectId };
 }
 watch(projectKey, () => {
-  pane.value = "launch"; file.value = ""; recordsVisited.value = false;
+  file.value = "";
   if (!selectedCollectionLocator.value) {
     const where = props.selectedCollectionLocator;
     void props.run.setTarget(props.workspace.root, where && projectSessionKey(props.workspace.root, where) === projectKey.value ? where : null);
@@ -109,7 +111,7 @@ async function selectObservation(record: Record<string, any>) {
       </nav>
       <LocalRunLaunch v-show="pane === 'launch'" v-bind="props" @records="openRecord" @open-debug-record="id => emit('open-debug-record', id)"
         @selection="(kind, id) => { previewModule = kind === 'module' ? id : null; }" />
-      <LocalRunRecords v-if="recordsVisited && props.projectLocator" v-show="pane === 'records'" :run="run" :workspace="workspace" :project="props.projectLocator" :file="file"
+      <LocalRunRecords v-if="pane === 'records' && props.projectLocator" :run="run" :workspace="workspace" :project="props.projectLocator"  :file="file" @opened="file = ''"
         :ai="ai" :report-error="reportError" @launch="pane = 'launch'" @locate-evidence="emit('locate-evidence', $event)" @collaboration="emit('collaboration', $event)" />
       <template v-if="pane === 'launch' && matchingResultEnvironment && selectedCollectionLocator && previewModule !== null && (!previewModule || previewModule === selectedCollectionLocator.collectionId)">
       <div v-if="run.result" class="summary" data-testid="run-summary">

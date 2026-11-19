@@ -67,6 +67,24 @@ function fixture(crossProject = false) {
     execution.project=project; execution.saved=JSON.stringify(project);return true;
   } }, global: { plugins: [i18n] } }) };
 }
+it("preserves the explicit record list when leaving and returning to Run", async () => {
+  const f = fixture();
+  try {
+    const job = { jobId: '701', executionId: '702', agentId: '5', state: 'running', cancelState: 'none', executionReleased: false,
+      canCancel: false, view: 'active-status', scope: f.execution.context!.scope } as const;
+    f.execution.jobs = [job];
+    await f.view.get('[data-testid="run-pane-records"]').trigger("click");
+    await f.view.get('[data-record="5/701/702"]').trigger("click");
+    const back = () => f.view.findAll(".record-detail button").find(button => button.text() === "返回列表");
+    expect(back()).toBeDefined();
+    await back()!.trigger("click");
+    await f.view.setProps({ view: "test" }); await f.view.setProps({ view: "run" }); await flushPromises();
+    expect(back()).toBeUndefined();
+    expect(f.view.find('[data-record="5/701/702"]').exists()).toBe(true);
+    expect(f.calls.filter(call => call.operation === "status" || call.operation === "run")).toEqual([]);
+  } finally { f.execution.setVisible(false); }
+});
+
 it.each(terminalReasons)('localizes known notification reason %s in Chinese and English', async (reasonCode, zh, en) => {
   const f = fixture();
   try {

@@ -1,4 +1,5 @@
 {
+  "workbenchPosition": { "unavailable": "This item was removed or you no longer have access. Choose another item from the list.", "projectList": "Back to project list" },
   "projectWorkbench": {
     "attachmentKind": "Attachment type",
     "afterMigration": "This request uses the environment you choose here. Subsequent requests use the project status bar selection.",

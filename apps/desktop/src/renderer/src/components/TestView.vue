@@ -99,9 +99,11 @@ function showResult() {
     </template>
 
     <!-- 场景用例说明（清单在侧栏；运行在工作流设计器进行） -->
-    <template v-else>
+    <template v-else-if="pane === 'scenario'">
       <EmptyState :text="t('test.scenarioHint')" />
     </template>
+    <p v-else-if="testing?.error" class="interface-error" role="alert">{{ testing.error === "workbenchPosition.unavailable" ? t(testing.error) : testing.error }}</p>
+    <EmptyState v-else :text="t('projectTools.loadingAssets')" />
   </section>
 </template>
 

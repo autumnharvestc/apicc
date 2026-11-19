@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { useWorkbenchPosition } from "../stores/workbenchPosition.js";
 import type { EvidenceIdentity, RunResult, StressComparison } from "@apicc/core";
 import { reportingUnits, reportEntryEvidence } from "@apicc/core/report/units";
 import type { ProjectLocator } from "../../../shared/locations.js";
@@ -17,12 +18,13 @@ import StressReportView from "./StressReportView.vue";
 
 const props = defineProps<{ run: ReturnType<typeof useRunStore>; workspace: ReturnType<typeof useWorkspaceStore>;
   project: ProjectLocator; file?: string | null; ai?: AiStore; reportError: (e: unknown) => void }>();
-const emit = defineEmits<{ launch: []; collaboration: [source: CollaborationLocalSource]; "locate-evidence": [identity: EvidenceIdentity] }>();
+const emit = defineEmits<{ opened: []; launch: []; collaboration: [source: CollaborationLocalSource]; "locate-evidence": [identity: EvidenceIdentity] }>();
 const { t, te, locale } = useI18n();
 const msg = useRecordMessages();
 const duration = (value: number) => value.toLocaleString(locale.value, { maximumFractionDigits: 2 });
 const source = computed(() => ({ kind: "local" as const, project: props.project }));
 const context = computed(() => JSON.stringify([props.workspace.root, props.project.workspaceId, props.project.groupId, props.project.projectId]));
+const position = useWorkbenchPosition(() => context.value);
 const rows = shallowRef<RunSummary[]>([]), selected = shallowRef<RunSummary | null>(null);
 const report = shallowRef<RunResult | StressReportDTO | null>(null);
 const runReport = computed(() => report.value?.kind === "stress" ? null : report.value);
@@ -61,6 +63,7 @@ const facts = computed(() => {
 function closeDetail() { detailGeneration++; selected.value = null; report.value = null; issue.value = ""; rerunTarget.value = null; }
 async function open(row: RunSummary) {
   const token = ++detailGeneration;
+  position.value.localRecord = { file: row.file, digest: row.archiveDigest, legacy: ownership(row) === "legacy" };
   selected.value = row; selectedFile.value = row.file; report.value = null; issue.value = ""; rerunTarget.value = null;
   try {
     const proof = row.archiveProject ? { scope: { ...props.project }, digest: row.archiveDigest } : undefined;
@@ -79,16 +82,19 @@ async function refresh(file?: string | null) {
     const values = await props.run.readArchiveList();
     if (token !== listGeneration) return;
     rows.value = values;
-    if (file) {
-      const row = current.value.find(item => item.file === file);
-      if (row) await open(row); else { closeDetail(); issue.value = msg("unavailable"); }
+    const restore = !file && position.value.localRecord;
+    if (file || restore) {
+      const row = file ? current.value.find(item => item.file === file)
+        : (restore && restore.digest && (restore.legacy ? legacy.value : current.value).find(item => item.file === restore.file && item.archiveDigest === restore.digest));
+      if (row) { await open(row); if (file && token === listGeneration) emit("opened"); }
+      else { position.value.localRecord = null; closeDetail(); issue.value = msg("unavailable"); }
     } else if (selected.value && !values.some(item => item.file === selected.value!.file && ownership(item) === ownership(selected.value!))) closeDetail();
   } catch (e) { if (token === listGeneration) issue.value = e instanceof Error ? e.message : String(e); }
   finally { if (token === listGeneration) loading.value = false; }
 }
 watch([context, () => props.file], ([key, file], previous) => {
   if (previous?.[0] !== key) { closeDetail(); selectedFile.value = ""; rows.value = []; legacyOpen.value = false; baseline.value = ""; }
-  void refresh(file);
+  if (file || previous?.[0] !== key) void refresh(file);
 }, { immediate: true });
 watch([baseline, stress, context], async (_, __, cleanup) => {
   comparison.value = null; let live = true; cleanup(() => { live = false; });
@@ -131,7 +137,7 @@ async function exportStress() { if (selected.value && trusted.value) try { await
     <article class="record-detail">
       <p v-if="issue" role="alert">{{ issue }}</p><p v-if="!selected">{{ msg("pick") }}</p>
       <template v-if="selected">
-        <button @click="closeDetail">{{ msg("back") }}</button><h3>{{ title(selected) }}</h3>
+        <button @click="position.localRecord = null; closeDetail()">{{ msg("back") }}</button><h3>{{ title(selected) }}</h3>
         <p v-if="ownership(selected) === 'legacy'">{{ msg("legacyHint") }}</p>
         <dl><div><dt>{{ t("onlineExecution.state") }}</dt><dd>{{ label("ended") }}</dd></div><div><dt>{{ t("onlineExecution.verdict") }}</dt><dd>{{ verdict(selected) }}</dd></div>
           <div><dt>{{ t("onlineExecution.environment") }}</dt><dd>{{ facts.environment }}</dd></div><div><dt>{{ msg("position") }}</dt><dd>{{ selected.archiveProject ? t("onlineExecution.local") : msg("notRecorded") }}</dd></div>

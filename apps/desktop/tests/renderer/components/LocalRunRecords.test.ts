@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { computed } from "vue";
+import { newWorkbenchPosition, workbenchPositionKey } from "../../../src/renderer/src/stores/workbenchPosition.js";
 import { expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { computeReport } from "@apicc/core";
@@ -15,6 +17,21 @@ it("shows the recorded environment name, readable duration and task refresh acti
   expect(readArchive).toHaveBeenCalledWith("suite.json",{scope:project,digest:"a".repeat(64)});
   expect(view.text()).toContain("刷新任务"); expect(view.text()).toContain("QA environment"); expect(view.text()).toContain("687.11 ms");
   expect(view.text()).not.toContain("saved-environment-id"); expect(view.text()).not.toContain("刷新通知");
+  view.unmount();
+});
+
+it("does not reopen a replacement with the same legacy filename and no digest", async () => {
+  const position = newWorkbenchPosition(), project = { workspaceId: "a", groupId: "b", projectId: "c" };
+  position.localRecord = { file: "daily.json", legacy: true };
+  const row = { kind: "collection", file: "daily.json", collectionName: "Replacement", total: 0, failed: 0, passed: 0, startedAt: "2030-01-01T00:00:00Z" };
+  const readArchive = vi.fn(), run = { readArchiveList: async () => [row], readArchive };
+  const { i18n } = createI18nInstance();
+  const view = mount(LocalRunRecords, { props: { project, workspace: { root: "/test" } as never, run: run as never, reportError: vi.fn() },
+    global: { plugins: [i18n], provide: { [workbenchPositionKey as symbol]: computed(() => position) } } });
+  await flushPromises();
+  expect(position.localRecord).toBeNull();
+  expect(readArchive).not.toHaveBeenCalled();
+  expect(view.get('[role="alert"]').text()).toBeTruthy();
   view.unmount();
 });
 

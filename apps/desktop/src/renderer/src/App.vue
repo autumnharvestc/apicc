@@ -5,7 +5,8 @@
 // M8 布局层级改造：九平铺视图收敛为「图标导航栏（ModuleRail）→ 树面板（带模块标题
 // 与搜索）→ 内容区」；接口模块（api）内含子视图页签（调试/设计/用例），调试子视图
 // 保持 main-split 上下结构（editor-pane / 可拖拽分割条 / viewer-pane）。
-import { ref, shallowRef, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
+import { ref, shallowRef, reactive, computed, provide, watch, onMounted, onBeforeUnmount, nextTick, type ComponentPublicInstance } from "vue";
+import { newWorkbenchPosition, workbenchPositionKey } from "./stores/workbenchPosition.js";
 import { EllipsisOutlined } from "@ant-design/icons-vue";
 import { useI18n } from "vue-i18n";
 import {
@@ -95,7 +96,7 @@ import { useDesignStore } from "./stores/design.js";
 import { useWfListStore } from "./stores/wfList.js";
 import { useWorkflowDesignStore } from "./stores/workflowDesign.js";
 import { createStressStore } from "./stores/stress.js";
-import { createOnlineStore, type OnlineSession } from "./stores/online.js";
+import { createOnlineStore, locateOnlineApi, type OnlineSession } from "./stores/online.js";
 import { normalizeOnlineBaseUrl, type OnlineWorkspaceAction, type OnlineWorkspaceActionTarget } from "./onlineWorkspaceActions.js";
 import { createAiStore } from "./stores/ai.js";
 import { createPluginsStore } from "./stores/plugins.js";
@@ -288,7 +289,7 @@ const plugins = createPluginsStore({ api: apicc });
 // —— 项目页签 store（计划 C 任务 5 装配）：签注册表 + 激活编排 + 关签驱逐真实实现 ——
 // 关签驱逐按 createEvictProjectSessions 组装（不变量 3：关签=项目关闭）；onProjectActivated
 // 钩子 = lastApi 记忆按活跃签项目过滤恢复（restoreLastApiForTab，编排第③步 editor 上下文）；
-// confirmWorkflowDraft = 切签工作流草稿确认（任务 6 规格勘误口径，弹窗与钩子实现见下文）。
+// 项目之间暂存各自的编辑位置，关闭时统一确认并驱逐草稿。
 const testing = createTestingStore(localApi, {
   confirmDiscard: () => window.confirm(t('testing.discardConfirm')),
   getActive: () => !isHome.value && !onlineMode.value && selectedProjectContext.value ? { root: selectedProjectContext.value.root, project: selectedProjectContext.value.locator, readOnly: localContext().readOnly } : null,
@@ -305,34 +306,32 @@ const tabs = createTabsStore({
   workflowDesign,
   requestTabs,
   evictProjectSessions: async (tab) => {
-    if (tab.workspaceRef.kind === 'online' && 'projectId' in tab) onlineDirectory.discardTab({
-      ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
-    });
+    positions.delete(tab.tabId);
+    if ('projectId' in tab) {
+      const owner = { ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId };
+      onlineDirectory.discardTab(owner);
+      await onlineProjectAdapter.evictTab(owner);
+    }
     await evictSessions(tab);
     if (tab.workspaceRef.kind === 'local' && 'projectLocator' in tab) {
       evictEnvironmentDrafts(envs, tab.workspaceRef.dir, tab.projectLocator);
+      moduleMemory.closeProject(tab.workspaceRef.dir, tab.projectLocator);
+      workflowDesign.evictPosition(tab.workspaceRef.dir, tab.projectLocator);
       await testing.evict(tab.workspaceRef.dir, tab.projectLocator);
     }
   },
   onProjectActivated: restoreLastApiForTab,
-  confirmWorkflowDraft,
-  discardWorkflowDraft: () => workflowDesign.unload(),
-  confirmTestingDraft: () => (onlineAssetsView.value?.confirmLeave() ?? true) && testing.confirmLeave(false) && onlineProjectAdapter.testing.confirmLeave(false)
-    && (!onlineProjectAdapter.workflowDesign.dirty || window.confirm(t("wf.discardConfirm"))),
-  leaveTestingAfterConfirmation: async () => {
-    if (onlineProjectAdapter.workflowDesign.workflow) onlineProjectAdapter.workflowDesign.unload();
-    if (onlineProjectAdapter.testing.dirty) await onlineProjectAdapter.testing.leave(true);
-    return testing.leave(true);
-  },
+  confirmTestingDraft: () => onlineAssetsView.value?.confirmLeave() ?? true,
   beginProjectTransition: () => {
     projectTransitionCount.value += 1;
     return () => { projectTransitionCount.value -= 1; };
   },
-  testingHasDrafts: (root, project) => testing.dirty && testing.view?.context.root === root && sameProjectLocator(testing.view.context.project, project),
+  testingHasDrafts: (root, project) => testing.hasDraft(root, project) || workflowDesign.hasParkedDraft(root, project),
   environmentHasDrafts: (root, project, deletedOnly) => hasEnvironmentDrafts(envs, root, project, deletedOnly),
-  onlineDirectoryHasDraft: (tab) => onlineDirectory.tabHasDraft({
-    ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId,
-  }),
+  onlineDirectoryHasDraft: (tab) => {
+    const owner = { ...tab.workspaceRef, projectId: tab.projectId, ownerId: online.sessions[tab.workspaceRef.workspaceId]?.ownerId };
+    return onlineDirectory.tabHasDraft(owner) || onlineProjectAdapter.hasDrafts(owner);
+  },
 });
 
 // 启动恢复由签表驱动；模块选择与树状态由按 root+ProjectLocator 分区的 moduleMemory 持久化。
@@ -360,6 +359,9 @@ async function activateRequestTab(tabId: string, showRequestEditor = true, navig
   const tab = requestTabs.tabs[tabId];
   if (!tab || tab.root !== workspace.root || !navigationIsCurrent()) return;
   requestTabs.activate(tabId);
+  if ((view.value === "api" || showRequestEditor) && activeLocalProjectTab.value
+    && projectSessionKey(tab.root, tab.project) === projectSessionKey(activeLocalProjectTab.value.workspaceRef.dir, activeLocalProjectTab.value.projectLocator))
+    position.value.apiRequestId = tabId;
   if (showRequestEditor) {
     view.value = "api";
     apiSubView.value = "debug";
@@ -440,7 +442,13 @@ async function restoreLastApiForTab(tab: ProjectTab, isCurrent: () => boolean = 
   if (restoredNode) tree.select(restoredNode);
   requestContextRoot = tab.workspaceRef.dir;
   requestProjectContext = { ...tab.projectLocator };
-  const retainedRequestTabId = requestTabs.activateProject(tab.workspaceRef.dir, tab.projectLocator);
+  const retained = requestTabs.activateProject(tab.workspaceRef.dir, tab.projectLocator);
+  const apiRequest = requestTabs.tabs[position.value.apiRequestId];
+  const caseApi = moduleMemory.test.apiLocator;
+  const caseTab = view.value === "test" && caseApi && Object.values(requestTabs.tabs).find(item =>
+    item.root === tab.workspaceRef.dir && item.source.kind === "asset" && apiSessionKey(item.root, item.source.locator) === apiSessionKey(item.root, caseApi));
+  const retainedRequestTabId = caseTab ? caseTab.tabId
+    : view.value === "api" && apiRequest?.root === tab.workspaceRef.dir && sameProjectLocator(apiRequest.project, tab.projectLocator) ? apiRequest.tabId : retained;
   if (retainedRequestTabId) {
     await activateRequestTab(retainedRequestTabId, false, isCurrent, !restoredNode);
     return;
@@ -506,8 +514,23 @@ onMounted(async () => {
 
 const SUB_VIEWS: ApiSubView[] = API_SUB_VIEWS;
 // 项目模块保持原状态；主页/项目页面选择只由 tabs.selectedPage 控制。
-const view = ref<SwitchView>("api");
-const apiSubView = ref<ApiSubView>("debug");
+const positions = new Map<string, { owner: string; position: ReturnType<typeof newWorkbenchPosition> }>();
+const homePosition = newWorkbenchPosition();
+const position = computed(() => {
+  const tab = tabs.activeTab;
+  if (!tab) return homePosition;
+  const owner = isLocalProjectTab(tab) ? projectSessionKey(tab.workspaceRef.dir, tab.projectLocator)
+    : JSON.stringify([tab.workspaceRef.baseUrl, online.sessions[tab.workspaceRef.workspaceId]?.ownerId ?? online.user?.id,
+      tab.workspaceRef.workspaceId, online.sessions[tab.workspaceRef.workspaceId]?.projects.find(row => row.id === tab.projectId)?.groupId, tab.projectId]);
+  const existing = positions.get(tab.tabId);
+  if (existing?.owner === owner) return existing.position;
+  const position = newWorkbenchPosition();
+  positions.set(tab.tabId, { owner, position });
+  return position;
+});
+provide(workbenchPositionKey, position);
+const view = computed<SwitchView>({ get: () => position.value.view, set: value => { position.value.view = value; } });
+const apiSubView = computed<ApiSubView>({ get: () => position.value.apiSubView, set: value => { position.value.apiSubView = value; } });
 const workbenchBody = ref<HTMLElement>();
 const workbenchWidth = ref(window.innerWidth);
 const workbenchHeight = ref(window.innerHeight - 46);
@@ -700,18 +723,19 @@ const railGate = computed(() => ({
 let relatedRunTarget: OnlineExecutionContext | null = null;
 function openingRelatedRunTab() {
   const tab = activeOnlineProjectTab.value;
-  return !!relatedRunTarget && !!tab && view.value === "run"
+  return !!relatedRunTarget && !!tab
     && tab.projectId === relatedRunTarget.scope.projectId && tab.workspaceRef.workspaceId === relatedRunTarget.scope.workspaceId
     && JSON.stringify(online.executionContext(tab.projectId)) === JSON.stringify(relatedRunTarget);
 }
 watch(() => activeOnlineProjectTab.value?.tabId, (tab, previous) => {
-  if (openingRelatedRunTab()) return;
-  relatedRunTarget = null;
-  if (tab && tab !== previous) view.value = "api";
+  if (tab !== previous && openingRelatedRunTab()) view.value = "run";
+  else relatedRunTarget = null;
 }, { flush: "sync" });
 watch(view, module => { if (module !== "run") relatedRunTarget = null; }, { flush: "sync" });
 watch(railGate, gate => {
-  if (gate.onlineActive && isViewDisabled(view.value, gate) && !openingRelatedRunTab()) view.value = "api";
+  if (gate.onlineActive && online.execution.view && !online.execution.busy
+    && JSON.stringify(online.execution.context) === JSON.stringify(onlineDirectoryContext.value)
+    && isViewDisabled(view.value, gate) && !openingRelatedRunTab()) view.value = "api";
 });
 const subGate = computed(() => ({ onlineActive: onlineMode.value, apiSelected: !!editor.apiId || !!editor.activeFreeSession }));
 const homeOpenLocalProjectKeys = computed(() => new Set(
@@ -724,6 +748,15 @@ const homeActiveOnlineProjectId = computed(() => {
 });
 const onlineDirectoryContext = computed(() => !isHome.value && onlineMode.value ? online.executionContext(homeActiveOnlineProjectId.value) : null);
 const onlineProjectAccessLost = computed(() => !!onlineDirectoryContext.value && online.execution.projectAccessLost);
+async function returnToProjectList() {
+  const server = activeOnlineProjectTab.value?.workspaceRef.baseUrl ?? online.activeBaseUrl;
+  const page = tabs.selectedPage;
+  if (onlineProjectAccessLost.value) await online.refreshTreeView();
+  if (tabs.selectedPage !== page) return;
+  tabs.activateHome();
+  await nextTick();
+  if (isHome.value && server) homeView.value?.selectServer(server);
+}
 function checkActiveOnlineProject() {
   if (onlineDirectoryContext.value) void online.execution.checkForUpdates().catch(reportError);
 }
@@ -747,10 +780,7 @@ const onlineDirectoryRoot = computed(() => {
   const root = online.appliedProjectTree(context) ?? onlineProjectTree(online.onlineTree, context.scope.projectId);
   if (!root) return null;
   const project = JSON.stringify(online.execution.context) === JSON.stringify(context) ? online.execution.project : null;
-  const labeled = labelOnlineProjectTree(root, project);
-  const workspaceConfig = online.onlineTree?.source === 'online'
-    ? online.onlineTree.children?.find(node => node.kind === 'file' && node.id === 'apicc.workspace.yaml') : undefined;
-  return workspaceConfig ? { ...labeled, children: [workspaceConfig, ...(labeled.children ?? [])] } : labeled;
+  return labelOnlineProjectTree(root, project);
 });
 function findOnlineDirectoryNode(node: OnlineTreeNodeDTO | null, match: (node: OnlineTreeNodeDTO) => boolean): OnlineTreeNodeDTO | undefined {
   if (!node) return;
@@ -761,9 +791,10 @@ function findOnlineDirectoryNode(node: OnlineTreeNodeDTO | null, match: (node: O
   }
 }
 function showOnlineDirectoryPath(path: string) {
-  const selected = findOnlineDirectoryNode(onlineDirectoryRoot.value, node => node.id === path)?.key;
-  if (!selected) return;
-  onlineDirectory.updateTree({ selected });
+  const node = findOnlineDirectoryNode(onlineDirectoryRoot.value, item => item.id === path);
+  if (!node) return;
+  position.value.apiPath = node.kind === "api" ? node.id : "";
+  onlineDirectory.updateTree({ selected: node.key });
   void nextTick(() => sideTree.value?.revealOnline(path));
 }
 const onlineDirectory = useOnlineDirectory(online, onlineDirectoryContext, onlineDirectoryRoot, showOnlineDirectoryPath);
@@ -823,10 +854,19 @@ watch(() => JSON.stringify([isHome.value, onlineMode.value, homeActiveOnlineProj
     await activeOnlineLoad;
     if (activation !== onlineActivation || JSON.stringify(onlineDirectoryContext.value) !== JSON.stringify(context)) return;
     const selected = findOnlineDirectoryNode(onlineDirectoryRoot.value, node => node.key === onlineDirectory.tree.value.selected);
-    if (!online.editorPath && (selected?.kind === 'api' || selected?.kind === 'file')) {
-      await online.selectNode(selected.kind, selected.id);
-    } else if (online.editorPath?.startsWith(`${context.scope.projectId}/`) && online.editorKind === 'api' && !online.editorDirty) {
-      await online.selectNode('api', online.editorPath, { force: true });
+    const path = position.value.apiPath || (selected?.kind === "api" ? selected.id : "");
+    const visible = path && findOnlineDirectoryNode(onlineDirectoryRoot.value, node => node.kind === "api" && node.id === path);
+    const latest = online.execution.latestView;
+    if (latest?.project) onlineProjectAdapter.validatePosition(latest.project);
+    const available = !!visible && (!latest?.project || !!locateOnlineApi(latest.project, path.slice(context.scope.projectId.length + 1)));
+    if (available && !online.execution.projectAccessLost) {
+      const buffer = online.sessions[context.scope.workspaceId]?.buffers[path];
+      const dirty = !!buffer?.api && JSON.stringify(buffer.api) !== buffer.snapshot;
+      await online.selectNode("api", path, { force: !dirty });
+    } else {
+      if (online.editorPath) await online.selectNode("project", context.scope.projectId);
+      if (!selected || selected.kind === "api" && !available) onlineDirectory.updateTree({ selected: "" });
+      if (path && !available) { position.value.apiPath = ""; reportError(t("workbenchPosition.unavailable")); }
     }
   }
 }, { immediate: true });
@@ -1128,8 +1168,10 @@ async function onAiSuggest(trigger: HTMLElement) {
  */
 async function onSelect(node: TreeNodeDTO | NodeCreatedDTO) {
   if (node.source === "online") {
+    if (node.kind === "file") return;
     if (node.kind === "project") openProjectTabFor(node);
     else {
+      position.value.apiPath = node.kind === "api" ? node.id : "";
       onlineDirectory.updateTree({ selected: node.key });
       try { await online.selectNode(node.kind, node.id); }
       catch (e) { reportError(e); }
@@ -1240,37 +1282,6 @@ function onWfSwitchCancel() {
 // M2-C 跟进：树摘要/wfList/设计器三方同步协议 + dirty 确认（侧树切换的确认放行已随
 // 审查 I1 补齐；跨视图选中态/摘要一致性仍随协议收口）。
 
-// —— 切签工作流草稿确认（计划 C 任务 6，规格勘误口径）——
-// tabs.activateTab 在「离开当前项目上下文」时机回调 confirmWorkflowDraft（仅当活跃工作流
-// 属于离开的项目且 dirty）：弹既有 ConfirmDialog；确认丢弃 → 卸载设计器会话（草稿丢弃、
-// dirty 复位，避免下次切签重复纠缠）并放行切换；取消 → 不切换（树选中尚未被编排改动，
-// 无需回退——与侧树切流确认的选中回退不同）。
-const wfTabSwitchConfirmOpen = ref(false);
-let wfTabSwitchResolve: ((ok: boolean) => void) | null = null;
-let wfTabSwitchResult: Promise<boolean> | null = null;
-
-function confirmWorkflowDraft(): Promise<boolean> {
-  if (wfTabSwitchResult) return wfTabSwitchResult;
-  wfTabSwitchConfirmOpen.value = true;
-  return wfTabSwitchResult = new Promise<boolean>((resolve) => {
-    wfTabSwitchResolve = resolve;
-  });
-}
-
-function onWfTabSwitchConfirm() {
-  wfTabSwitchConfirmOpen.value = false;
-  wfTabSwitchResolve?.(true);
-  wfTabSwitchResolve = null;
-  wfTabSwitchResult = null;
-}
-
-function onWfTabSwitchCancel() {
-  wfTabSwitchConfirmOpen.value = false;
-  wfTabSwitchResolve?.(false);
-  wfTabSwitchResolve = null;
-  wfTabSwitchResult = null;
-}
-
 function onRequestTabCloseConfirm() { finishRequestTabClose(true); }
 function onRequestTabCloseCancel() { finishRequestTabClose(false); }
 
@@ -1279,6 +1290,7 @@ function onRequestTabCloseCancel() { finishRequestTabClose(false); }
 // 槽 dirty + workflowDesign 单会话 + online 各驻留会话任一缓冲槽 dirty（遍历全表，任务 4
 // 移交口径；判定先例同 editorDirty/projectHasDrafts 的快照比对）。
 function aggregateHasDrafts(): boolean {
+  if (tabs.tabs.some(tab => tabs.projectHasDrafts(tab.tabId))) return true;
   if (onlineDirectory.dirty.value) return true;
   if (testing.dirty) return true;
   for (const session of Object.values(editor.sessions)) {
@@ -1589,7 +1601,7 @@ watch(() => JSON.stringify([projectTransitionPending.value, workspace.hasPending
   const context = selectedProjectContext.value;
   if (isHome.value || projectTransitionPending.value || workspace.hasPendingDiskRefresh() || reviewingMissingEnvironmentProject.value
     || (!context && !!testing.diskConflict)) return;
-  void testing.activate(context?.root ?? '', !onlineMode.value ? context?.locator ?? null : null, workspace.readOnly).catch(reportError);
+  void testing.activate(context?.root ?? '', !onlineMode.value ? context?.locator ?? null : null, workspace.readOnly, true).catch(reportError);
 });
 async function onTestPane(pane: TestingPane) {
   if (pane !== moduleMemory.test.pane && !(await testing.leave())) return;
@@ -1905,6 +1917,8 @@ watch(
   () => {
     const context = selectedProjectContext.value;
     moduleMemory.activateProject(context?.root ?? workspace.root, context?.locator ?? null);
+    const project = context && workspace.workspace && diskProject(workspace.workspace, context.locator);
+    workflowDesign.activatePosition(context?.root ?? "", context?.locator ?? null, project?.workflows ?? [], workspace.readOnly);
     requestContextRoot = context?.root ?? "";
     requestProjectContext = context ? { ...context.locator } : null;
   },
@@ -2026,9 +2040,11 @@ const testApiLoad = ref<{ key: string; loading: boolean; error: string }>();
 const testApiTarget = computed(() => {
   const context = selectedProjectContext.value;
   if (!context || context.root !== workspace.root || workspace.hasPendingOpen()) return null;
+  const remembered = moduleMemory.test.apiLocator;
+  if (remembered && sameProjectLocator(remembered, context.locator)) return remembered;
   const tab = activeRequestTab.value;
   if (tab) return tab.source.kind === "asset" ? tab.source.locator : null;
-  const locator = moduleMemory.test.apiLocator ?? editor.locator;
+  const locator = editor.locator;
   return locator && sameProjectLocator(locator, context.locator) ? locator : null;
 });
 const testApiReady = computed(() => {
@@ -2082,13 +2098,26 @@ function onTestPickApi(locator: ApiLocator) {
   moduleMemory.touch();
   const node = findLocalNodeByKey(localTreeNodeKey({ source: "local", kind: "api", locator }));
   if (!node || node.kind !== "api") return;
-  selectDirectoryNode(node);
   const key = apiSessionKey(workspace.root, locator);
   testApiLoad.value = { key, loading: true, error: "" };
   const owner = testApiLoad.value;
-  void loadApiIntoEditor(locator).catch((error: unknown) => {
+  const isCurrent = () => testApiLoad.value === owner && view.value === "test" && historyProjectIsCurrent(workspace.root, locator);
+  void loadApiIntoEditor(locator, isCurrent).catch((error: unknown) => {
     if (testApiLoad.value === owner) owner.error = error instanceof Error ? error.message : String(error);
   }).finally(() => { if (testApiLoad.value === owner) owner.loading = false; });
+}
+
+function selectModule(next: SwitchView) {
+  view.value = next;
+  const context = selectedProjectContext.value;
+  if (!context || onlineMode.value) return;
+  const isCurrent = () => next === view.value && historyProjectIsCurrent(context.root, context.locator);
+  if (next === "api") {
+    const tab = requestTabs.tabs[position.value.apiRequestId];
+    if (tab?.root === context.root && sameProjectLocator(tab.project, context.locator)) void activateRequestTab(tab.tabId, false, isCurrent).catch(reportError);
+  } else if (next === "test" && moduleMemory.test.pane === "api-cases" && moduleMemory.test.apiLocator && !testApiReady.value) {
+    onTestPickApi(moduleMemory.test.apiLocator);
+  }
 }
 
 /** 场景清单（活动项目工作流摘要）：测试侧栏数据源。 */
@@ -2407,7 +2436,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
           :gate="railGate"
           :directory-overlay="directoryOverlay"
           :directory-open="directoryOpen"
-          @update:view="(v: SwitchView) => (view = v)"
+          @update:view="selectModule"
           @toggle-directory="toggleDirectory"
         >
           <template v-if="projectToolItems.length && !useDirectoryTools" #tools>
@@ -2545,6 +2574,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
           <!-- 在线工作区上下文（任务 5：活跃签在线或无签但有活跃在线工作区）：只提供浏览/编辑面板 -->
           <div v-else-if="onlineProjectAccessLost" class="panel-view online-context-unavailable" role="alert" data-testid="online-project-access-lost">
             <p>{{ t(online.execution.projectReadIssue === 'online-project-identity-changed' ? 'onlineProjectUpdate.identityChanged' : 'onlineProjectUpdate.accessLost') }}</p>
+            <a-button data-testid="return-to-project-list" @click="returnToProjectList">{{ t("workbenchPosition.projectList") }}</a-button>
           </div>
           <OnlineProjectAssets ref="onlineAssetsView" v-else-if="onlineMode && onlineProjectContextAvailable && online.execution.context" class="panel-view" :ai="ai" :online="online" :adapter="onlineProjectAdapter" :local-projects="onlinePublishProjects"
             :view="view" :materials-open="onlineMaterialsOpen" :open-project="openRelatedOnlineProject"
@@ -2561,7 +2591,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
           <OnlineApiEditor v-else-if="onlineMode && onlineProjectContextAvailable" class="panel-view" :online="online" />
           <div v-else-if="onlineMode" class="panel-view online-context-unavailable">
             <p>{{ t("online.sessionErrors.online-workspace-session-missing") }}</p>
-            <a-button @click="tabs.activateHome()">{{ t("nav.home") }}</a-button>
+            <a-button data-testid="return-to-project-list" @click="returnToProjectList">{{ t("workbenchPosition.projectList") }}</a-button>
           </div>
           <!-- 接口模块（M8）：头部（子视图页签 + AI 入口）+ 调试/设计/用例子视图 -->
           <template v-else-if="view === 'api'">
@@ -2780,13 +2810,6 @@ function focusDebugSection(section: HTMLElement | undefined) {
       :title="t('wf.discardConfirm')"
       @confirm="onWfSwitchConfirm"
       @cancel="onWfSwitchCancel"
-    />
-    <!-- 切签工作流草稿确认（计划 C 任务 6，规格勘误口径）：tabs.activateTab 离开当前项目前经此放行 -->
-    <ConfirmDialog
-      :open="wfTabSwitchConfirmOpen"
-      :title="t('wf.discardConfirm')"
-      @confirm="onWfTabSwitchConfirm"
-      @cancel="onWfTabSwitchCancel"
     />
     <ConfirmDialog
       :open="requestCloseConfirmOpen"

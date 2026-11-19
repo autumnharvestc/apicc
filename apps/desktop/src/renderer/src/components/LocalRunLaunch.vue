@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
+import { useWorkbenchPosition } from "../stores/workbenchPosition.js";
 import type { JsonValue, SavedStressPlan, SuitePreview, Workflow } from "@apicc/core";
 import { StressPlanSchema } from "@apicc/core/schema";
 import type { CollectionLaunchPreview } from "../../../shared/collection-launch.js";
@@ -18,7 +19,9 @@ const emit = defineEmits<{ records: [file: string]; "open-debug-record": [histor
 const { t } = useI18n();
 const label = useLaunchMessages();
 const kinds = ["module", "case", "suite", "workflow", "stress"] as const;
-const kind = ref<LaunchKind>("module"), selected = ref("");
+const position = useWorkbenchPosition(() => scope.value);
+const kind = computed<LaunchKind>({ get: () => position.value.launchTarget?.kind ?? "module", set: kind => { position.value.launchTarget = { kind, id: "" }; } });
+const selected = computed({ get: () => position.value.launchTarget?.id ?? "", set: id => { position.value.launchTarget = { kind: kind.value, id }; } });
 const catalog = shallowRef<TestingAssets | null>(null), plans = shallowRef<SavedStressPlan[]>([]);
 const collection = shallowRef<CollectionLaunchPreview>(), suitePreview = shallowRef<SuitePreview & { dataDigest?: string }>(), workflow = shallowRef<Workflow>();
 const readError = ref(""), previewError = ref(""), notice = ref("");
@@ -53,12 +56,11 @@ onBeforeUnmount(() => { alive = false; catalogueRead++; previewRead++; });
 function resetConfirmation() {
   if (props.stress.planConfirmation?.saved) props.stress.denyPlanTarget();
 }
-watch(scope, () => { kind.value = "module"; selected.value = ""; archive.value = ""; debugHistoryId.value = ""; starting.value = false; notice.value = ""; }, { flush: "sync" });
+watch(scope, () => { archive.value = ""; debugHistoryId.value = ""; starting.value = false; notice.value = ""; }, { flush: "sync" });
 watch([scope, () => props.selectedCollectionLocator], () => {
   const target = props.selectedCollectionLocator;
-  if (kind.value === "module") selected.value = target && projectSessionKey(props.workspace.root, target) === scope.value ? target.collectionId : "";
+  if (kind.value === "module" && !position.value.launchTarget && target && projectSessionKey(props.workspace.root, target) === scope.value) selected.value = target.collectionId;
 }, { immediate: true });
-watch(kind, () => { selected.value = ""; }, { flush: "sync" });
 watch([kind, selected], ([type, id]) => emit("selection", type, id), { immediate: true, flush: "sync" });
 watch([kind, selected], () => { inputs.value = undefined; inputsValid.value = false; allowDraft.value = false; lastPreview = undefined; }, { flush: "sync" });
 watch([scope, kind, selected, () => props.environmentId, actualEnvId], () => {

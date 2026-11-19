@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { computed, shallowRef } from "vue";
 import { describe, expect, it, vi } from "vitest";
+import { labelOnlineProjectTree } from "../../../src/renderer/src/onlineDirectory.js";
 import { createMemoryApi } from "../../../src/renderer/src/api/memory.js";
 import { createOnlineStore } from "../../../src/renderer/src/stores/online.js";
 import { useOnlineDirectory } from "../../../src/renderer/src/stores/onlineDirectory.js";
@@ -33,6 +34,19 @@ function setup() {
 }
 
 describe("online project directory", () => {
+  it("filters file identities while preserving empty containers and an API named project.yaml", () => {
+    const node = (kind: OnlineTreeNodeDTO["kind"], id: string, label: string, children: OnlineTreeNodeDTO[] = []): OnlineTreeNodeDTO =>
+      ({ source: "online", kind, id, label, children, key: id });
+    const tree = { ...root, children: [node("file", "33/project.yaml", "project.yaml"),
+      node("collection", "33/collections/c", "Orders", [node("file", "config", "collection.yaml"),
+        node("folder", "empty", "Empty", [node("file", "nested-config", "folder.yaml")]),
+        node("api", "33/collections/c/apis/a/api.yaml", "project.yaml")])] };
+    const result = labelOnlineProjectTree(tree, null);
+    expect(result.children?.map(n => n.label)).toEqual(["Orders"]);
+    expect(result.children?.[0]?.children?.map(n => [n.kind, n.label])).toEqual([["folder", "Empty"], ["api", "project.yaml"]]);
+    expect(result.children?.[0]?.children?.[0]?.children).toEqual([]);
+    expect(tree.children[0]?.kind).toBe("file");
+  });
   it("keeps the same draft after a lost connection and leaves the switch target untouched", async () => {
     const { online, active, selected, createDirectory } = setup();
     const directory = createDirectory();

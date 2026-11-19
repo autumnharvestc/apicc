@@ -212,8 +212,8 @@ async function changeStatus(action: LifecycleAction) {
 }
 
 // —— 画布选中态（属性面板上下文） ——
-const selectedNodeId = ref<string | null>(null);
-const selectedEdgeId = ref<string | null>(null);
+const selectedNodeId = computed({ get: () => design.value.selectedNode, set: value => { design.value.selectedNode = value; } });
+const selectedEdgeId = computed({ get: () => design.value.selectedEdge, set: value => { design.value.selectedEdge = value; } });
 function clearSelection() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
@@ -366,7 +366,8 @@ function backToList() {
 watch(
   () => JSON.stringify([props.workspace.root, props.projectLocator]),
   (key, oldKey) => {
-    if (oldKey !== undefined && key !== oldKey) requestUnload(() => {});
+    if (oldKey !== undefined && key !== oldKey && props.workflowDesign.locator
+      && !sameProjectLocator(props.workflowDesign.locator, props.projectLocator)) requestUnload(() => {});
     if (props.projectLocator && (props.wfList.root !== props.workspace.root
       || !sameProjectLocator(props.wfList.projectLocator, props.projectLocator))) {
       const root = props.workspace.root;
@@ -588,6 +589,7 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
     <div v-if="design.running && (!wf || design.activeRun?.epoch !== design.loadEpoch)" class="wf-inflight" data-testid="wf-background-run"><span>{{ design.activeRun?.locator.workflowId }} · {{ t(design.stopping ? 'wf.control.stopping' : 'wf.run') }}</span><button type="button" :disabled="design.stopping" @click="stop">{{ t('wf.control.stop') }}</button></div>
     <!-- 未选工作流：空态 + 列表入口（项目内工作流的新建与打开） -->
     <div v-if="!wf" class="wf-empty" data-testid="wf-empty">
+      <p v-if="design.positionUnavailable" role="status">{{ t("workbenchPosition.unavailable") }}</p>
       <EmptyState :text="t('wf.empty')" />
       <div class="wf-create">
         <select v-model="createVersion" data-testid="wf-create-version" :disabled="workspace.readOnly" :aria-label="t('wf.control.version')"><option :value="2">{{ t('wf.control.v2') }}</option><option :value="1">{{ t('wf.control.v1') }}</option></select>
@@ -729,6 +731,8 @@ const statusColors: Record<WorkflowStatus, string> = { draft: "", published: "bl
         <!-- 中央画布（受控）：数据层唯一来源为 store 缓冲 -->
         <div class="wf-canvas-wrap" data-testid="wf-canvas">
           <VueFlow
+            :key="JSON.stringify([design.root, design.locator])"
+            :default-viewport="design.viewport" @viewport-change-end="design.viewport = $event"
             :nodes="flowNodes"
             :edges="flowEdges"
             :auto-pan-on-connect="false"

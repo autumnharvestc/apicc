@@ -7,6 +7,7 @@ import type { NotificationEvent, ScheduleOccurrence } from "@apicc/execution/con
 import type { createOnlineStore } from "../../stores/online.js";
 import type { createOnlineProjectAdapter } from "../../stores/onlineProjectAdapter.js";
 import type { NotificationPosition, OnlineRunPane } from "../../stores/onlineSchedules.js";
+import { useWorkbenchPosition } from "../../stores/workbenchPosition.js";
 import type { RunRecord } from "../../stores/onlineExecution.js";
 import type { AiStore } from "../../stores/ai.js";
 import { recordTime, useRecordMessages } from "../../execution/recordMessages.js";
@@ -24,23 +25,24 @@ const msg = useRecordMessages();
 const e = computed(() => props.online.execution), schedules = computed(() => props.online.schedules);
 const scopesMatch = (a?: OnlineExecutionContext | null,b?: OnlineExecutionContext | null) => !!a && !!b && a.serverId === b.serverId && a.ownerId === b.ownerId && a.scope.workspaceId === b.scope.workspaceId && a.scope.groupId === b.scope.groupId && a.scope.projectId === b.scope.projectId;
 const sameMember = (a: OnlineExecutionContext,b?: OnlineExecutionContext | null) => !!b && a.serverId === b.serverId && a.ownerId === b.ownerId && a.scope.workspaceId === b.scope.workspaceId;
-const position = ref<"schedules" | null>(null), issue = ref(""), hideDetail = ref(false), list = ref<HTMLElement>();
+const position = ref<"schedules" | null>(null), issue = ref(""), list = ref<HTMLElement>();
 let intent = 0;
+const workbench = useWorkbenchPosition(() => JSON.stringify(e.value.context));
+const hideDetail = computed({ get: () => workbench.value.recordListOnly, set: value => { workbench.value.recordListOnly = value; } });
 const selected = computed(() => e.value.resultSelection);
 const selectedJob = computed(() => selected.value?.kind === "agent" && "job" in selected.value ? selected.value.job : undefined);
 const jobKey = (j: OnlineJob) => [j.agentId,j.jobId,j.executionId].join("/");
 const selectedKey = computed(() => selectedJob.value ? jobKey(selectedJob.value) : selected.value && "runId" in selected.value ? selected.value.runId : "");
 const paneTitle = (p: OnlineRunPane) => p === "schedules" ? t("scheduling.title") : msg(p);
 function code(value?: string) { return value ? te("onlineExecution.states."+value) ? t("onlineExecution.states."+value) : value : msg("notRecorded"); }
-function go(pane: OnlineRunPane) { issue.value = ""; intent++; emit("update:pane", pane); }
+function go(pane: OnlineRunPane, revealing = false) { workbench.value.revealingRecord = revealing; issue.value = ""; intent++; emit("update:pane", pane); }
 watch(() => [props.active, e.value.context, e.value.visible, props.pane, schedules.value.selected], () => { intent++; issue.value = ""; }, { flush: "sync" });
-watch(() => e.value.context, () => { hideDetail.value = false; position.value = null; });
+watch(() => e.value.context, () => { position.value = null; });
 watch(() => props.active, active => {
-  if (active) { hideDetail.value = false; return; }
+  if (active) return;
   schedules.value.navigationIntent++;
   schedules.value.returnTo = null; schedules.value.restorePosition = null; schedules.value.paneRequest = null;
 }, { flush: "sync" });
-watch(() => selectedKey.value, key => { if (key) hideDetail.value=false; });
 watch(() => schedules.value.paneRequest, request => {
   if (request && props.active && scopesMatch(e.value.context, request.context)) { hideDetail.value = false; emit("update:pane", request.pane); }
 }, { immediate: true, flush: "post" });
@@ -77,13 +79,16 @@ const rows = computed(() => {
 const selectedRow = computed(() => rows.value.find(row => row.key === selectedKey.value));
 async function choose(row: Row) {
   schedules.value.navigationIntent++;
+  workbench.value.onlineRecord = row.job ? { jobId: row.job.jobId, executionId: row.job.executionId, agentId: row.job.agentId }
+    : row.run ? { runId: row.run.runId } : null;
   const n = ++intent; hideDetail.value = false; issue.value = "";
   const live = () => intent === n && props.active && e.value.visible;
   try { if (row.job) await e.value.inspect(row.job, live); else if (row.run) await e.value.selectSubmission(row.run.runId); }
   catch (err) { if (live()) issue.value = err instanceof Error ? err.message : String(err); }
 }
 async function inspectLaunch(id?: string) {
-  go("records"); await nextTick(); hideDetail.value = false;
+  workbench.value.onlineRecord = id ? { runId: id } : null;
+  go("records", true); await nextTick(); hideDetail.value = false;
   if (id) try { await e.value.selectSubmission(id); } catch (err) { props.reportError(err); }
 }
 async function original(ctx: OnlineExecutionContext, jobId: string, executionId: string, live: () => boolean) {
@@ -93,13 +98,14 @@ async function original(ctx: OnlineExecutionContext, jobId: string, executionId:
   const job = OnlineJobSchema.parse(await props.adapter.bridge.onlineExecution({operation:"status", context:ctx, runId:jobId,location:{kind:"agent",agentId:ref.agentId}}));
   if (!live()) return false;
   if (job.jobId !== jobId || job.executionId !== executionId || job.agentId !== ref.agentId) throw new Error("fixed-input-mismatch");
+  workbench.value.onlineRecord = { jobId: job.jobId, executionId: job.executionId, agentId: job.agentId };
   await e.value.inspect(job,live); return live();
 }
 async function scheduleReport(row: ScheduleOccurrence) {
   const ctx=e.value.context, plan=schedules.value.selected;
   if (!ctx || !plan || !row.jobId || !row.executionId || row.scheduleId!==plan.id || row.projectId!==ctx.scope.projectId || row.workspaceId!==ctx.scope.workspaceId) return;
   const n=++intent, live=() => n===intent && scopesMatch(ctx,e.value.context) && e.value.visible && props.active && props.pane==="schedules";
-  try { if(await original(ctx,row.jobId,row.executionId,live)) { position.value="schedules"; hideDetail.value=false; go("records"); } }
+  try { if(await original(ctx,row.jobId,row.executionId,live)) { position.value="schedules"; hideDetail.value=false; go("records", true); } }
   catch(err) { if(live()) { issue.value=msg("unavailable"); props.reportError(err); } }
 }
 async function switchProject(source: OnlineExecutionContext, projectId: string) {
@@ -139,6 +145,31 @@ async function notification(event: NotificationEvent, dest: "schedules"|"records
     }
   }
 }
+watch(() => props.active && props.pane === "records" && e.value.visible && !e.value.busy && !e.value.projectAccessLost
+  ? JSON.stringify(e.value.context) : "", async (owner, _, cleanup) => {
+  const saved = workbench.value.onlineRecord, context = e.value.context;
+  if (!owner || !saved || !context || schedules.value.returnTo || schedules.value.paneRequest) return;
+  if (workbench.value.revealingRecord) { workbench.value.revealingRecord = false; return; }
+  let current = true;
+  cleanup(() => { current = false; });
+  const live = () => current && workbench.value.onlineRecord === saved && owner === JSON.stringify(e.value.context);
+  try {
+    if ("runId" in saved) {
+      if (!e.value.submissions.some(run => run.runId === saved.runId)) throw new Error(msg("unavailable"));
+      await e.value.selectSubmission(saved.runId);
+    } else {
+      const job = OnlineJobSchema.parse(await props.adapter.bridge.onlineExecution({ operation: "status", context,
+        location: { kind: "agent", agentId: saved.agentId }, runId: saved.jobId }));
+      if (!live()) return;
+      if (job.agentId !== saved.agentId || job.executionId !== saved.executionId || job.jobId !== saved.jobId) throw new Error(msg("unavailable"));
+      await e.value.inspect(job, live);
+    }
+  } catch {
+    if (!live()) return;
+    workbench.value.onlineRecord = null; hideDetail.value = true; issue.value = msg("unavailable");
+    e.value.resultSelection = null; e.value.selectedJobId = ""; e.value.report = null; e.value.localResult = null;
+  }
+}, { immediate: true, flush: "post" });
 const canReturn = computed(() => { const ref=schedules.value.returnTo, ctx=e.value.context; return ref && sameMember(ref.context,ctx) && (ctx?.scope.projectId===ref.targetProjectId || scopesMatch(ref.context,ctx)) && props.pane!=="notifications"; });
 async function backToNotification() {
   const store=schedules.value, ref=store.returnTo;
@@ -152,7 +183,7 @@ async function backToNotification() {
   } catch { if (n===store.navigationIntent) issue.value=msg("unavailable"); }
 }
 function changePane(pane: OnlineRunPane) { schedules.value.navigationIntent++; schedules.value.returnTo=null; schedules.value.paneRequest=null; position.value=null; go(pane); }
-function returnList() { hideDetail.value=true; nextTick(() => list.value?.querySelector<HTMLElement>('button[aria-current="true"]')?.focus()); }
+function returnList() { workbench.value.onlineRecord = null; hideDetail.value=true; nextTick(() => list.value?.querySelector<HTMLElement>('button[aria-current="true"]')?.focus()); }
 const dirty = computed(() => props.adapter.editor.dirty || props.adapter.testing.dirty || props.adapter.workflowDesign.dirty || props.online.editorDirty);
 </script>
 <template>

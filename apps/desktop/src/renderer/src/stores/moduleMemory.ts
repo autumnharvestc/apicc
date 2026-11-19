@@ -113,12 +113,14 @@ function parseStored(): ModuleMemory {
 }
 
 export function useModuleMemoryStore() {
+  const openPanes = new Map<string, TestingPane>();
   return defineStore("moduleMemory", {
     state: (): ModuleMemory => parseStored(),
     actions: {
       activateProject(root: string, locator: ProjectLocator | null): void {
         const previousKey = this.activeScopeKey;
         if (previousKey) {
+          openPanes.set(previousKey, this.test.pane);
           const previous = this.scopes[previousKey];
           if (previous) this.scopes[previousKey] = {
             ...previous,
@@ -139,12 +141,19 @@ export function useModuleMemoryStore() {
         const projectLocator = copyProject(locator);
         const key = projectSessionKey(root, projectLocator);
         const scope = this.scopes[key];
+        this.test.pane = openPanes.get(key) ?? "api-cases";
         this.activeScopeKey = key;
         this.apiTree = scope ? copyTree(scope.apiTree) : emptyTree();
         this.test.apiLocator = scope ? copyApi(scope.test.apiLocator) : null;
         this.test.workflowLocator = scope?.test.workflowLocator ? { ...scope.test.workflowLocator } : null;
         if (!scope) this.scopes[key] = { root, projectLocator, apiTree: emptyTree(), test: { apiLocator: null, workflowLocator: null } };
         this.touch();
+      },
+
+      closeProject(root: string, project: ProjectLocator) {
+        const key = projectSessionKey(root, project);
+        if (this.activeScopeKey === key) this.activateProject("", null);
+        openPanes.delete(key);
       },
 
       touch(): void {

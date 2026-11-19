@@ -4,7 +4,9 @@ import type { ContractWorkspace, ContractProject, ContractCollection, ContractFo
 import { findProjectSaveApi, sameProjectSaveValue, type ProjectApiTarget } from "@apicc/core/collaboration/project-save";
 import type { ApiccApi, ApiDetail } from "../../../shared/types.js";
 import type { TestingAssets, TestingContext } from "../../../shared/testing.js";
-import type { ApiLocator } from "../../../shared/locations.js";
+import type { OnlineExecutionContext } from "../../../shared/online/execution.js";
+import { environmentDraftsFor, evictEnvironmentDrafts, hasEnvironmentDrafts } from "./environmentDrafts.js";
+import type { ApiLocator, ProjectLocator } from "../../../shared/locations.js";
 import { toTreeNode } from "../../../main/tree.js"; // Pure DTO projection shared with the main process.
 import { useWorkspaceStore } from "./workspace.js";
 import { useEnvsStore } from "./envs.js";
@@ -17,7 +19,7 @@ import { CredentialMutationResultSchema, CredentialStatusResultSchema } from "..
 import type { OnlineExecutionStore } from "./onlineExecution.js";
 import { OnlineDatasetContentSchema } from "../../../shared/online/execution.js";
 import { z } from "zod";
-import { apiSessionKey } from "./localIdentity.js";
+import { apiSessionKey, projectSessionKey } from "./localIdentity.js";
 
 /** Reuses the existing business editors. Every mutation is captured against the explicit
  * online scope/version and saved with the atomic assets API. The renderer-only root key
@@ -83,7 +85,22 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     const raw = await api.onlineExecution({ operation: "credential", context: clone(execution.context), action, ref, contractProjectId: project().id, storage: execution.localOnlyRefIds.includes(ref.id) ? "local" : "project", ...(value === undefined ? {} : { value }) });
     return action === "status" ? CredentialStatusResultSchema.parse(raw) : CredentialMutationResultSchema.parse(raw);
   };
-  function testingView(): TestingAssets { return { context: context(), readOnly: readOnly(), datasets: clone(project().datasets ?? []), suites: clone(project().suites ?? []), environments: project().environments.map(({ id, name }) => ({ id, name })), collections: project().collections.map(({ id, name }) => ({ id, name })), workflows: project().workflows.map(({ id, name, status }) => ({ id, name, status })), cases: apiEntries().flatMap(({ locator, asset }) => asset.cases.map(item => ({ locator, caseId: item.id, name: item.name, scopes: [item.scope], tags: item.tags ?? [] }))) }; }
+  function testingView(): TestingAssets {
+    const applied = project(), latest = execution.latestView?.project;
+    const datasetIds = latest && new Set(latest.datasets?.map(asset => asset.id));
+    const suiteIds = latest && new Set(latest.suites?.map(asset => asset.id));
+    return {
+      context: context(), readOnly: readOnly(),
+      datasets: clone((applied.datasets ?? []).filter(asset => !datasetIds || datasetIds.has(asset.id))),
+      suites: clone((applied.suites ?? []).filter(asset => !suiteIds || suiteIds.has(asset.id))),
+      environments: applied.environments.map(({ id, name }) => ({ id, name })),
+      collections: applied.collections.map(({ id, name }) => ({ id, name })),
+      workflows: applied.workflows.map(({ id, name, status }) => ({ id, name, status })),
+      cases: apiEntries().flatMap(({ locator, asset }) => asset.cases.map(item => ({
+        locator, caseId: item.id, name: item.name, scopes: [item.scope], tags: item.tags ?? [],
+      }))),
+    };
+  }
   const operations: Partial<ApiccApi> = {
     onlineExecution: input => api.onlineExecution(input),
     importDataset: async input => {
@@ -111,9 +128,9 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
     envBaseUrlsSave: async (where, baseUrls) => { await change(draft => { const env = draft.environments.find(env => env.id === where.environmentId); if (!env) throw new Error("environment-not-found"); env.baseUrls = clone(baseUrls); }); return clone(project().environments.find(env => env.id === where.environmentId)!); },
     nodeDelete: async input => { if (input.kind !== "environment") throw new Error("online-editor-operation-unavailable"); await change(draft => { draft.environments = draft.environments.filter(env => env.id !== input.locator.environmentId); }); },
     listTestingAssets: async () => testingView(), assertionOperators: () => api.assertionOperators(),
-    saveDataset: async input => { const asset = DatasetAssetSchema.parse(input.asset); await change(draft => { draft.datasets = [...(draft.datasets ?? []).filter(item => item.id !== asset.id), asset]; }); return testingView(); },
-    saveSuite: async input => { const asset = SuiteAssetSchema.parse(input.asset); await change(draft => { draft.suites = [...(draft.suites ?? []).filter(item => item.id !== asset.id), asset]; }); return testingView(); },
-    deleteTestingAsset: async input => { const target = input.target; await change(draft => { if (target.kind === "dataset") draft.datasets = draft.datasets?.filter(item => item.id !== target.locator.datasetId); else draft.suites = draft.suites?.filter(item => item.id !== target.locator.suiteId); }); return testingView(); },
+    saveDataset: async input => { assertDatasetContext(input.context); const asset = DatasetAssetSchema.parse(input.asset); await change(draft => { draft.datasets = [...(draft.datasets ?? []).filter(item => item.id !== asset.id), asset]; }); return testingView(); },
+    saveSuite: async input => { assertDatasetContext(input.context); const asset = SuiteAssetSchema.parse(input.asset); await change(draft => { draft.suites = [...(draft.suites ?? []).filter(item => item.id !== asset.id), asset]; }); return testingView(); },
+    deleteTestingAsset: async input => { assertDatasetContext(input.context); const target = input.target; await change(draft => { if (target.kind === "dataset") draft.datasets = draft.datasets?.filter(item => item.id !== target.locator.datasetId); else draft.suites = draft.suites?.filter(item => item.id !== target.locator.suiteId); }); return testingView(); },
     wfList: async () => project().workflows.map(workflow => ({ id: workflow.id, name: workflow.name, status: workflow.status, locator: { ...locator(), workflowId: workflow.id } })),
     wfGet: async where => { const workflow = project().workflows.find(item => item.id === where.workflowId); if (!workflow) throw new Error("workflow-not-found"); return { workflow: clone(workflow), locator: where }; },
     wfCreate: async input => {
@@ -211,18 +228,52 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
   const testing = createTestingStore(bridge, { confirmDiscard, getActive: () => execution.project ? { ...getContext(), project: locator() } : null });
   const workflowDesign = useWorkflowDesignStore(bridge, getContext); const wfList = useWfListStore(bridge, getContext);
   const editor = useEditorStore(bridge, getContext); const cases = useCasesStore(bridge, editor);
+  const scopes = new Map<string, { context: OnlineExecutionContext; project: ProjectLocator }>();
+  type TabOwner = { baseUrl?: string; workspaceId: string; projectId: string; ownerId?: string };
+  function tabScopes(tab: TabOwner) {
+    return [...scopes].filter(([, { context }]) => context.serverId === tab.baseUrl?.replace(/\/$/, "") + "/api/v1"
+      && context.ownerId === tab.ownerId && context.scope.workspaceId === tab.workspaceId && context.scope.projectId === tab.projectId);
+  }
+  function hasDrafts(tab: TabOwner) {
+    return tabScopes(tab).some(([root, { project }]) => testing.hasDraft(root, project) || hasEnvironmentDrafts(envs, root, project)
+      || workflowDesign.hasParkedDraft(root, project) || workflowDesign.root === root && workflowDesign.dirty
+      || Object.entries(editor.sessions).some(([key, s]) => s.root === root && (JSON.stringify(s.api) !== s.snapshot || cases.diskDraftUnits(key, s.generation).length > 0)));
+  }
+  async function evictTab(tab: TabOwner) {
+    for (const [root, { project }] of tabScopes(tab)) {
+      editor.evictProject(project, root); workflowDesign.evictPosition(root, project); evictEnvironmentDrafts(envs, root, project);
+      scopes.delete(root); await testing.evict(root, project);
+    }
+  }
   const stop = watch(() => [editorRoot(), execution.project, readOnly()], () => {
     const root = editorRoot();
     if (editor.activeKey && editor.sessions[editor.activeKey]?.root !== root) editor.activeKey = null;
-    if (!execution.project) { workspace.reset(); return; }
+    if (!execution.project) {
+      workflowDesign.activatePosition("", null, []);
+      void testing.activate("", null, true, true).catch(() => {});
+      workspace.reset(); return;
+    }
+    scopes.set(root, { context: execution.context!, project: locator() });
+    workflowDesign.activatePosition(root, locator(), execution.latestView?.project?.workflows ?? project().workflows, readOnly());
     workspace.root = editorRoot(); workspace.opened = true; workspace.readOnly = readOnly();
     (workspace as unknown as { workspace: ContractWorkspace | null }).workspace = facade(); workspace.name = project().name;
     const tree = toTreeNode(facade()); if (tree.kind === "root") workspace.tree = tree;
     const reportCurrentError = (error: Error) => { if (root === editorRoot()) execution.error = error.message; };
     void envs.load(locator()).catch(reportCurrentError);
-    void testing.activate(root, locator(), readOnly()).catch(reportCurrentError);
+    void testing.activate(root, locator(), readOnly(), true).catch(reportCurrentError);
     void wfList.load(root, locator()).catch(reportCurrentError);
   }, { immediate: true });
+  function validatePosition(latest: ContractProject) {
+    if (!execution.project || latest.id !== project().id) return;
+    testing.validateSelection(latest);
+    if (workflowDesign.root === editorRoot() && workflowDesign.workflowId && !latest.workflows.some(wf => wf.id === workflowDesign.workflowId)) {
+      workflowDesign.unload(); workflowDesign.positionUnavailable = true;
+    }
+    const env = environmentDraftsFor(envs).get(projectSessionKey(editorRoot(), locator()));
+    if (env?.pane && env.pane !== "gvars" && env.pane !== "gparams" && !latest.environments.some(item => item.id === env.pane)) {
+      env.pane = "gvars"; envs.select(null); execution.error = "workbenchPosition.unavailable";
+    }
+  }
   const stopRebase = watch(() => execution.appliedUpdate, () => {
     if (!execution.project || !execution.view) return;
     const root = editorRoot(), baseline = confirmed(), view = execution.view;
@@ -237,6 +288,6 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
       apiBaselines.set(key, { project: baseline, version: view.assets.version });
     }
   });
-  return { bridge, workspace, envs, testing, workflowDesign, wfList, editor, cases, locator, editorRoot, apiEntries, readBindingApi,
+  return { bridge, workspace, envs, testing, workflowDesign, wfList, editor, cases, locator, editorRoot, apiEntries, readBindingApi, hasDrafts, evictTab, validatePosition,
     stop: () => { stop(); stopRebase(); } };
 }

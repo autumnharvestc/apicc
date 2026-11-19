@@ -836,6 +836,52 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       expect(wrapper.find('[data-testid="collaboration-target-picker"]').exists()).toBe(true); expect(calls).toEqual([]); expect(wrapper.get('[data-testid="run-btn"]').attributes('disabled')).toBeUndefined();
     } finally { try { await digest?.settle(); await flushPromises(); } finally { digest?.restore(); wrapper.unmount(); failingApi.onlineCollaboration = original; } }
   });
+  it("撤销整项目的读取权限后可返回当前工作区的项目列表", async () => {
+    const asset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+    const scope = { workspaceId: "11", groupId: "22", projectId: "33" };
+    const projects = [{ id: "33", groupId: "22", name: asset.name, myRole: "VIEWER" as const }];
+    const view = { workspaceId: "11", name: "查看者工作区", myRole: "VIEWER" as const, projects,
+      tree: onlineTreeToDto({ workspaceId: "11", rootVersion: 1, files: [], projects }, "查看者工作区") };
+    const mocks = [
+      vi.spyOn(failingApi, "onlineLogin").mockResolvedValue({ expiresAt: "2099-01-01T00:00:00Z", user: { id: "7", username: "viewer", displayName: "Viewer" } }),
+      vi.spyOn(failingApi, "onlineWorkspaceList").mockResolvedValue([{ id: "11", name: view.name, myRole: "VIEWER", createdAt: "2026-11-01T00:00:00Z" }]),
+      vi.spyOn(failingApi, "onlineWorkspaceOpen").mockResolvedValue(view),
+      vi.spyOn(failingApi, "onlineWorkspaceActivate").mockResolvedValue(undefined),
+      vi.spyOn(failingApi, "onlineTreeView").mockResolvedValue({ ...view, projects: [{ ...projects[0]!, id: "44", name: "仍可访问的项目" }], tree: onlineTreeToDto({ workspaceId: "11", rootVersion: 2, files: [], projects: [] }, view.name) }),
+    ];
+    let revoked = false;
+    const read = vi.spyOn(failingApi, "onlineExecution").mockImplementation(async input => {
+      if (input.operation === "assets") {
+        if (revoked) throw new Error("online-project-access-lost");
+        return { project: asset, problems: [], assets: { ...scope, format: "contract-files-v1", contractProjectId: asset.id, version: "1", manifestHash: "c".repeat(64), files: [] } };
+      }
+      if (input.operation === "agents") return { defaultAgentId: null, canManageScripts: false, policy: structuredClone(defaultPolicyConfig), policyVersion: "1", agents: [] };
+      return input.operation === "materials" ? { credentials: [], attachments: [] } : [];
+    });
+    const wrapper = await mountApp();
+    try {
+      const online = wrapper.getComponent(OnlineLoginDialog).props("online");
+      online.addProfile("http://127.0.0.1:8080", "Viewer");
+      await online.login("viewer", "password8"); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
+      const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+      await tabs.openProjectTab({ kind: "online", workspaceId: "11", name: view.name }, { id: "33", name: asset.name });
+      await vi.waitFor(() => expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(true));
+      revoked = true;
+      await online.execution.checkForUpdates();
+      const alert = wrapper.get('[data-testid="online-project-access-lost"]');
+      expect(alert.text()).toContain("无法继续访问此项目");
+      expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(false);
+      await alert.get('[data-testid="return-to-project-list"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.findComponent(HomeView).exists()).toBe(true);
+      expect(wrapper.get('[data-testid="home-ws-projects-11"]').text()).toContain("仍可访问的项目");
+      expect(tabs.tabs.some(tab => tab.projectName === asset.name)).toBe(true);
+      expect(wrapper.findAll('[data-testid^="project-card-"]').some(card => card.text().includes(asset.name))).toBe(false);
+    } finally {
+      wrapper.unmount(); read.mockRestore(); mocks.forEach(mock => mock.mockRestore());
+    }
+  });
+
   it.each(['entry', 'entry-en', 'online-local', 'session-change', 'navigation', 'local-target'] as const)('T9 opens the actual App collaboration panel and binds its %s flow to the selected online project', async flow => {
     const names = ['onlineLogin', 'onlineWorkspaceList', 'onlineWorkspaceOpen', 'onlineWorkspaceActivate', 'onlineTreeView', 'onlineExecution', 'onlineCollaboration'] as const, originals = new Map(names.map(name => [name, failingApi[name]]));
     const projectAsset = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!, scope = { workspaceId: '11', groupId: '22', projectId: '33' }, api = collaborationPort();
@@ -1546,7 +1592,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
         await wrapper.get('[data-testid="topbar-home"]').trigger("click");
         await wrapper.get(`[data-testid="project-card-${third.id}"]`).trigger("click");
         await vi.waitFor(() => expect(wrapper.get('[data-testid="project-tab-1"]').attributes("aria-selected")).toBe("true"));
-        expect(wrapper.get('[data-testid="rail-run"]').attributes("aria-current")).toBe("page");
+        expect(wrapper.get('[data-testid="rail-api"]').attributes("aria-current")).toBe("page");
         await wrapper.get('[data-testid="project-tab-0"]').trigger("click");
         await vi.waitFor(() => expect(requestTabs.order).toHaveLength(1));
         expect(wrapper.get('[data-testid="rail-run"]').attributes("aria-current")).toBe("page");
@@ -3848,6 +3894,14 @@ describe("App 测试模块装配（M9-D）", () => {
       finish();
       await vi.waitFor(() => expect(wrapper.getComponent(CasePanel).text()).toContain(label));
       expect(editor.locator).toEqual(other);
+      await wrapper.get('[data-testid="rail-api"]').trigger("click");
+      await vi.waitFor(() => expect(editor.locator).toEqual(existing));
+      await subRadio(wrapper, "design").setValue(true);
+      await wrapper.get('[data-testid="rail-test"]').trigger("click");
+      await vi.waitFor(() => expect(editor.locator).toEqual(other));
+      await wrapper.get('[data-testid="rail-api"]').trigger("click");
+      await vi.waitFor(() => expect(editor.locator).toEqual(existing));
+      expect(wrapper.find('[data-testid="design-panel"]').exists()).toBe(true);
     } finally {
       finish();
       failingApi.treeGet = originalTree;
@@ -4062,12 +4116,7 @@ describe("App 环境联动（M9-A1）", () => {
 });
 
 
-// —— 计划 C 任务 6（规格勘误口径）：切项目签的工作流草稿确认——tabs.activateTab 离开当前
-// 项目上下文前经 confirmWorkflowDraft 钩子弹既有 ConfirmDialog；确认丢弃 = 设计器会话卸载。
-// 注意（轨一 id 布局）：项目在树/主页卡片按 UUID 字典序——首签不保证是示例项目，本组用例
-// 一律按项目名定位签。置于文件末尾：用例会向共享替身工作区直建第二项目（结束即删，但与
-// 仍挂载组件的收尾写盘存在竞态），不把该足迹暴露给文件内更早的既有用例。
-describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
+describe("App 已打开项目的工作位置", () => {
   async function seedSecondProject(name: string): Promise<ProjectLocator> {
     const treeDto = await failingApi.treeGet();
     failingApi.nodeCreate = realNodeCreate;
@@ -4117,7 +4166,49 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
     expect(tab.classes()).toContain("active");
   }
 
-  it("dirty 时切走当前签：确认前不切换；取消保持；确认丢弃后切签且设计器会话卸载", async () => {
+  it.each([
+    { pane: "datasets", kind: "dataset", assetName: "订单样本" },
+    { pane: "suites", kind: "suite", assetName: "订单测试" },
+  ] as const)("在本地项目之间切签后，$pane 侧栏与正文恢复同一项", async ({ pane, kind, assetName }) => {
+    const projectName = `订单项目-${pane}`;
+    const target = await seedSecondProject(projectName);
+    const wrapper = await mountApp();
+    try {
+      await openLocalDir(wrapper);
+      await openSecondProjectTab(wrapper, "示例项目");
+      await openSecondProjectTab(wrapper, projectName);
+      await wrapper.get('[data-testid="rail-test"]').trigger("click");
+      const category = `[data-testid="test-tab-${pane}"]`;
+      await wrapper.get(category).trigger("click");
+      const testing = wrapper.getComponent(TestView).props("testing")!;
+      await vi.waitFor(() => expect(testing.view?.context.project.projectId).toBe(target.projectId));
+      for (let i = 0; i < 2; i++) {
+        if (kind === "dataset") await testing.newDataset(assetName);
+        else await testing.newSuite(assetName);
+        await testing.save();
+      }
+      const entries = () => wrapper.findAll('[data-testid="test-navigation-list"] button').filter(item => item.text() === assetName);
+      const nameField = `[data-testid="${kind}-panel"] .form-card input`;
+      expect(entries()).toHaveLength(2);
+      await entries()[0]!.trigger("click");
+      await flushPromises();
+      const selected = testing[kind]!.id;
+      expect((wrapper.get(nameField).element as HTMLInputElement).value).toBe(assetName);
+      await (await tabFor(wrapper, "示例项目")).trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="rail-api"]').attributes("aria-current")).toBe("page"));
+      await (await tabFor(wrapper, projectName)).trigger("click");
+      await vi.waitFor(() => expect(entries()[0]?.classes()).toContain("active"));
+      expect(wrapper.get(category).attributes("aria-current")).toBe("page");
+      expect(testing[kind]?.id).toBe(selected);
+      expect(wrapper.find(nameField).exists()).toBe(true);
+      expect((wrapper.get(nameField).element as HTMLInputElement).value).toBe(assetName);
+    } finally {
+      wrapper.unmount();
+      await failingApi.nodeDelete({ kind: "project", locator: target });
+    }
+  });
+
+  it("切签保留工作流草稿和视图，返回后可接着编辑", async () => {
     const targetProject = await seedSecondProject("切签目标项目");
     // 脏流建在示例项目（被离开的签）名下——确认钩子的归属过滤按树 workflows 摘要判定
     const treeDto = await failingApi.treeGet();
@@ -4144,32 +4235,20 @@ describe("App 切签工作流草稿确认（计划 C 任务 6）", () => {
       expect(designStore.workflowId).toBe(wfA.id);
       const tabs = wrapper.findComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
       const tabAId = tabs.tabs.find((tab) => tab.projectName === "示例项目")!.tabId;
-      // A → 主页 → B 仍按保留上下文 A 检查工作流草稿。
       await wrapper.get('[data-testid="topbar-home"]').trigger("click");
-      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
       const tabB = await tabFor(wrapper, "切签目标项目");
       await tabB.trigger("click");
-      await flushPromises();
-      expect(expectBody("dialog-cancel").exists()).toBe(true);
-      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
-      expect(designStore.workflowId).toBe(wfA.id);
-      expect(designStore.dirty).toBe(true);
-      expect(tabs.activeTabId).toBeNull();
-      expect(tabs.contextTabId).toBe(tabAId);
-      // 取消：不切换，草稿原样
-      await expectBody("dialog-cancel").trigger("click");
-      await flushPromises();
-      expect(wrapper.find('[data-testid="home-view"]').exists()).toBe(true);
-      expect(tabs.contextTabId).toBe(tabAId);
-      expect(designStore.dirty).toBe(true);
-      // 再切并确认丢弃：切签完成 + 设计器会话卸载（dirty 复位，避免下次切签重复纠缠）
-      await tabB.trigger("click");
-      await flushPromises();
-      await expectBody("dialog-confirm").trigger("click");
-      await flushPromises();
-      expect(tabB.classes()).toContain("active");
+      await vi.waitFor(() => expect(tabB.classes()).toContain("active"));
+      expect(wrapper.get('[data-testid="rail-api"]').attributes("aria-current")).toBe("page");
       expect(designStore.workflowId).toBeNull();
-      expect(designStore.dirty).toBe(false);
+      expect(tabs.projectHasDrafts(tabAId)).toBe(true);
+      await wrapper.get('[data-testid="rail-envs"]').trigger("click");
+      await tabA.trigger("click");
+      await vi.waitFor(() => expect(designStore.workflowId).toBe(wfA.id));
+      expect(wrapper.get('[data-testid="rail-wf"]').attributes("aria-current")).toBe("page");
+      expect(designStore.dirty).toBe(true);
+      await tabB.trigger("click");
+      await vi.waitFor(() => expect(wrapper.get('[data-testid="rail-envs"]').attributes("aria-current")).toBe("page"));
     } finally {
       await failingApi.wfDelete({ ...demoProject.locator, workflowId: wfA.id }).catch(() => undefined);
       await failingApi.nodeDelete({ kind: "project", locator: targetProject }).catch(() => undefined);

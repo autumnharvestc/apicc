@@ -1,4 +1,5 @@
 {
+  "workbenchPosition": { "unavailable": "原先查看的项目内容已删除或权限已变更，请从列表重新选择。", "projectList": "返回项目列表" },
   "projectWorkbench": {
     "attachmentKind": "附件类型",
     "afterMigration": "本次发送使用所选环境。之后的请求跟随项目底栏。",

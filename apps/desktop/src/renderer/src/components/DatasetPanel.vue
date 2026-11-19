@@ -70,7 +70,7 @@ function download() {
         @click="attempt(() => testing.save())">{{ t('testing.save') }}</button>
       <button :disabled="testing.readOnly || refreshingDisk || !dataset || testing.creating || testing.busy || !!testing.diskConflict" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button>
     </header>
-    <p v-if="error || testing.error" class="error" role="alert">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || testing.error }}</p>
+    <p v-if="error || testing.error" class="error" role="alert">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || (testing.error === "workbenchPosition.unavailable" ? t(testing.error) : testing.error) }}</p>
     <p v-if="!dataset" class="empty-state">{{ t('testing.pickDataset') }}</p>
     <div v-else class="editor-scroll">
       <div class="form-card"><h3>{{ t('testingUi.basic') }}</h3><label>{{ t('testing.name') }}<input :value="dataset.name" :disabled="testing.readOnly" data-testid="dataset-name" @input="field('name', ($event.target as HTMLInputElement).value)" /></label>

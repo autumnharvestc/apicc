@@ -28,6 +28,24 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe("current project testing center", () => {
+  it("parks a dirty dataset in its own project and drops an inaccessible selection from the list", async () => {
+    const { store, projectLocator, root, confirmDiscard } = await testingCenter();
+    await store.newDataset("Orders"); await store.save();
+    const id = store.dataset!.id;
+    store.dataset!.name = "Unfinished orders";
+    await store.activate("", null, false, true);
+    expect(store.hasDraft(root, projectLocator)).toBe(true);
+    expect(store.dataset).toBeNull();
+    await store.activate(root, projectLocator, false, true);
+    expect(store.dataset?.name).toBe("Unfinished orders");
+    expect(store.dirty).toBe(true);
+    expect(confirmDiscard).not.toHaveBeenCalled();
+    store.validateSelection({ datasets: [], suites: [] });
+    expect(store.dataset).toBeNull();
+    expect(store.view?.datasets.some(row => row.id === id)).toBe(false);
+    expect(await store.select("dataset", id)).toBe(false);
+    expect(store.error).toBe("workbenchPosition.unavailable");
+  });
   it("P3c treats inherited property names as missing cells in real JSON imports", async () => {
     const { store, mountDataset, i18n } = await testingCenter(); i18n.global.locale.value = 'en';
     await store.newDataset('prototype columns');

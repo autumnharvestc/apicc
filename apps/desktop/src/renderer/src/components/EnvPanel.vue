@@ -169,19 +169,26 @@ watch([projectKey, () => props.reviewMissingProject], () => {
   void loadEnvs();
 }, { immediate: true });
 watch([contextReady, () => props.envs.loadedRevision], syncDrafts, { immediate: true });
-watch([contextReady, () => props.envs.selectedEnvId], ([ready, id]) => {
+watch([contextReady, () => props.envs.selectedEnvId, () => props.envs.loadedRevision], ([ready, id]) => {
   if (!ready || props.reviewMissingProject) return;
-  if (id) pane.value = id;
-  else if (pane.value !== "gparams" && scope.value?.environments.get(pane.value)?.feedback.conflict?.reason !== "deleted") pane.value = "gvars";
+  const saved = scope.value?.pane;
+  const requested = saved ?? id;
+  if (requested === "gparams" || requested === "gvars" || environmentList.value.some(env => env.id === requested)) pane.value = requested!;
+  else {
+    pane.value = "gvars";
+    if (saved && scope.value) { scope.value.pane = "gvars"; loadError.value = t("workbenchPosition.unavailable"); }
+  }
 }, { immediate: true });
 
 function selectEnvironment(env: EnvItem) {
   pane.value = env.id;
+  if (scope.value) scope.value.pane = env.id;
   if (!props.reviewMissingProject) props.envs.select(env.locator);
 }
 
 function selectGlobalPane(next: "gvars" | "gparams") {
   pane.value = next;
+  if (scope.value) scope.value.pane = next;
   if (!props.reviewMissingProject) props.envs.select(null);
 }
 
@@ -366,7 +373,8 @@ async function confirmModal() {
   closeCreateModal();
   try {
     const env = await props.envs.create({ locator: target.locator, name, extends: parent?.name });
-    if (contextIsCurrent(target.root, target.locator) && environmentList.value.some((item) => item.id === env.id)) pane.value = env.id;
+    const created = environmentList.value.find(item => item.id === env.id);
+    if (created && contextIsCurrent(target.root, target.locator)) selectEnvironment(created);
   } catch (error) {
     if (contextIsCurrent(target.root, target.locator)) props.reportError(error);
   }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue';
+import { useWorkbenchPosition } from "../../stores/workbenchPosition.js";
 import type { NotificationEvent } from '@apicc/execution/contract';
 import type { NotificationPosition } from '../../stores/onlineSchedules.js';
 import { useRecordMessages } from '../../execution/recordMessages.js';
@@ -9,10 +10,12 @@ import OnlineDeliveryList from './OnlineDeliveryList.vue';
 const props = defineProps<{ schedules: OnlineSchedulesStore }>();
 const emit = defineEmits<{ navigate: [event: NotificationEvent, dest: 'schedules'|'records', position: NotificationPosition] }>();
 const msg = useRecordMessages();
+const workbench = useWorkbenchPosition(() => JSON.stringify(props.schedules.context));
 const scroll = ref<HTMLElement>(), selected = ref('');
 function navigate(event: NotificationEvent, dest: 'schedules'|'records') {
   selected.value = event.id;
-  emit('navigate', event, dest, { eventId: event.id, scrollTop: scroll.value?.scrollTop ?? 0, pages: props.schedules.notificationPages });
+  const point = { eventId: event.id, scrollTop: scroll.value?.scrollTop ?? 0, pages: props.schedules.notificationPages };
+  workbench.value.notification = point; emit('navigate', event, dest, point);
 }
 const { t, te, locale } = useI18n();
 const label = (code: string | null) => !code ? t('onlineExecution.notCollected') : te('scheduleDelivery.' + code) ? t('scheduleDelivery.' + code) : te('scheduleCodes.' + code) ? t('scheduleCodes.' + code) : te('onlineExecution.states.' + code) ? t('onlineExecution.states.' + code) : code;
@@ -22,20 +25,24 @@ watch(() => [props.schedules.context, props.schedules.visible, props.schedules.r
   if (!context || !visible) return;
   if (!restore && previous?.[2] && previous[0]===context && previous[1]===visible) return;
   let live = true; cleanup(() => { live = false; });
+  const point = restore ?? workbench.value.notification;
   await props.schedules.loadNotifications();
-  if (!restore || !live) return;
+  if (!point || !live) return;
   const seen = new Set<string>();
-  while (live && props.schedules.notificationPages < restore.pages && props.schedules.notifications?.nextBeforeId) {
+  while (live && props.schedules.notificationPages < point.pages && props.schedules.notifications?.nextBeforeId) {
     const cursor = props.schedules.notifications.nextBeforeId;
     if (seen.has(cursor)) break;
     seen.add(cursor); await props.schedules.loadNotifications(cursor);
   }
-  if (!live || props.schedules.restorePosition !== restore) return;
-  selected.value = restore.eventId; await nextTick();
+  if (!live || restore && props.schedules.restorePosition !== restore) return;
+  if (!props.schedules.notifications?.items.some(item => item.id === point.eventId)) {
+    selected.value = ""; workbench.value.notification = null; props.schedules.error = "linked-record-unavailable"; return;
+  }
+  selected.value = point.eventId; await nextTick();
   if (live && scroll.value) {
-    scroll.value.scrollTop = restore.scrollTop;
+    scroll.value.scrollTop = point.scrollTop;
     scroll.value.querySelector<HTMLElement>('[aria-current="true"] button')?.focus({ preventScroll: true });
-    if (restore.unavailable) props.schedules.error='linked-record-unavailable';
+    if (point.unavailable) props.schedules.error='linked-record-unavailable';
     props.schedules.restorePosition = null;
   }
 }, { immediate: true });

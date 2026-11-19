@@ -150,7 +150,7 @@ const isEmpty = computed(() => {
 const emptyText = computed(() => props.emptyText ?? t("tree.empty"));
 const treeData = computed<TreeDataNode[]>(() => {
   const mapNodes = (nodes?: TreeNodeDTO[]): TreeDataNode[] =>
-    (nodes ?? []).map((n) => {
+    (nodes ?? []).filter((node): boolean => node.kind !== "file").map((n) => {
       // M2-B 收口：project 节点在 children 尾部追加工作流叶子（由 workflows 摘要合成，
       // 状态随 DTO 带给色点渲染；树 refresh 后重算，重命名/删除自动反映）。
       const children =

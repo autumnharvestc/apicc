@@ -173,6 +173,7 @@ describe("online execution main boundary", () => {
     const baseline = assetsFixture();
     let puts = 0;
     const f = await fixture((url, init) => {
+      if (url.endsWith("/tree")) return Response.json({ workspaceId: "11", rootVersion: puts + 1, files: [], projects: [] });
       if (!url.endsWith("/assets")) return;
       if (init?.method === "PUT") {
         ++puts;
@@ -185,7 +186,12 @@ describe("online execution main boundary", () => {
       await expect(f.host.handle({ context, operation: "saveAssetEdit", intentId: randomUUID(), contractProjectId: baseline.project.id, baseVersion: "1", change: {
         kind: "workflow-create", workflow: { id: randomUUID(), name: "Prepared", status: "draft", nodes: [], edges: [] },
       } })).resolves.toEqual({ status: "rejected", reason: "authorization" });
+      await f.session.getTreeView("11");
+      await f.session.getTreeView("11");
+      expect(f.requests.filter(row => row.url.endsWith("/tree"))).toHaveLength(1);
       await expect(f.host.handle({ context, operation: "assets" })).rejects.toThrow("online-project-access-lost");
+      await f.session.getTreeView("11");
+      expect(f.requests.filter(row => row.url.endsWith("/tree"))).toHaveLength(2);
       expect(puts).toBe(2);
     } finally { await f.host.close(); }
   });

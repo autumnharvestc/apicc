@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useWorkbenchPosition } from "../stores/workbenchPosition.js";
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { FolderOutlined } from "@ant-design/icons-vue";
@@ -38,7 +39,8 @@ const BODY_KIND_OPTIONS: RequestBody["kind"][] = ["none", "json", "xml", "text",
 const BODY_OPTIONS = BODY_KIND_OPTIONS.map((v) => ({ label: v, value: v }));
 const TABS = ["params", "headers", "auth", "body"] as const;
 type Tab = (typeof TABS)[number];
-const activeTab = ref<Tab>("params");
+const position = useWorkbenchPosition();
+const activeTab = computed<Tab>({ get: () => position.value.requestSection, set: value => { position.value.requestSection = value; } });
 
 const api = computed(() => props.online.editorApi);
 const request = computed<ApiRequest | null>(() => props.draft?.request ?? api.value?.contract.request ?? null);
@@ -148,19 +150,10 @@ function authDescription(request_: ApiRequest | null): string {
 
 <template>
   <!-- 空态：未选中任何文件 → 引导文案（含调试/运行边界说明） -->
-  <div v-if="!draft && !online.editorPath" class="guide-wrap">
+  <div v-if="!draft && (!online.editorPath || online.editorKind === 'file')" class="guide-wrap">
     <EmptyState :text="t('online.editorEmpty')" />
     <p class="guide" data-testid="online-guide">{{ t("online.pullGuide") }}</p>
   </div>
-
-  <!-- 只读配置叶：原文浏览 -->
-  <section v-else-if="!draft && online.editorKind === 'file'" class="editor" data-testid="online-file-view">
-    <div class="name-row">
-      <a-typography-text strong data-testid="online-file-name">{{ online.editorPath }}</a-typography-text>
-      <a-tag data-testid="online-readonly-badge">{{ t("online.readonlyBadge") }}</a-tag>
-    </div>
-    <details><summary>{{ t('onlineExecution.raw') }}</summary><pre class="raw" data-testid="online-raw">{{ online.editorRaw }}</pre></details>
-  </section>
 
   <!-- api.yaml：坏数据 → problems + 原文；好数据 → 表单（只读态禁用） -->
   <section v-else class="editor" data-testid="online-api-editor">

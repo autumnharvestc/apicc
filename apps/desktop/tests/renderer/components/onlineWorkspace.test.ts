@@ -815,13 +815,14 @@ describe("OnlineApiEditor（裁定 B：api.yaml 级编辑 / 只读 / 坏数据 p
     expect(wrapper.find('[data-testid="online-editor-name"]').exists()).toBe(false);
   });
 
-  it("只读配置叶（file）→ 原文只读展示", async () => {
+  it("旧选择命中配置文件时显示接口选择指引", async () => {
     const f = await fixture();
     await f.online.selectNode("file", "apicc.workspace.yaml");
     const wrapper = await f.mount(OnlineApiEditor);
-    expect(wrapper.find('[data-testid="online-raw"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="online-raw"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="online-save-btn"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("ws-online-1");
+    expect(wrapper.text()).toContain("在左侧选择一个接口");
+    expect(wrapper.text()).not.toContain("apicc.workspace.yaml");
   });
 });
 
@@ -979,7 +980,7 @@ describe("TopBar 主页入口与工作区名（本地/在线并存驻留，计�
 });
 
 describe("SideTree 在线只读装饰（裁定 A/E）", () => {
-  it("treeRoot + readonly：渲染在线树（api/file 叶），无新建/重命名/删除入口，点击发 select", async () => {
+  it("treeRoot + readonly：显示业务接口并过滤文件，无新建/重命名/删除入口，点击发 select", async () => {
     const f = await fixture();
     const wrapper = await f.mount(SideTree, { treeRoot: f.online.onlineTree, readonly: true, emptyText: "在线空" });
     expect(wrapper.find('[data-testid="new-group"]').exists()).toBe(false);
@@ -990,7 +991,7 @@ describe("SideTree 在线只读装饰（裁定 A/E）", () => {
     const apiBtn = wrapper.find('[data-testid="tree-api"]');
     expect(apiBtn.exists()).toBe(true);
     const fileBtn = wrapper.find('[data-testid="tree-file"]');
-    expect(fileBtn.exists()).toBe(true);
+    expect(fileBtn.exists()).toBe(false);
     await apiBtn.trigger("click");
     const selectedApi = findTreeNode(f.online.onlineTree, "api", API_PATH);
     expect(selectedApi).toBeDefined();

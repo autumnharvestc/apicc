@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useWorkbenchPosition } from "../../stores/workbenchPosition.js";
 import { useI18n } from 'vue-i18n';
 import { ScheduleRuleSchema, SchedulePoliciesSchema, RunConfigSchema, type ScheduleRule, type ScheduleUpdate } from '@apicc/execution/contract';
 import type { OnlineExecutionStore } from '../../stores/onlineExecution.js';
@@ -10,6 +11,7 @@ import type { ScheduleOccurrence } from '@apicc/execution/contract';
 const emit = defineEmits<{ report: [row: ScheduleOccurrence] }>();
 const props = defineProps<{ execution: OnlineExecutionStore; schedules: OnlineSchedulesStore; draftDirty?: boolean }>();
 const { t, te, locale } = useI18n();
+const position = useWorkbenchPosition(() => JSON.stringify(props.execution.context));
 const name = ref(''); const target = ref(''); const agentId = ref(''); const environmentId = ref('');
 const jobSeconds = ref<number | string>(''); const scriptSeconds = ref<number | string>('');
 const credentialModes = ref<Record<string, string>>({}); const fixedVersions = ref<Record<string, string>>({}); const deleteConfirmed = ref(false);
@@ -21,6 +23,7 @@ const search = ref(''); const filter = ref('all');
 const searchInput = ref<HTMLInputElement>();
 function clearSearch() { search.value = ''; searchInput.value?.focus(); }
 const code = (value: string | null | undefined) => {
+  if (value === 'linked-record-unavailable') return t('workbenchPosition.unavailable');
   if (!value) return t('onlineExecution.notCollected');
   const safe = value.match(/(?:^|Error: )([a-z][a-z0-9_-]{0,95})$/)?.[1];
   if (!safe) return t('scheduleEditor.requestFailed');
@@ -35,11 +38,24 @@ const reasons = computed(() => [
 const canManage = computed(() => !!props.schedules.options?.canManageSchedules);
 watch(() => props.schedules.options, options => { if (options && !props.schedules.selected) { late.value = options.policy.lateToleranceMs / 1000; catchup.value = options.policy.catchupWindowMs / 1000; queue.value = options.policy.queueTimeoutMs / 1000; misfire.value = options.policy.misfire; overlap.value = options.policy.overlap; } }, { immediate: true });
 const items = computed(() => props.schedules.items.filter(item => (!search.value || item.name.toLowerCase().includes(search.value.toLowerCase())) && (filter.value === 'all' || item.enabled === (filter.value === 'enabled'))));
-watch(() => [props.execution.context, props.execution.visible] as const, ([context, visible]) => { if (context && visible) void props.schedules.load(context); }, { immediate: true });
+watch(() => [props.execution.context, props.execution.visible] as const, async ([context, visible], _, cleanup) => {
+  if (!context || !visible) return;
+  const saved = position.value.scheduleId, intent = props.schedules.navigationIntent;
+  let live = true; cleanup(() => { live = false; });
+  await props.schedules.load(context);
+  if (live && saved && position.value.scheduleId === saved && !props.schedules.paneRequest && !props.schedules.returnTo
+    && intent === props.schedules.navigationIntent && !props.schedules.selected) {
+    await props.schedules.inspect(saved);
+    if (live && position.value.scheduleId === saved && !props.schedules.selected) {
+      position.value.scheduleId = ""; props.schedules.error = "linked-record-unavailable";
+    }
+  }
+}, { immediate: true });
 watch(() => props.schedules.selected, row => {
   riskConfirmed.value = false; subjectConfirmed.value = false; ruleTouched.value = false;
   deleteConfirmed.value = false;
   if (!row) { resetForm(); return; }
+  position.value.scheduleId = row.id;
   name.value = row.name; const e = row.execution; target.value = e.target.kind === 'suite' ? 'suite:' + e.target.suiteId : e.target.kind === 'workflow' ? 'workflow:' + e.target.workflowId : ''; agentId.value = e.agentId; environmentId.value = e.environmentId ?? '';
   jobSeconds.value = e.runConfig.jobTimeoutMs === undefined ? '' : e.runConfig.jobTimeoutMs / 1000; scriptSeconds.value = e.runConfig.scriptTimeoutMs === undefined ? '' : e.runConfig.scriptTimeoutMs / 1000;
   credentialModes.value = Object.fromEntries(e.materials.credentials.map(binding => [binding.refId, binding.mode])); fixedVersions.value = Object.fromEntries(e.materials.credentials.filter(binding => binding.mode === 'fixed-version').map(binding => [binding.refId, binding.mode === 'fixed-version' ? binding.version : '']));
@@ -85,7 +101,7 @@ function resetForm() {
   const policy = props.schedules.options?.policy; late.value = (policy?.lateToleranceMs ?? 10000) / 1000; catchup.value = (policy?.catchupWindowMs ?? 300000) / 1000; queue.value = (policy?.queueTimeoutMs ?? 300000) / 1000; misfire.value = policy?.misfire ?? 'skip'; overlap.value = policy?.overlap ?? 'skip';
   inApp.value = true; eventKinds.value = ['failed', 'abnormal', 'expired', 'paused']; channelIds.value = []; riskConfirmed.value = false; subjectConfirmed.value = false; deleteConfirmed.value = false;
 }
-function newSchedule() { props.schedules.clearSelection(); resetForm(); }
+function newSchedule() { position.value.scheduleId = ""; props.schedules.clearSelection(); resetForm(); }
 function short(value: string) { return value.length > 24 ? value.slice(0, 12) + '…' : value; }
 function time(value: string | null) { if (!value) return t('onlineExecution.notCollected'); return new Intl.DateTimeFormat(locale.value, { timeZone: props.schedules.selected?.rule.timeZone ?? 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hourCycle: 'h23' }).format(new Date(value)) + ' ' + (props.schedules.selected?.rule.timeZone ?? 'Asia/Shanghai'); }
 </script>
@@ -93,7 +109,7 @@ function time(value: string | null) { if (!value) return t('onlineExecution.notC
 <section class="schedules online-surface">
   <header class="schedule-toolbar"><input ref="searchInput" v-model="search" data-testid="schedule-search" :aria-label="t('scheduleEditor.search')" :placeholder="t('scheduleEditor.search')" /><button data-testid="schedule-clear-search" @click="clearSearch">{{ t('scheduleEditor.clearSearch') }}</button><select v-model="filter" data-testid="schedule-filter" :aria-label="t('scheduleEditor.filter')"><option value="all">{{ t('scheduleEditor.all') }}</option><option value="enabled">{{ t('scheduling.enabled') }}</option><option value="paused">{{ t('scheduling.paused') }}</option></select><button @click="newSchedule">{{ t('scheduleEditor.new') }}</button></header>
   <div class="schedule-columns">
-    <nav class="schedule-list" :aria-label="t('scheduling.title')"><p v-if="!items.length" class="empty-state">{{ t(search || filter !== 'all' ? 'scheduleEditor.noMatches' : 'scheduleEditor.empty') }}</p><ul><li v-for="item in items" :key="item.id"><span class="long-name" :title="item.name">{{ item.name }}</span><span>{{ t(item.enabled ? 'scheduling.enabled' : 'scheduling.paused') }}</span><button data-testid="schedule-open" :aria-current="schedules.selected?.id === item.id ? 'true' : undefined" @click="action(() => schedules.inspect(item.id))">{{ t('scheduleDetails.inspect') }}</button></li></ul><button v-if="schedules.nextBeforeId" data-testid="schedule-list-more" @click="schedules.loadMore()">{{ t('scheduleRun.more') }}</button></nav>
+    <nav class="schedule-list" :aria-label="t('scheduling.title')"><p v-if="!items.length" class="empty-state">{{ t(search || filter !== 'all' ? 'scheduleEditor.noMatches' : 'scheduleEditor.empty') }}</p><ul><li v-for="item in items" :key="item.id"><span class="long-name" :title="item.name">{{ item.name }}</span><span>{{ t(item.enabled ? 'scheduling.enabled' : 'scheduling.paused') }}</span><button data-testid="schedule-open" :aria-current="schedules.selected?.id === item.id ? 'true' : undefined" @click="position.scheduleId = item.id; action(() => schedules.inspect(item.id))">{{ t('scheduleDetails.inspect') }}</button></li></ul><button v-if="schedules.nextBeforeId" data-testid="schedule-list-more" @click="schedules.loadMore()">{{ t('scheduleRun.more') }}</button></nav>
     <main class="schedule-detail">
       <section v-if="schedules.options"><h3>{{ t('schedulePolicy.title') }}</h3><dl><dt>{{ t('schedulePolicy.minInterval') }}</dt><dd>{{ schedules.options.policy.minIntervalMs / 1000 }} {{ t('schedulePolicy.seconds') }} · {{ t('schedulePolicy.sources.' + schedules.options.sources.minIntervalMs) }}</dd><dt>{{ t('schedulePolicy.maxQueue') }}</dt><dd>{{ schedules.options.policy.maxQueueTimeoutMs / 1000 }} {{ t('schedulePolicy.seconds') }} · {{ schedules.options.sources.maxQueueTimeoutMs ? t('schedulePolicy.sources.' + schedules.options.sources.maxQueueTimeoutMs) : t('onlineExecution.notCollected') }}</dd><dt>{{ t('schedulePolicy.maxSchedules') }}</dt><dd>{{ schedules.options.policy.maxSchedules }}</dd><dt>{{ t('schedulePolicy.versions') }}</dt><dd>{{ t('schedulePolicy.sources.workspace') }} {{ schedules.options.policyVersion.workspace }} / {{ t('schedulePolicy.sources.project') }} {{ schedules.options.policyVersion.project }}</dd></dl></section>
       <p>{{ t('scheduling.initialPaused') }}</p><p v-if="!canManage">{{ t('scheduleEditor.permission') }}</p><p v-if="schedules.options && !schedules.options.schedulerAvailable">{{ t('scheduleEditor.unavailable') }}</p>

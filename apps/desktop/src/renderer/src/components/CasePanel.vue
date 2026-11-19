@@ -47,7 +47,7 @@ const overrideJson = ref("");
 const overrideError = ref("");
 const assertionError = ref("");
 const assertionBasis = ref<'contract' | 'observation'>('contract');
-const overrideBuffers = props.refreshDisk ? props.cases.overrideDrafts : new Map<string, { text: string; error: string }>();
+const overrideBuffers = props.cases.overrideDrafts;
 const observedBasis = computed(() => {
   const observation = props.ai?.assertionObservation, locator = props.editor.locator, testCase = selected.value;
   if (!observation || !locator || !testCase || !observation.isCurrent()) return undefined;
