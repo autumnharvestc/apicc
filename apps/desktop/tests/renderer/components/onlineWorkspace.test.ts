@@ -214,7 +214,7 @@ describe('online execution readable projection', () => {
       slots: { draft: '<input data-testid="new-online-api" />' }, global: { plugins: [i18n] } });
     try {
       await wrapper.setProps({ view: 'test' });
-      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'))!.trigger('click');
+      await wrapper.get('[data-testid="test-tab-stress"]').trigger('click');
       await wrapper.get('[data-testid="online-stress-new"]').trigger('click');
       const name = wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]');
       await name.setValue('Unsaved load profile');
@@ -236,7 +236,7 @@ describe('online execution readable projection', () => {
       expect(wrapper.get('[data-testid="online-api-editor"]').isVisible()).toBe(true);
       expect(wrapper.get('[data-testid="online-stress-panel"]').isVisible()).toBe(false);
       await wrapper.setProps({ view: 'test' });
-      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'))!.trigger('click');
+      await wrapper.get('[data-testid="test-tab-stress"]').trigger('click');
       expect(wrapper.get<HTMLInputElement>('[data-testid="online-stress-name"]').element).toBe(name.element);
       expect(name.element.value).toBe('Unsaved load profile');
     } finally { wrapper.unmount(); adapter.stop(); }
@@ -290,10 +290,17 @@ describe('online execution readable projection', () => {
       expect(writes).toHaveLength(2);
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
   });
-  it('preserves online case override, inherit, save and the project execution entry', async () => {
+  it.each(["run", "restore"] as const)('preserves online case override, inherit and selection on %s', async flow => {
     const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
     const asset = project.collections[0]!.apis[0]!;
     const originalCase = asset.cases[0]!;
+    const otherCase = { ...structuredClone(originalCase), id: crypto.randomUUID(), name: "缺少订单号" };
+    asset.cases.push(otherCase);
+    const otherApi = structuredClone(asset);
+    otherApi.contract.id = crypto.randomUUID();
+    if (otherApi.contract.request.protocol === "http") otherApi.contract.request.method = asset.contract.request.protocol === "http" && asset.contract.request.method === "POST" ? "GET" : "POST";
+    const otherModule = { ...structuredClone(project.collections[0]!), id: crypto.randomUUID(), name: "同名接口模块", folders: [], apis: [otherApi] };
+    project.collections.push(otherModule);
     const envId = crypto.randomUUID();
     project.environments = [{ id: envId, name: 'Remote preview', variables: {}, baseUrls: {} }];
     const api = createMemoryApi();
@@ -337,16 +344,43 @@ describe('online execution readable projection', () => {
       const write = writes[nth]?.change;
       return write?.kind === 'case' ? write.submitted : undefined;
     };
-    const runButton = () => wrapper.findAll('button').find(item => item.text() === i18n.global.t('onlineExecution.runCase'))!;
+    const runButton = () => wrapper.get(`[data-testid="case-run-${originalCase.id}"]`);
     try {
       execution.environmentId = envId;
       await wrapper.setProps({ view: 'test' });
-      await wrapper.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('onlineExecution.panes.cases'))!.trigger('click');
-      const selectApi = wrapper.get('[data-testid="online-case-api"]');
-      const entry = adapter.apiEntries().find(row => row.locator.apiId === asset.contract.id)!;
-      await selectApi.setValue(JSON.stringify(entry.locator));
+      await wrapper.get('[data-testid="test-tab-api-cases"]').trigger('click');
+      const search = wrapper.get('[data-testid="test-sidebar"] input');
+      await search.setValue(otherModule.name);
+      const otherEntries = wrapper.findAll('[data-testid^="test-api-"]');
+      expect(otherEntries).toHaveLength(1);
+      expect(otherEntries[0]!.get('.method').text()).toBe(otherApi.contract.request.protocol === "http" ? otherApi.contract.request.method : "WS");
+      await otherEntries[0]!.trigger('click');
+      await vi.waitFor(() => expect(adapter.editor.locator?.collectionId).toBe(otherModule.id));
+      await search.setValue(project.collections[0]!.name);
+      const pick = wrapper.findAll('[data-testid^="test-api-"]').find(button => button.get('.api-name').text() === asset.contract.metadata.name)!;
+      await pick.trigger('click');
       await vi.waitFor(() => expect(wrapper.find('[data-testid="case-request-copy-default"]').exists()).toBe(true));
-      await wrapper.get('[data-testid="case-row"]').trigger('click');
+      if (flow === "restore") {
+        await wrapper.findAll('.case-choice').find(button => button.text() === otherCase.name)!.trigger('click');
+        await wrapper.setProps({ view: 'api' });
+        const newer = structuredClone(project);
+        newer.collections[0]!.apis[0]!.cases = [structuredClone(originalCase)];
+        remote = viewOf(newer, 2);
+        await wrapper.setProps({ view: 'test' });
+        await vi.waitFor(() => expect(wrapper.get('[data-testid="case-panel"]').text()).toContain(i18n.global.t("workbenchPosition.unavailable")));
+        expect(wrapper.find('.case-choice[aria-current]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid^="case-run-"]').exists()).toBe(false);
+        expect(wrapper.findAll('.case-choice').map(choice => choice.text())).toEqual([originalCase.name]);
+        await wrapper.get('[data-testid="case-add"]').trigger('click');
+        const draft = adapter.cases.selectedCase!.caseId;
+        await wrapper.get('[data-testid="case-name"]').setValue("未保存订单");
+        await wrapper.setProps({ view: "api" }); await wrapper.setProps({ view: "test" });
+        await vi.waitFor(() => expect(wrapper.get('.case-choice[aria-current]').text()).toBe("未保存订单"));
+        expect(adapter.cases.selectedCase?.caseId).toBe(draft);
+        expect(wrapper.get(`[data-testid="case-run-${draft}"]`).attributes('disabled')).toBeDefined();
+        expect(run).toBeUndefined(); expect(writes).toHaveLength(0);
+        return;
+      }
       await wrapper.get('[data-testid="case-request-copy-default"]').trigger('click');
       expect(runButton().attributes('disabled')).toBeDefined();
       await wrapper.get('[data-testid="case-save"]').trigger('click');
@@ -368,6 +402,14 @@ describe('online execution readable projection', () => {
       expect(wrapper.get('[data-testid="case-save"]').attributes('disabled')).toBeDefined();
       expect(wrapper.get('[data-testid="case-request-copy-default"]').attributes('disabled')).toBeDefined();
       expect(runButton().attributes('disabled')).toBeDefined();
+      expect(wrapper.get(`[data-testid="case-stress-${originalCase.id}"]`).attributes('disabled')).toBeDefined();
+      online.sessions[EXECUTION_CONTEXT.scope.workspaceId]!.projects[0]!.myRole = 'EDITOR';
+      await wrapper.findAll('.case-choice').find(button => button.text() === otherCase.name)!.trigger("click");
+      await wrapper.get(`[data-testid="case-run-${otherCase.id}"]`).trigger('click');
+      await vi.waitFor(() => expect(run).toMatchObject({ target: { kind: "debug", invocation: { case: { collectionId: project.collections[0]!.id, apiId: asset.contract.id, caseId: otherCase.id } } } }));
+      await wrapper.get(`[data-testid="case-stress-${otherCase.id}"]`).trigger("click");
+      await vi.waitFor(() => expect((wrapper.get('[data-testid="online-stress-target"]').element as HTMLSelectElement).value)
+        .toBe(`case:${project.collections[0]!.id}:${asset.contract.id}:${otherCase.id}`));
     } finally { wrapper.unmount(); adapter.stop(); execution.setVisible(false); }
   });
   it('opening an API through the directory keeps its draft across modules, and sends exactly that request snapshot', async () => {

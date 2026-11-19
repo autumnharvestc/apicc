@@ -155,13 +155,13 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
     async select(kind: "dataset" | "suite", id: string) {
       if (!store.current || !store.view) return false;
       if (!changing && (store.dataset?.id === id && kind === "dataset" || store.suite?.id === id && kind === "suite")) return true;
-      if (!store.confirmLeave()) return false;
-      const asset = kind === "dataset" ? store.view.datasets.find(item => item.id === id) : store.view.suites.find(item => item.id === id);
-      if (!asset) return false;
+      const find = () => (kind === "dataset" ? store.view?.datasets : store.view?.suites)?.find(item => item.id === id);
+      if (id && !find() || !store.confirmLeave(false)) return false;
       return navigate(() => {
-        if (!store.current) return false;
-        generation++; store.dataset = kind === "dataset" ? clone(asset as DatasetAsset) : null; store.suite = kind === "suite" ? clone(asset as SuiteAsset) : null;
-        store.snapshot = JSON.stringify(asset); store.creating = false; store.preview = null; store.result = null; store.importPreview = null; store.error = ""; store.busy = false; store.running = false;
+        const asset = find();
+        if (!store.current || id && !asset) return false;
+        generation++; store.dataset = asset && kind === "dataset" ? clone(asset as DatasetAsset) : null; store.suite = asset && kind === "suite" ? clone(asset as SuiteAsset) : null;
+        store.snapshot = asset ? JSON.stringify(asset) : ""; store.creating = false; store.preview = null; store.result = null; store.importPreview = null; store.error = ""; store.busy = false; store.running = false;
         store.diskConflict = null; store.saveFailure = null;
         store.pendingDatasetColumns = null;
         return true;
@@ -340,7 +340,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
     try {
       await stopRun();
       if (navigation !== token || activeKey !== scope) return false;
-      if (JSON.stringify(store.dataset ?? store.suite) !== draft && store.dirty && !store.confirmLeave()) return false;
+      if (JSON.stringify(store.dataset ?? store.suite) !== draft && store.dirty && !store.confirmLeave(false)) return false;
       return await change();
     } finally { changing--; store.transitioning = changing > 0; }
   }

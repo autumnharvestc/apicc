@@ -40,6 +40,7 @@ import type { OnlineWorkspaceSummary } from "../../shared/online/contract.js";
 import TopBar from "./components/TopBar.vue";
 import HomeView from "./components/HomeView.vue";
 import TestView from "./components/TestView.vue";
+import TestWorkbench from "./components/TestWorkbench.vue";
 import TestSidebar from "./components/TestSidebar.vue";
 import ModuleRail from "./components/ModuleRail.vue";
 import ProjectStatusBar from "./components/ProjectStatusBar.vue";
@@ -2503,22 +2504,6 @@ function focusDebugSection(section: HTMLElement | undefined) {
             </ActionMenu>
           </div>
         </div>
-        <!-- 测试模块侧栏（M11）：与接口树各自独立记忆 -->
-        <div v-show="!isHome && view === 'test' && !onlineMode" class="sider-col-wrap" data-testid="sidebar-test">
-          <TestSidebar
-            :workspace="workspace"
-            :active-project-locator="selectedProjectLocator"
-            :active-api-locator="testApiTarget"
-            :pane="moduleMemory.test.pane"
-            :scenarios="testScenarios"
-            :testing="testing"
-            :report-error="reportError"
-            @update:pane="onTestPane"
-            @pick-api="onTestPickApi"
-            @open-workflow="openWorkflowInDesigner"
-            @stress-workflow="onTestWorkflowStress"
-          />
-        </div>
         <div class="right-col-wrap">
           <RequestTabs
             v-show="!isHome && !onlineMode && view === 'api' && selectedProjectContext"
@@ -2729,7 +2714,21 @@ function focusDebugSection(section: HTMLElement | undefined) {
             @collaboration="chooseCollaborationTarget"
           />
           <!-- 测试模块（M11）：侧栏导航 + 主区用例面板/压测上下文 -->
-          <template v-else-if="view === 'test'">
+          <TestWorkbench v-else-if="view === 'test'" :pane="moduleMemory.test.pane" @update:pane="page => page !== 'stress' && onTestPane(page)">
+            <template #navigation>
+          <TestSidebar
+            :workspace="workspace"
+            :active-project-locator="selectedProjectLocator"
+            :active-api-locator="testApiTarget"
+            :pane="moduleMemory.test.pane"
+            :scenarios="testScenarios"
+            :testing="testing"
+            :report-error="reportError"
+            @pick-api="onTestPickApi"
+            @open-workflow="openWorkflowInDesigner"
+            @stress-workflow="onTestWorkflowStress"
+          />
+            </template>
             <template v-if="testStressOpen && stress.planOwner">
               <div class="api-head">
                 <a-button size="small" data-testid="test-back-to-cases" @click="testStressOpen = false">{{ t("test.backToCases") }}</a-button>
@@ -2777,7 +2776,7 @@ function focusDebugSection(section: HTMLElement | undefined) {
               @stress="onTestStress"
               @locate-evidence="locateExecutionEvidence"
             />
-          </template>
+          </TestWorkbench>
           <WfDesigner
             @open-run-record="openLocalRunRecord"
             :ai="ai"

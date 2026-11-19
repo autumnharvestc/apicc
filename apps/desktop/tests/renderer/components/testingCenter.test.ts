@@ -10,6 +10,8 @@ import { createI18nInstance } from "../../../src/renderer/src/i18n/index.js";
 import { contractAssetFixture } from "../helpers/contract-assets.js";
 import DatasetPanel from "../../../src/renderer/src/components/DatasetPanel.vue";
 import SuitePanel from "../../../src/renderer/src/components/SuitePanel.vue";
+import TestSidebar from "../../../src/renderer/src/components/TestSidebar.vue";
+import { useWorkspaceStore } from "../../../src/renderer/src/stores/workspace.js";
 enableAutoUnmount(afterEach);
 
 async function testingCenter(stressClient?: NonNullable<Parameters<typeof createMemoryApi>[0]>["stressClient"]) {
@@ -28,6 +30,44 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe("current project testing center", () => {
+  it.each(["dataset", "suite"] as const)("keeps %s writes bound to the accepted selection, including an explicit clear", async kind => {
+    const { store, confirmDiscard, api, root, projectLocator, i18n, mountDataset, mountSuite } = await testingCenter();
+    const create = () => kind === "dataset" ? store.newDataset("订单") : store.newSuite("订单");
+    await create(); await store.save(); const a = store[kind]!.id;
+    await create(); await store.save(); const b = store[kind]!.id;
+    const save = vi.spyOn(api, kind === "dataset" ? "saveDataset" : "saveSuite");
+    const remove = vi.spyOn(api, "deleteTestingAsset"), run = vi.spyOn(api, "runSuite");
+    const workspace = useWorkspaceStore(api); await workspace.open(root);
+    const sidebar = mount(TestSidebar, { props: { pane: kind === "dataset" ? "datasets" : "suites", workspace,
+      activeProjectLocator: projectLocator, activeApiLocator: null, scenarios: [], testing: store, reportError: error => { throw error; } }, global: { plugins: [i18n] } });
+    const panel = kind === "dataset" ? mountDataset() : mountSuite();
+    const entry = (id: string) => sidebar.get(`[data-asset-id="${id}"]`);
+    const click = async (id: string) => { await entry(id).trigger("click"); await flushPromises(); };
+    await click(a); store[kind]!.name = "草稿 A";
+    expect(await store.select(kind, "missing")).toBe(false);
+    expect(confirmDiscard).not.toHaveBeenCalled();
+    confirmDiscard.mockReturnValue(false);
+    await click(b); await click(a);
+    expect(entry(a).attributes("aria-current")).toBe("true");
+    expect(entry(b).attributes("aria-current")).toBeUndefined();
+    expect((panel.get(".form-card input").element as HTMLInputElement).value).toBe("草稿 A");
+    expect(store[kind]).toMatchObject({ id: a, name: "草稿 A" });
+    confirmDiscard.mockReturnValue(true);
+    await click(b);
+    expect(entry(b).attributes("aria-current")).toBe("true");
+    expect(store[kind]).toMatchObject({ id: b, name: "订单" });
+    store[kind]!.name = "已保存 B"; await store.save();
+    expect(save.mock.calls.map(([input]) => input.asset.id)).toEqual([b]);
+    await click(b);
+    expect(sidebar.find('[data-asset-id][aria-current]').exists()).toBe(false);
+    expect(panel.get(`[data-testid="${kind}-save"]`).attributes("disabled")).toBeDefined();
+    expect(store[kind]).toBeNull();
+    await store.save(); await store.remove();
+    if (kind === "suite") await expect(store.run()).rejects.toThrow();
+    expect(save).toHaveBeenCalledTimes(1); expect(remove).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    await store.select(kind, b); await store.remove();
+    expect(remove.mock.calls.map(([input]) => input.target.locator)).toEqual([expect.objectContaining({ [kind + "Id"]: b })]);
+  });
   it("parks a dirty dataset in its own project and drops an inaccessible selection from the list", async () => {
     const { store, projectLocator, root, confirmDiscard } = await testingCenter();
     await store.newDataset("Orders"); await store.save();

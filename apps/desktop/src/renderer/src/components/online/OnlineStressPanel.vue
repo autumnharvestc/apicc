@@ -49,13 +49,10 @@ function newPlan(shortcut?: StressTarget) {
   selected.value = crypto.randomUUID(); name.value = t('stress.workbench.new'); origins.value = ''; error.value = '';
   plan.value = StressPlanSchema.parse({ formatVersion: 1, target: clone(target), load: { kind: 'constant-vus', vus: 1 }, termination: { maxIterations: 10 }, ...(props.execution.environmentId ? { environmentId: props.execution.environmentId } : {}) });
 }
-watch(() => props.shortcut, shortcut => {
-  if (!shortcut) return;
-  newPlan(shortcut);
-});
 function target(value: string) { const next = targets.value.find(item => targetKey(item.target) === value); if (plan.value && next && !props.readOnly && !props.execution.running) plan.value.target = clone(next.target); }
 const dirty = computed(() => !!plan.value && (!saved.value || name.value !== saved.value.name || JSON.stringify(plan.value) !== JSON.stringify(saved.value.plan)));
 function confirmLeave() { return !dirty.value || window.confirm(t("testing.discardConfirm")); }
+watch(() => props.shortcut, shortcut => { if (shortcut) newPlan(shortcut); }, { immediate: true });
 const dirtyStressPlanId = computed(() => dirty.value ? selected.value : null);
 defineExpose({ confirmLeave, dirtyStressPlanId });
 const agent = computed(() => props.execution.location.kind === 'agent' ? props.execution.agents?.agents.find(row => props.execution.location.kind === 'agent' && row.id === props.execution.location.agentId) : undefined);
@@ -77,8 +74,6 @@ const effectiveEnvironment = computed(() => {
   return props.execution.project?.environments.find(env => env.id === id)?.name ?? id;
 });
 const environmentMismatch = computed(() => !!plan.value?.environmentId && !!props.execution.environmentId && plan.value.environmentId !== props.execution.environmentId);
-// A shortcut can mount this panel after the user has already chosen a target.
-if (props.shortcut) newPlan(props.shortcut);
 const canRun = computed(() => !!plan.value && valid.value && !props.readOnly && !dirty.value && !props.execution.dirty && !props.execution.running && !unavailable.value && !environmentMismatch.value && !(props.execution.location.kind === 'agent' && props.execution.localOnlyRefIds.length) && props.execution.isStressConfirmed(plan.value));
 const errorText = computed(() => {
   const key = onlineSessionErrorKey(error.value);

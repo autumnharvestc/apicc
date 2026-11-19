@@ -9,10 +9,14 @@ import { findProjectSaveApi } from "@apicc/core/collaboration/project-save";
 import { ProjectRelativePathSchema } from "@apicc/execution/contract";
 import { buildBindIndex, type WfBindIndex } from "../../wf/wfBindings.js";
 import EnvPanel from "../EnvPanel.vue";
-import DatasetPanel from "../DatasetPanel.vue";
-import SuitePanel from "../SuitePanel.vue";
+import TestWorkbench from "../TestWorkbench.vue";
+import TestSidebar from "../TestSidebar.vue";
+import TestView from "../TestView.vue";
+import type { TestingPane } from "../../../../shared/testing.js";
+import type { ApiLocator } from "../../../../shared/locations.js";
+import type { CaseIdentity } from "../../stores/cases.js";
+import { apiSessionKey } from "../../stores/localIdentity.js";
 import WfDesigner from "../WfDesigner.vue";
-import CasePanel from "../CasePanel.vue";
 import CredentialEditor from "../CredentialEditor.vue";
 import OnlineApiEditor from "../OnlineApiEditor.vue";
 import ActionMenu from "../ActionMenu.vue";
@@ -38,7 +42,15 @@ const pane = computed({ get: () => position.value.onlineTestPane, set: value => 
 const runPane = computed({ get: () => position.value.runPane, set: value => { position.value.runPane = value; } });
 const runVisited = ref(false);
 watch(moduleView, view => { if (view === "run") runVisited.value = true; }, { immediate: true });
-const datasetName = ref(""); const suiteName = ref(""); const publishSource = ref("");
+const publishSource = ref("");
+const testPage = computed(() => pane.value === "cases" ? "api-cases" : pane.value);
+async function changeTestPage(page: TestingPane | "stress") {
+  if (page === "scenario" || page === testPage.value) return;
+  const owner = position.value;
+  if (pane.value === "stress" && stressPanel.value?.confirmLeave() === false) return;
+  if ((pane.value === "datasets" || pane.value === "suites") && !await props.adapter.testing.leave()) return;
+  if (owner === position.value) pane.value = page === "api-cases" ? "cases" : page;
+}
 const selectedApi = computed({ get: () => position.value.onlineCaseApi, set: value => { position.value.onlineCaseApi = value; } });
 const stressVisited = ref(false);
 const stressShortcut = ref<StressTarget>();
@@ -64,7 +76,11 @@ async function upload(event: Event) {
 }
 const execution = computed(() => props.online.execution);
 const materialCredentials = computed(() => execution.value.materialMetadata?.credentials.map(credential => ({ ...credential, status: t(`contract.credentialStatus.${credential.status}`) })));
-const entries = computed(() => execution.value.project ? props.adapter.apiEntries() : []);
+function apiAvailable(where: ApiLocator) {
+  const latest = execution.value.latestView?.project;
+  return !latest || !!findProjectSaveApi(latest, where);
+}
+const entries = computed(() => execution.value.project ? props.adapter.apiEntries().filter(entry => apiAvailable(entry.locator)) : []);
 const bindIndex = ref<WfBindIndex | null>(null);
 const readOnly = computed(() => !execution.value.context || !props.online.canEdit(`${execution.value.context.scope.projectId}/project.yaml`));
 function reportError(error: unknown) {
@@ -98,22 +114,53 @@ function issueText(code: string) {
   const translation = key === "invalid-core-output" ? "onlineExecution.invalidOutput" : `onlineExecution.reasons.${key}`;
   return te(translation) ? [t(translation), ...context].join(" ") : code;
 }
+const pendingApi = ref("");
+let caseRead = 0;
+function pickTestingApi(where: ApiLocator) {
+  const key = apiSessionKey("", where);
+  const entry = entries.value.find(item => apiSessionKey("", item.locator) === key);
+  if (entry) void action(() => pickApi(JSON.stringify(entry.locator)));
+}
 async function pickApi(key: string) {
   const entry = entries.value.find(item => JSON.stringify(item.locator) === key);
   if (!entry) return;
-  const owner = contextKey.value, memory = position.value;
-  await props.adapter.editor.load(entry.locator, () => contextKey.value === owner && memory === position.value);
-  if (contextKey.value !== owner || memory !== position.value || JSON.stringify(props.adapter.editor.locator) !== key) return;
+  const owner = contextKey.value, memory = position.value, intent = ++caseRead;
+  const current = () => intent === caseRead && contextKey.value === owner && memory === position.value && key === selectedApi.value;
+  pendingApi.value = key;
   selectedApi.value = key;
-  const saved = memory.onlineCase;
-  const selected = saved?.api === key && props.adapter.editor.api?.cases.find(c => c.id === saved.caseId && c.scope === saved.scope);
-  props.adapter.cases.selectedCase = selected ? { caseId: selected.id, scope: selected.scope } : null;
+  try {
+    await props.adapter.editor.load(entry.locator, current);
+    if (!current() || JSON.stringify(props.adapter.editor.locator) !== key) return;
+    const saved = memory.onlineCase;
+    const list = props.adapter.editor.api?.cases ?? [];
+    const first = list[0];
+    props.adapter.cases.selectedCase = saved?.api === key ? { caseId: saved.caseId, scope: saved.scope }
+      : first ? { caseId: first.id, scope: first.scope } : null;
+  } finally { if (intent === caseRead) pendingApi.value = ""; }
 }
 watch(() => props.adapter.cases.selectedCase, selected => {
   const api = JSON.stringify(props.adapter.editor.locator);
   if (selected && selectedApi.value === api && props.adapter.editor.api?.cases.some(item => item.id === selected.caseId && item.scope === selected.scope))
     position.value.onlineCase = { api, ...selected };
 }, { flush: "sync" });
+const caseVisibility = computed(() => {
+  const editor = props.adapter.editor, latest = execution.value.latestView?.project;
+  const session = editor.activeKey && editor.sessions[editor.activeKey];
+  if (!session || !latest || !editor.locator) return null;
+  const identity = (item: { id: string; scope: string }) => JSON.stringify([item.id, item.scope]);
+  const original = (JSON.parse(session.snapshot) as NonNullable<typeof editor.api>).cases;
+  const readable = findProjectSaveApi(latest, editor.locator)?.cases ?? [];
+  return { saved: new Set(original.map(identity)), readable: new Set(readable.map(identity)) };
+});
+function caseAvailable(target: CaseIdentity) {
+  const visibility = caseVisibility.value, key = JSON.stringify([target.caseId, target.scope]);
+  return !visibility || !visibility.saved.has(key) || visibility.readable.has(key);
+}
+const caseUnavailable = computed(() => {
+  const selected = props.adapter.cases.selectedCase;
+  if (!selected) return false;
+  return !caseAvailable(selected) || !props.adapter.editor.api?.cases.some(c => c.id === selected.caseId && c.scope === selected.scope);
+});
 const selectedEntry = computed(() => {
   const project = execution.value.project, scope = execution.value.context?.scope.projectId;
   const path = props.online.editorPath;
@@ -125,13 +172,13 @@ const selectedEntry = computed(() => {
 watch([() => moduleView.value === "test" && pane.value === "cases", selectedApi, entries], async ([active, key]) => {
   if (!active || !key || !execution.value.project) return;
   if (!entries.value.some(entry => JSON.stringify(entry.locator) === key)) {
-    selectedApi.value = ""; props.adapter.editor.deactivate(); reportError(t("workbenchPosition.unavailable")); return;
+    selectedApi.value = ""; props.adapter.editor.deactivate(); props.adapter.cases.selectedCase = null; execution.value.error = "workbenchPosition.unavailable"; return;
   }
-  if (key !== JSON.stringify(props.adapter.editor.locator)) await action(() => pickApi(key));
+  if (pendingApi.value !== key && key !== JSON.stringify(props.adapter.editor.locator)) await action(() => pickApi(key));
 }, { immediate: true });
 watch(contextKey, () => {
   stressVisited.value = pane.value === "stress"; stressShortcut.value = undefined;
-  datasetName.value = ""; suiteName.value = ""; publishSource.value = "";
+  publishSource.value = "";
   businessReceipts.clear();
   attachmentId.value = ""; attachmentRef.value = ""; attachmentPath.value = "";
 });
@@ -154,13 +201,6 @@ watch([moduleView, contextKey], async (_, __, cleanup) => {
     if (moduleView.value === "api" && context && path && !locateOnlineApi(latest, path.slice(context.scope.projectId.length + 1))) {
       await props.online.selectNode("project", context.scope.projectId);
       if (current) { position.value.apiPath = ""; execution.value.error = "workbenchPosition.unavailable"; }
-    }
-    if (moduleView.value === "test" && selectedApi.value) {
-      const entry = entries.value.find(item => JSON.stringify(item.locator) === selectedApi.value);
-      if (entry && !findProjectSaveApi(latest, entry.locator)) {
-        selectedApi.value = ""; props.adapter.editor.deactivate(); props.adapter.cases.selectedCase = null;
-        execution.value.error = "workbenchPosition.unavailable";
-      }
     }
   } finally { if (current) checkingPosition.value = false; }
 }, { immediate: true });
@@ -270,10 +310,17 @@ async function showBusinessRecord(id: string) {
   await execution.value.selectSubmission(id);
   if (contextKey.value === owner && moduleView.value === view && key === businessKey.value) openRecords();
 }
-async function runCase() {
-  const locator = props.adapter.editor.locator, selected = props.adapter.cases.selectedCase;
+async function runCase(selected: CaseIdentity) {
+  const locator = props.adapter.editor.locator;
+  if (!caseAvailable(selected) || !props.adapter.editor.api?.cases.some(c => c.id === selected.caseId && c.scope === selected.scope) || selectedApi.value !== JSON.stringify(locator)) return;
+  props.adapter.cases.select(selected.caseId, selected.scope);
   if (!locator || !selected || props.adapter.editor.dirty || businessRunIssue.value) return;
   await submitBusiness(() => runOnlineCase(execution.value, locator, selected));
+}
+function stressCase(caseId: string) {
+  const locator = props.adapter.editor.locator;
+  if (!locator || selectedApi.value !== JSON.stringify(locator) || props.adapter.editor.dirty || !props.adapter.editor.api?.cases.some(c => c.id === caseId)) return;
+  openStress({ kind: "case", collectionId: locator.collectionId, apiId: locator.apiId, caseId });
 }
 async function workflowRun(workflow: Workflow, inputs?: Readonly<Record<string, JsonValue>>) {
   if (businessRunIssue.value) throw new Error(businessRunIssue.value);
@@ -358,15 +405,19 @@ async function publish() { const item = props.localProjects.find(item => item.pr
       <template v-if="execution.project && !blank">
         <EnvPanel v-if="moduleView === 'envs'" class="asset-scroll" :envs="adapter.envs" :workspace="adapter.workspace" :project-locator="adapter.locator()" :report-error="reportError" />
         <WfDesigner v-if="moduleView === 'wf'" class="asset-scroll" :ai="ai" :workflow-design="adapter.workflowDesign" :wf-list="adapter.wfList" :workspace="adapter.workspace" :project-locator="adapter.locator()" :bind-index="bindIndex" :report-error="reportError" :external-run="workflowRun" :external-run-issue="businessRunIssue" @stress-workflow="loc => openStress({ kind: 'workflow', workflowId: loc.workflowId })" />
-        <nav v-if="moduleView === 'test'" class="tabs" :aria-label="t('nav.test')">
-          <button v-for="tab in (['cases','suites','datasets','stress'] as const)" :key="tab" :aria-current="pane === tab ? 'page' : undefined" @click="pane = tab">{{ t(tab === 'stress' ? 'stress.title' : 'onlineExecution.panes.' + tab) }}</button>
-        </nav>
-        <div v-if="moduleView === 'test'" class="asset-scroll" v-show="pane !== 'stress'">
-          <template v-if="pane === 'cases'"><select data-testid="online-case-api" :value="selectedApi" @change="action(() => pickApi(($event.target as HTMLSelectElement).value))"><option value="">{{ t('onlineExecution.pickApi') }}</option><option v-for="entry in entries" :key="JSON.stringify(entry.locator)" :value="JSON.stringify(entry.locator)">{{ entry.asset.contract.metadata.name }}</option></select><button v-if="ai" :disabled="readOnly || !adapter.editor.api || ai.suggestLoading" @click="ai.fetchSuggestions()">{{ t('ai.suggestBtn') }}</button><CasePanel :ai="ai" :editor="adapter.editor" :cases="adapter.cases" :read-only="readOnly" :datasets="execution.project.datasets" :operators="adapter.testing.operators" :report-error="reportError" /><button v-if="adapter.cases.selectedCase && adapter.editor.locator" :disabled="readOnly || adapter.editor.dirty" @click="openStress({ kind: 'case', collectionId: adapter.editor.locator.collectionId, apiId: adapter.editor.locator.apiId, caseId: adapter.cases.selectedCase.caseId })">{{ t('case.stress') }}</button><button :disabled="!adapter.cases.selectedCase || !!businessRunIssue || adapter.editor.dirty" @click="action(runCase)">{{ t('onlineExecution.runCase') }}</button><p v-if="businessRunIssue" role="status">{{ businessRunIssue }}</p></template>
-          <template v-else-if="pane === 'datasets'"><div class="toolbar"><select :value="adapter.testing.dataset?.id ?? ''" @change="action(() => adapter.testing.select('dataset', ($event.target as HTMLSelectElement).value))"><option value="">{{ t('testing.pickDataset') }}</option><option v-for="item in adapter.testing.view?.datasets" :key="item.id" :value="item.id">{{ item.name }}</option></select><input v-model="datasetName" :placeholder="t('testing.name')" /><button :disabled="readOnly || !datasetName" @click="action(() => adapter.testing.newDataset(datasetName))">{{ t('testing.newDataset') }}</button></div><DatasetPanel :testing="adapter.testing" /></template>
-          <template v-else-if="pane === 'suites'"><div class="toolbar"><select :value="adapter.testing.suite?.id ?? ''" @change="action(() => adapter.testing.select('suite', ($event.target as HTMLSelectElement).value))"><option value="">{{ t('testing.pickSuite') }}</option><option v-for="item in adapter.testing.view?.suites" :key="item.id" :value="item.id">{{ item.name }}</option></select><input v-model="suiteName" :placeholder="t('testing.name')" /><button :disabled="readOnly || !suiteName" @click="action(() => adapter.testing.newSuite(suiteName))">{{ t('testing.newSuite') }}</button></div><SuitePanel :ai="ai" :testing="adapter.testing" :external-run="suiteRun" :external-run-issue="businessRunIssue" /></template>
-        </div>
-        <OnlineStressPanel ref="stressPanel" v-if="stressVisited" v-show="moduleView === 'test' && pane === 'stress'" class="asset-scroll" :execution="execution" :read-only="readOnly" :shortcut="stressShortcut" @record="id => action(() => showBusinessRecord(id))" />
+        <TestWorkbench v-if="moduleView === 'test' || stressVisited" v-show="moduleView === 'test'" :pane="testPage" online @update:pane="page => action(() => changeTestPage(page))">
+          <template v-if="testPage !== 'stress'" #navigation>
+            <TestSidebar :workspace="adapter.workspace" :active-project-locator="adapter.locator()"
+              :api-available="apiAvailable" :active-api-locator="entries.find(item => JSON.stringify(item.locator) === selectedApi)?.locator ?? null"
+              :pane="testPage" :scenarios="[]" :testing="adapter.testing" :report-error="reportError" @pick-api="pickTestingApi" />
+          </template>
+          <TestView v-if="moduleView === 'test' && testPage !== 'stress'" :pane="testPage" :editor="adapter.editor" :cases="adapter.cases"
+            :testing="adapter.testing" :ai="ai" :read-only="readOnly" :report-error="reportError"
+            :interface-ready="!!selectedApi && selectedApi === JSON.stringify(adapter.editor.locator) && !pendingApi"
+            :case-available="caseAvailable" :case-unavailable="caseUnavailable" :interface-loading="!!pendingApi" :external-run="runCase" :external-run-issue="businessRunIssue" :stress-disabled="readOnly || adapter.editor.dirty || execution.running"
+            :external-suite-run="suiteRun" :suggest-cases="ai ? () => ai!.fetchSuggestions() : undefined" @stress="stressCase" />
+          <OnlineStressPanel ref="stressPanel" v-if="stressVisited" v-show="testPage === 'stress'" class="asset-scroll" :execution="execution" :read-only="readOnly" :shortcut="stressShortcut" @record="id => action(() => showBusinessRecord(id))" />
+        </TestWorkbench>
         <div v-if="['wf','test'].includes(moduleView) && businessSubmission" class="toolbar" role="status">
           <span v-if="businessSubmission.pending">{{ t('projectWorkbench.waiting') }}</span>
           <button @click="action(() => showBusinessRecord(businessSubmission!.runId))">{{ t("projectWorkbench.viewRun") }}</button>

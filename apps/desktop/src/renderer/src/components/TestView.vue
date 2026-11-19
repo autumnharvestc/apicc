@@ -25,10 +25,10 @@ import { useLaunchMessages } from "../execution/launchMessages.js";
  */
 const props = defineProps<{
   editor: ReturnType<typeof useEditorStore>;
-  debug: ReturnType<typeof useDebugStore>;
+  debug?: ReturnType<typeof useDebugStore>;
   cases: ReturnType<typeof useCasesStore>;
-  envs: ReturnType<typeof useEnvsStore>;
-  stress: ReturnType<typeof createStressStore>;
+  envs?: ReturnType<typeof useEnvsStore>;
+  stress?: ReturnType<typeof createStressStore>;
   pane: TestingPane;
   testing?: TestingStore;
   reportError: (e: unknown) => void;
@@ -39,6 +39,13 @@ const props = defineProps<{
   interfaceReady?: boolean;
   interfaceLoading?: boolean;
   interfaceError?: string;
+  externalRun?: (identity: import("../stores/cases.js").CaseIdentity) => Promise<void>;
+  externalRunIssue?: string;
+  stressDisabled?: boolean;
+  externalSuiteRun?: (allowDraft: boolean) => Promise<void>;
+  suggestCases?: () => void;
+  caseAvailable?: (identity: import("../stores/cases.js").CaseIdentity) => boolean;
+  caseUnavailable?: boolean;
   canOperate?: () => boolean;
   refreshDisk?: () => Promise<void>;
   refreshingDisk?: boolean;
@@ -47,14 +54,14 @@ const emit = defineEmits<{ (e: "stress", caseId: string): void; (e: "locate-evid
 const label = useLaunchMessages();
 const { t } = useI18n();
 const requestTab = computed(() => props.editor.activeKey
-  ? props.debug.requestTabForSession(props.editor.activeKey) : null);
-const requestTabState = computed(() => requestTab.value ? props.debug.requestTabState(requestTab.value) : null);
+  ? props.debug?.requestTabForSession(props.editor.activeKey) : null);
+const requestTabState = computed(() => requestTab.value ? props.debug?.requestTabState(requestTab.value) : null);
 const currentCase = computed(() => {
   const api = props.editor.api;
   const identity = requestTabState.value ? requestTabState.value.selectedCase : props.cases.selectedCase;
   return api?.cases.find((item) => item.id === identity?.caseId && item.scope === identity.scope) ?? api?.cases[0];
 });
-const run = computed(() => currentCase.value ? props.debug.caseRunFor(props.editor, { caseId: currentCase.value.id, scope: currentCase.value.scope }) : undefined);
+const run = computed(() => currentCase.value ? props.debug?.caseRunFor(props.editor, { caseId: currentCase.value.id, scope: currentCase.value.scope }) : undefined);
 const record = computed<LocalRunRecordTarget | undefined>(() => {
   const session = props.editor.activeKey && props.editor.sessions[props.editor.activeKey];
   const id = run.value?.result?.historyId;
@@ -79,13 +86,13 @@ function showResult() {
 <template>
   <section class="test-view" data-testid="test-view">
     <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" :refreshing-disk="refreshingDisk" />
-    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :testing="testing" :project-environment="projectEnvironment" :refreshing-disk="refreshingDisk" @open-run-record="emit('open-run-record', $event)" @locate-evidence="emit('locate-evidence', $event)" />
+    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :external-run="externalSuiteRun" :external-run-issue="externalRunIssue" :testing="testing" :project-environment="projectEnvironment" :refreshing-disk="refreshingDisk" @open-run-record="emit('open-run-record', $event)" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
     <template v-else-if="pane === 'api-cases'">
       <p v-if="interfaceReady === false && interfaceError" class="interface-error" role="alert">{{ t("testWorkbench.loadApiFailed", { error: interfaceError }) }}</p>
-      <EmptyState v-else-if="interfaceReady === false || !editor.api" :text="t(interfaceLoading ? 'testWorkbench.loadingApi' : 'test.pickApi')" />
+      <EmptyState v-else-if="interfaceReady === false || !editor.api" :text="t(interfaceLoading ? 'testWorkbench.loadingApi' : 'testPresentation.pickInterface')" />
       <template v-else>
-        <CasePanel workbench :project-environment="projectEnvironment" :can-operate="canOperate" :interface-path="interfacePath" :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" :refresh-disk="refreshDisk" :refreshing-disk="refreshingDisk" @stress="(caseId: string) => emit('stress', caseId)" @show-result="showResult">
+        <CasePanel workbench :case-available="caseAvailable" :case-unavailable="caseUnavailable" :external-run="externalRun" :external-run-issue="externalRunIssue" :stress-disabled="stressDisabled" :suggest-cases="suggestCases" :project-environment="projectEnvironment" :can-operate="canOperate" :interface-path="interfacePath" :ai="ai" :editor="editor" :cases="cases" :debug="debug" :report-error="reportError" :read-only="readOnly" :operators="testing?.operators" :datasets="testing?.view?.datasets" :refresh-disk="refreshDisk" :refreshing-disk="refreshingDisk" @stress="(caseId: string) => emit('stress', caseId)" @show-result="showResult">
           <template #after-cases>
             <div v-if="run" ref="resultRegion" class="result" data-testid="test-result" tabindex="-1" role="region" :aria-label="t('testWorkbench.result')">
               <p class="result-environment"><strong>{{ t("testWorkbench.runEnvironment") }}</strong>
@@ -108,7 +115,7 @@ function showResult() {
 </template>
 
 <style scoped>
-.test-view { height: 100%; min-height: 0; min-width: 0; box-sizing: border-box; overflow: auto; background: var(--bg); container-type: inline-size; }
+.test-view { height: 100%; min-height: 0; min-width: 0; box-sizing: border-box; overflow: auto; background: transparent; container-type: inline-size; }
 .result { min-width: 0; margin-top: 4px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--subtle); }
 .result:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .result-environment { margin: 0 0 8px; color: var(--text-muted); overflow-wrap: anywhere; }

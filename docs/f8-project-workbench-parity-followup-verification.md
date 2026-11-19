@@ -12,3 +12,13 @@
 | 1.4 | 删除数据集后移除旧选择并保留同名可用对象。Viewer 整项目失权可返回所属在线工作区、打开仍有权访问的同级项目。实服允许列出项目名称，对已失权项目资产返回 403。迟到读取与主动定位另有定向行为测试。[各场景记录](design/f8-frontend/project-workbench-parity/followup-evidence/batch-1/README.md) |
 
 开发回归包括真实挂载 App 的双项目切签、旧档案身份不足回列表和返回操作的选中状态。独审另外运行了原入口 10 项、边界探针 4 项，并单独复验撤权返回。桌面 Vue 类型检查通过。
+
+## 第二批 · 选择安全与单接口用例
+
+| 计划项 | 验收结果与证据 |
+| --- | --- |
+| 2.1 | 用两条同名数据集和两条同名套件验证清空与取消切换。拒绝丢弃草稿时，列表高亮、正文与原 ID 一致。独审额外验证取消进行中目标消失的情况。在线当前接口的一个已保存用例被删除时，保留可访问的用例列表，清空失效选择；同名幸存用例需显式选择。新建用例草稿在切页往返后仍可编辑。 |
+| 2.2 | 双端「查询订单 → 已付款订单」实拍在同一尺寸下逐项对照 T01/T02。三栏左缘为 x=110、441、707，底栏上沿 y=896，四个主操作同位。单状态码样例的响应提取、前置、后置操作均在首屏；另一个包含两条断言的样例保留了路径编辑。780 × 720 窄窗下四个操作中心均可命中，详情区独立滚动。[在线](design/f8-frontend/project-workbench-parity/followup-evidence/batch-2/T01-online-case.png) · [本地](design/f8-frontend/project-workbench-parity/followup-evidence/batch-2/T02-local-case.png) · [单断言](design/f8-frontend/project-workbench-parity/followup-evidence/batch-2/T02-single-assertion.png) |
+| 2.3 | 独审挂载实际在线工作台，验证默认首例、显式选中另一用例、请求覆写及恢复继承，回查发起的接口、用例、范围和版本。Viewer 无写入或执行权限，0 用例时保留授权成员的 AI 建议入口。 |
+
+两端实机保存后独立读盘／读服，核对用例请求、数据、断言、提取、前后置操作。在线通过本机与 Linux 代理分别执行两次真实订单 GET，均返回 200。四组同名资产按 ID 回读，确认保存和删除只作用于所选的第二项。[第二批实机记录与截图](design/f8-frontend/project-workbench-parity/followup-evidence/batch-2/README.md)

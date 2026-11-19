@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Button as AButton, Input as AInput, Select as ASelect, Tooltip as ATooltip } from "ant-design-vue";
-import { EllipsisOutlined, PlusOutlined } from "@ant-design/icons-vue";
+import { DashboardOutlined, EllipsisOutlined, PlayCircleOutlined, PlusOutlined, ThunderboltOutlined } from "@ant-design/icons-vue";
 import type { DatasetAsset, TestCase } from "@apicc/core";
 import { ApiRequestSchema } from "@apicc/core/schema";
 import type { useCasesStore } from "../stores/cases.js";
@@ -37,6 +37,12 @@ const props = defineProps<{
   workbench?: boolean;
   projectEnvironment?: DebugEnvironmentSelection;
   interfacePath?: string;
+  externalRun?: (identity: CaseIdentity) => Promise<void>;
+  externalRunIssue?: string;
+  stressDisabled?: boolean;
+  suggestCases?: () => void;
+  caseAvailable?: (identity: CaseIdentity) => boolean;
+  caseUnavailable?: boolean;
   canOperate?: () => boolean;
   refreshDisk?: () => Promise<void>;
   refreshingDisk?: boolean;
@@ -82,8 +88,10 @@ const scopeOptions = computed(() => [
 ]);
 
 // 选中用例：store 未选中/悬空（如刚切换接口）时回退第一个，保证面板始终有编辑目标。
+const visibleCases = computed(() => (props.editor.api?.cases ?? []).filter(item => props.caseAvailable?.(identityOf(item)) !== false));
 const selected = computed(() => {
-  const list = props.editor.api?.cases ?? [];
+  if (props.caseUnavailable) return null;
+  const list = visibleCases.value;
   const identity = requestTabState.value ? requestTabState.value.selectedCase : props.cases.selectedCase;
   return list.find((c) => c.id === identity?.caseId && c.scope === identity.scope) ?? list[0] ?? null;
 });
@@ -102,6 +110,7 @@ function identityOf(testCase: TestCase): CaseIdentity {
 }
 
 function unavailableRunReason(testCase: TestCase): string {
+  if (props.externalRun && (props.externalRunIssue || props.editor.dirty)) return props.externalRunIssue || t("testWorkbench.saveToRun");
   if (savingCurrent.value) return t("testWorkbench.saving");
   if (props.debug?.caseRunFor(props.editor, identityOf(testCase))?.pending) return t("testWorkbench.running");
   if (busy.value) return t("testWorkbench.otherRun");
@@ -148,13 +157,14 @@ function setCaseName(testCase: TestCase, name: string) {
 
 /** 单条用例运行（M9-D）：存编辑缓冲后按该用例发送（结果经共享 debug store 上屏）。 */
 async function runCase(identity: CaseIdentity) {
-  if (!props.debug || props.canOperate?.() === false) return;
+  if (props.canOperate?.() === false) return;
   const active = props.editor.api?.cases.find((item) => item.id === identity.caseId && item.scope === identity.scope);
   if (props.workbench && (!active || unavailableRunReason(active))) return;
   try {
     // debug.send captures the complete editor/root identity before its own save await.
-    if (props.projectEnvironment) await props.debug.runCase(props.editor, identity, undefined, props.projectEnvironment.value);
-    else await props.debug.runCase(props.editor, identity);
+    if (props.externalRun) await props.externalRun(identity);
+    else if (props.projectEnvironment) await props.debug?.runCase(props.editor, identity, undefined, props.projectEnvironment.value);
+    else await props.debug?.runCase(props.editor, identity);
   } catch (e) {
     props.reportError?.(e);
   }
@@ -273,9 +283,9 @@ function caseActions(testCase: TestCase) {
   const reason = unavailableRunReason(testCase);
   return [
     { key: "run", label: reason ? t("testWorkbench.unavailableRun", { reason }) : t("case.run"), testId: "case-menu-run", disabled: !!reason },
-    { key: "stress", label: t("case.stress"), testId: "case-menu-stress" },
+    { key: "stress", label: t("case.stress"), testId: "case-menu-stress", disabled: props.stressDisabled },
     { key: "edit", label: t("tree.rename"), disabled: props.readOnly },
-    { key: "delete", label: t("case.remove"), testId: "case-menu-delete", disabled: props.readOnly || (props.editor.api?.cases.length ?? 0) <= 1, danger: true },
+    { key: "delete", label: t("case.remove"), testId: "case-menu-delete", disabled: props.readOnly || visibleCases.value.length <= 1, danger: true },
   ];
 }
 
@@ -285,7 +295,8 @@ function onCaseAction(action: string, testCase: TestCase) {
     if (unavailableRunReason(testCase)) return;
     selectCase(identity.caseId, identity.scope);
     void runCase(identity);
-  } else if (action === "stress") emit("stress", identity.caseId);
+  } else if (action === "stress" && !props.stressDisabled) { selectCase(identity.caseId, identity.scope); emit("stress", identity.caseId); }
+  else if (action === "suggest" && !props.readOnly) props.suggestCases?.();
   else if (!props.readOnly && action === "edit") {
     selectCase(identity.caseId, identity.scope);
     void nextTick(() => editorRoot.value?.querySelector<HTMLInputElement>('[data-testid="case-name"]')?.focus());
@@ -372,40 +383,7 @@ function removeOp(kind: "pre" | "post", index: number) {
   <section ref="editorRoot" class="case-panel" :class="{ 'case-workbench': workbench }" data-testid="case-panel">
     <EmptyState v-if="!editor.api" :text="t('case.empty')" />
     <template v-else>
-      <header v-if="workbench" class="test-case-head">
-        <p v-if="interfacePath" class="interface-path">{{ interfacePath }}</p>
-        <div class="interface-summary">
-          <h1>{{ editor.api.contract.metadata.name }}</h1>
-          <div v-if="selected && debug" class="toolbar case-toolbar">
-            <span v-if="runReason" class="run-reason" role="status">{{ runReason }}</span>
-            <a-button v-if="selectedRun && (selectedRun.result || selectedRun.error)" size="small" data-testid="case-show-result" @click="emit('show-result')">
-              {{ t("testWorkbench.showResult") }}
-            </a-button>
-            <a-button size="small" :data-testid="`case-run-${selected.id}`" :data-case-id="selected.id"
-              :disabled="!!runReason" @click="runCase(identityOf(selected))">{{ t("case.run") }}</a-button>
-            <a-button size="small" :data-testid="`case-stress-${selected.id}`" :data-case-id="selected.id"
-              @click="emit('stress', selected.id)">{{ t("case.stress") }}</a-button>
-            <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly || refreshingDisk || diskCaseBlocked || savingCurrent"
-              @click="saveCases">{{ t("case.save") }}</a-button>
-          </div>
-        </div>
-        <div v-if="environment && !projectEnvironment" class="runtime-environment">
-          <label>{{ t("testWorkbench.runEnvironment") }}
-            <select :key="environment.owner" :value="environment.value ?? ''"
-              data-testid="case-run-environment" @change="environment.select(($event.target as HTMLSelectElement).value || null)">
-              <option value="">{{ t("testWorkbench.defaultEnvironment") }}</option>
-              <option v-if="environment.value && !environment.options.some(option => option.key === environment?.value)" :value="environment.value" disabled>
-                {{ t("environmentShortcut.unavailable") }}
-              </option>
-              <option v-for="option in environment.options" :key="option.key" :value="option.key">{{ option.name }}</option>
-            </select>
-          </label>
-        </div>
-        <p v-if="saveError" class="override-error" role="alert" data-testid="case-save-error">{{ diskFailure ? t(`diskRefresh.error.${diskFailure.reason}`) : saveError }}</p>
-        <a-button v-if="saveError && diskFailure && refreshDisk && isRefreshableFailure(diskFailure)" size="small"
-          data-testid="case-refresh-disk" :disabled="refreshingDisk" @click="refreshDisk">{{ t("diskRefresh.action") }}</a-button>
-      </header>
-      <div v-else class="toolbar">
+      <div v-if="!workbench" class="toolbar">
         <a-button size="small" data-testid="case-add" :disabled="readOnly" @click="addCase">{{ t("case.add") }}</a-button>
         <a-button
           size="small"
@@ -421,20 +399,17 @@ function removeOp(kind: "pre" | "post", index: number) {
 
       <div class="case-layout">
       <aside v-if="workbench" class="case-navigation" :aria-label="t('testWorkbench.caseList')">
-        <a-button class="new-case" type="text" size="small" data-testid="case-add" :disabled="readOnly" @click="addCase">
-          <PlusOutlined /> {{ t("testWorkbench.newCase") }}
-        </a-button>
+        <div class="case-list-head"><h2>{{ t("testPresentation.caseColumn") }}</h2>
+        <a-button class="new-case" :title="t('testWorkbench.newCase')" :aria-label="t('testWorkbench.newCase')" type="text" size="small" data-testid="case-add" :disabled="readOnly" @click="addCase">
+          <PlusOutlined />
+        </a-button></div>
         <div class="case-navigation-list">
-          <div v-for="c in editor.api.cases" :key="caseMenuId(identityOf(c))" class="case-row summary-row"
+          <div v-for="c in visibleCases" :key="caseMenuId(identityOf(c))" class="case-row summary-row"
             :class="{ active: c.id === selected?.id && c.scope === selected?.scope }" data-testid="case-row">
             <a-tooltip :title="c.name" :trigger="['hover', 'focus']" placement="right">
               <button type="button" class="case-choice" :aria-current="c.id === selected?.id && c.scope === selected?.scope ? 'true' : undefined"
                 @click="selectCase(c.id, c.scope)">
               <span class="case-choice-name">{{ c.name }}</span>
-                <span class="case-choice-detail">
-                  <span class="scope-label" :title="scopeLabel(c.scope)">{{ scopeLabel(c.scope) }}</span>
-                  <span>{{ t("testWorkbench.assertionCount", c.assertions.length) }}</span>
-                </span>
               </button>
             </a-tooltip>
             <ActionMenu class="case-more" :test-id="caseMenuId(identityOf(c))" :label="t('testWorkbench.caseActions', { name: c.name, scope: scopeLabel(c.scope) })"
@@ -479,10 +454,48 @@ function removeOp(kind: "pre" | "post", index: number) {
       </div>
 
       <div class="case-editor">
-      <div v-if="workbench && selected" class="selected-case-head">
-        <h2>{{ selected.name }}</h2>
-        <span class="scope-label">{{ scopeLabel(selected.scope) }}</span>
+      <div v-if="workbench && !selected" class="empty-cases">
+        <h2>{{ editor.api.contract.metadata.name }}</h2>
+        <p v-if="caseUnavailable" role="status">{{ t("workbenchPosition.unavailable") }}</p>
+        <p v-else>{{ t(readOnly ? "testPresentation.noCases" : "testPresentation.createFirstCase") }}</p>
+        <a-button v-if="suggestCases" data-testid="ai-suggest-cases" :disabled="readOnly || ai?.suggestLoading" @click="suggestCases">{{ t("ai.suggestBtn") }}</a-button>
       </div>
+      <header v-if="workbench && selected" class="test-case-head">
+        <p class="interface-path" :title="interfacePath">{{ editor.api.contract.metadata.name }}  /  {{ selected.name }}</p>
+        <div class="interface-summary">
+          <h2>{{ selected.name }}</h2>
+          <div class="toolbar case-toolbar">
+            <a-button v-if="selectedRun && (selectedRun.result || selectedRun.error)" size="small" data-testid="case-show-result" @click="emit('show-result')">
+              {{ t("testWorkbench.showResult") }}
+            </a-button>
+            <a-button size="small" :data-testid="`case-run-${selected.id}`" :data-case-id="selected.id"
+              :disabled="!!runReason" @click="runCase(identityOf(selected))"><PlayCircleOutlined /> {{ t("case.run") }}</a-button>
+            <a-button size="small" :data-testid="`case-stress-${selected.id}`" :data-case-id="selected.id"
+              :disabled="stressDisabled" @click="selectCase(selected.id, selected.scope); emit('stress', selected.id)"><DashboardOutlined /> {{ t("case.stress") }}</a-button>
+            <a-button size="small" type="primary" data-testid="case-save" :disabled="readOnly || refreshingDisk || diskCaseBlocked || savingCurrent"
+              @click="saveCases">{{ t("case.save") }}</a-button>
+            <ActionMenu test-id="case-detail-more" :label="t('requestWorkbench.more')"
+              :items="[...caseActions(selected).filter(item => item.key === 'edit' || item.key === 'delete'), ...(suggestCases ? [{ key: 'suggest', label: t('ai.suggestBtn'), disabled: readOnly || ai?.suggestLoading }] : [])]"
+              @select="onCaseAction($event, selected!)"><EllipsisOutlined /></ActionMenu>
+          </div>
+        </div>
+        <p v-if="runReason" class="run-reason" role="status">{{ runReason }}</p>
+        <div v-if="environment && !projectEnvironment" class="runtime-environment">
+          <label>{{ t("testWorkbench.runEnvironment") }}
+            <select :key="environment.owner" :value="environment.value ?? ''"
+              data-testid="case-run-environment" @change="environment.select(($event.target as HTMLSelectElement).value || null)">
+              <option value="">{{ t("testWorkbench.defaultEnvironment") }}</option>
+              <option v-if="environment.value && !environment.options.some(option => option.key === environment?.value)" :value="environment.value" disabled>
+                {{ t("environmentShortcut.unavailable") }}
+              </option>
+              <option v-for="option in environment.options" :key="option.key" :value="option.key">{{ option.name }}</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="saveError" class="override-error" role="alert" data-testid="case-save-error">{{ diskFailure ? t(`diskRefresh.error.${diskFailure.reason}`) : saveError }}</p>
+        <a-button v-if="saveError && diskFailure && refreshDisk && isRefreshableFailure(diskFailure)" size="small"
+          data-testid="case-refresh-disk" :disabled="refreshingDisk" @click="refreshDisk">{{ t("diskRefresh.action") }}</a-button>
+      </header>
       <div v-if="workbench && selected" class="case-identity-fields">
         <label>{{ t("testWorkbench.caseName") }}
           <a-input :value="selected.name" :disabled="readOnly" data-testid="case-name"
@@ -495,13 +508,13 @@ function removeOp(kind: "pre" | "post", index: number) {
       </div>
       <template v-if="selected">
         <section class="case-card case-data"><h3 v-if="!workbench">{{ t('testPresentation.caseSettings') }}</h3>
-        <label>{{ t('testing.tags') }}<a-input :value="selected.tags?.join(', ')" :disabled="readOnly" @update:value="value => setTags(value ?? '')" /></label>
+        <label>{{ t(workbench ? 'testPresentation.tags' : 'testing.tags') }}<a-input :title="t('testing.tags')" :value="selected.tags?.join(', ')" :disabled="readOnly" @update:value="value => setTags(value ?? '')" /></label>
         <label>{{ t('testing.caseData') }}<select :value="!selected.dataDriver ? 'none' : selectedDatasetId ?? 'file'" :disabled="readOnly" @change="dataDriver(($event.target as HTMLSelectElement).value)"><option value="none">{{ t('testing.none') }}</option><option value="file">{{ t('testing.externalFile') }}</option><option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">{{ dataset.name }}</option><option v-if="selectedDatasetId && !datasets?.some(item => item.id === selectedDatasetId)" :value="selectedDatasetId">{{ selectedDatasetId }}</option></select></label>
         <div v-if="selected.dataDriver && !('kind' in selected.dataDriver)"><input :value="selected.dataDriver.sourcePath" :disabled="readOnly" :aria-label="t('testing.externalFile')" @input="fileDriver('sourcePath',($event.target as HTMLInputElement).value)" /><select :value="selected.dataDriver.format" :disabled="readOnly" @change="fileDriver('format',($event.target as HTMLSelectElement).value)"><option>csv</option><option>json</option></select><p class="note">{{ t('testing.externalFileHint') }}</p></div>
         </section>
-        <section class="case-card case-request-override" data-testid="case-request-override">
+        <details :key="contextKey + selected.id" :open="!workbench || !!selected.requestOverride" class="case-card case-request-override" data-testid="case-request-override">
+          <summary><strong>{{ t("debugLoop.caseRequest") }}</strong><label @click.stop><input type="checkbox" :checked="!selected.requestOverride" :disabled="readOnly" @change="($event.target as HTMLInputElement).checked ? inheritDefaultRequest() : copyDefaultRequest()" />{{ t("debugLoop.inheritRequest") }}</label></summary>
           <div class="override-toolbar">
-            <h3 class="section-title">{{ t("debugLoop.caseRequest") }}</h3>
             <span data-testid="case-request-mode">{{ selected.requestOverride ? t("debugLoop.requestOverride") : t("debugLoop.inheritRequest") }}</span>
             <a-button v-if="debug" size="small" :disabled="readOnly" data-testid="case-apply-debug-draft" @click="applyCurrentDebugDraft">{{ t("debugLoop.applyDebugDraft") }}</a-button>
             <a-button v-else size="small" :disabled="readOnly" data-testid="case-request-copy-default" @click="copyDefaultRequest">{{ t("debugLoop.copyDefaultRequest") }}</a-button>
@@ -511,29 +524,30 @@ function removeOp(kind: "pre" | "post", index: number) {
             :aria-label="t('debugLoop.caseRequest')" data-testid="case-request-override-json" @update:value="updateRequestOverride" />
           <span v-if="overrideError" class="override-error" role="alert" data-testid="case-request-override-error">{{ overrideError }}</span>
           <span class="note">{{ t("debugLoop.cookiesNotSavedWithCase") }}</span>
-        </section>
+        </details>
         <section class="case-card">
         <div class="assertion-toolbar">
         <h3 class="section-title">{{ t("case.assertions") }}</h3>
-        <template v-if="ai">
+        <a-button size="small" data-testid="assert-add" :disabled="readOnly || selected.assertions.length >= 256" @click="addAssertion"><PlusOutlined /> {{ t("case.addAssert") }}</a-button>
+        <a-button v-if="ai" size="small" :disabled="readOnly || ai.suggestLoading || (assertionBasis === 'observation' && !observedBasis)" data-testid="ai-suggest-assertions" @click="ai.prepareAssertions({ caseId: selected.id, scope: selected.scope }, assertionBasis === 'observation' ? observedBasis : { kind: 'contract' })"><ThunderboltOutlined /> {{ t('ai.suggestAssertions') }}</a-button>
+        <details v-if="ai" class="basis-options">
+          <summary :title="t('ai.basis')" :aria-label="t('ai.basis')"><EllipsisOutlined /></summary>
           <label>{{ t('ai.basis') }}
             <select v-model="assertionBasis" data-testid="ai-assertion-basis">
               <option value="contract">{{ t('ai.bases.contract') }}</option>
               <option value="observation" :disabled="!observedBasis">{{ t('ai.bases.observation') }}</option>
             </select>
           </label>
-        </template>
-        <a-button size="small" data-testid="assert-add" :disabled="readOnly || selected.assertions.length >= 256" @click="addAssertion">{{ t("case.addAssert") }}</a-button>
-        <a-button v-if="ai" size="small" :disabled="readOnly || ai.suggestLoading || (assertionBasis === 'observation' && !observedBasis)" data-testid="ai-suggest-assertions" @click="ai.prepareAssertions({ caseId: selected.id, scope: selected.scope }, assertionBasis === 'observation' ? observedBasis : { kind: 'contract' })">{{ t('ai.suggestAssertions') }}</a-button>
+        </details>
         </div>
         <p v-if="ai?.assertionObservation">{{ t('ai.selectedObservationRow', { index: ai.assertionObservation.basis.caseIndex + 1 }) }}</p>
         <AssertionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:assertions`" :workbench="workbench" :assertions="selected.assertions" :read-only="readOnly" :operators="operators" @validity="message => assertionError = message" />
         </section>
-        <section class="case-card">
+        <details :open="!workbench" class="case-card extraction-card">
+        <summary>{{ t('testing.extractions') }}</summary>
         <ExtractionEditor :key="`${editor.activeKey}:${selected.id}:${selected.scope}:extractions`" :items="selected.extractors ?? (selected.extractors = [])" :read-only="readOnly" @validity="message => extractionError = message" />
+        </details>
         <p v-if="assertionError || extractionError" class="override-error" role="alert">{{ assertionError || extractionError }}</p>
-
-        </section>
 
         <!-- M10：前置/后置操作（有序脚本操作列表；legacy preScript/postScript 保留只读迁移提示） -->
         <div class="scripts">
@@ -595,55 +609,57 @@ summary span { margin-inline-start: 8px; color: var(--text-muted); font-weight: 
 details[open] summary { margin-bottom: 12px; }
 
 .case-workbench { height: 100%; padding: 0; gap: 0; overflow: hidden; }
-.test-case-head { flex: none; padding: 12px 18px; border-bottom: 1px solid var(--border); }
-.interface-path { margin: 0 0 6px; color: var(--text-muted); overflow-wrap: anywhere; }
-.interface-summary, .selected-case-head, .case-identity-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.interface-summary h1 { flex: 1 1 180px; margin: 0; min-width: 0; font-size: 22px; overflow-wrap: anywhere; }
-.case-toolbar { position: static; padding: 0; border: 0; margin-inline-start: auto; }
-.run-reason { color: var(--text-muted); }
-.runtime-environment { margin-top: 10px; }
-.runtime-environment label { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-weight: 600; }
-.runtime-environment select { max-width: 100%; }
-.case-workbench .case-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); flex: 1; min-height: 0; gap: 0; }
-.case-navigation { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--workbench-form-navigation); border-right: 1px solid var(--border); }
-.new-case { flex: none; align-self: flex-start; margin: 10px 8px 6px; }
-.case-navigation-list { overflow: auto; scrollbar-color: var(--text-muted) var(--workbench-form-navigation); }
-.summary-row {
-  min-width: 0; min-height: 54px; flex-wrap: nowrap; gap: 4px; margin: 0 6px 3px;
-  padding: 0 4px 0 0; border: 0; border-inline-start: 3px solid transparent; border-radius: 5px;
-}
-.summary-row.active { border-color: var(--accent); background: var(--workbench-form-selected); }
-.case-workbench .summary-row button.case-choice {
-  min-width: 0; flex: 1; padding: 6px 8px; text-align: start;
-  background: transparent; border: 0;
-}
-.case-choice-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.case-choice-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 3px; font-size: 12px; color: var(--text-muted); }
-.case-more { opacity: 0; pointer-events: none; }
-.summary-row:hover .case-more, .summary-row:focus-within .case-more, .case-more[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
-@media (hover: none) { .case-more { opacity: 1; pointer-events: auto; } }
-.case-workbench .case-editor { padding: 16px 18px; min-height: 0; gap: 0; overflow: auto; scrollbar-color: var(--text-muted) var(--bg); }
-.selected-case-head h2 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
-.scope-label { display: inline-block; max-width: 100%; padding: 1px 5px; border-radius: 4px; background: var(--workbench-form-selected); color: var(--accent); overflow-wrap: anywhere; }
-.assertion-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.assertion-toolbar .section-title, .override-toolbar .section-title { margin: 0; }
-.assertion-toolbar label { display: flex; flex: 1 1 140px; align-items: center; gap: 6px; }
-.case-workbench .override-toolbar span { flex-basis: 145px; }
-.case-identity-fields { align-items: stretch; padding: 12px 0 0; }
-.case-identity-fields label { display: grid; gap: 4px; flex: 1 1 145px; min-width: 0; color: var(--text-muted); }
-.case-workbench .case-card { padding: 13px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; box-shadow: none; }
-.case-workbench .case-data h3 { font-weight: 600; }
-.case-workbench .scripts { grid-template-columns: 1fr; gap: 0; }
-@container (max-width: 760px) {
-  .case-workbench .case-layout { display: flex; overflow: auto; scrollbar-color: var(--text-muted) var(--bg); }
-  .case-navigation { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--border); }
-  .case-navigation-list { max-height: 135px; }
-  .case-workbench .case-editor { overflow: visible; }
-  .case-toolbar { margin-inline-start: 0; }
-  .test-case-head, .case-workbench .case-editor { padding-inline: 12px; }
+.case-workbench .case-layout { display: grid; grid-template-columns: minmax(108px,21%) minmax(0,1fr); flex: 1; min-height: 0; gap: 7px; }
+.case-navigation, .case-workbench .case-editor { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; }
+.case-navigation { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
+.case-list-head { display:flex; align-items:center; justify-content:space-between; gap:5px; padding:11px 9px; }
+.case-list-head h2 { margin:0; font-size:18px; line-height:1.5; }
+.new-case { flex:none; }
+.case-navigation-list { overflow:auto; }
+.summary-row { flex-wrap:nowrap; gap:0; padding:0; min-width:0; margin:0 6px 2px; border:0; border-inline-start:4px solid transparent; border-radius:4px; }
+.summary-row.active { border-color:var(--accent); background:var(--workbench-form-selected); }
+.case-workbench .case-choice { flex:1; min-width:0; border:0; background:transparent; padding:6px 8px; min-height:32px; text-align:start; color:var(--text); }
+.case-choice-name { display:block; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.case-more { opacity:0; pointer-events:none; }
+.summary-row:hover .case-more, .summary-row:focus-within .case-more, .case-more[aria-expanded="true"] { opacity:1; pointer-events:auto; }
+.case-workbench .case-editor { min-height:0; padding:10px; overflow:auto; gap:6px; }
+.test-case-head { padding:0 3px 7px; border-bottom:1px solid var(--border); }
+.empty-cases { margin:auto; text-align:center; }
+.empty-cases h2 { font-size:18px; }
+.empty-cases p { color:var(--text-muted); }
+.interface-path { margin:0 0 6px; color:var(--text-muted); overflow-wrap:anywhere; }
+.interface-summary, .case-toolbar, .assertion-toolbar, .override-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.interface-summary h2 { flex:1; margin:0; min-width:85px; font-size:22px; line-height:1.25; overflow-wrap:anywhere; }
+.case-toolbar { position:static; margin-inline-start:auto; padding:0; border:0; }
+.case-toolbar :deep(.ant-btn) { min-height:29px; padding-inline:10px; }
+.run-reason { color:var(--text-muted); margin:4px 0 0; font-size:12px; }
+.case-identity-fields, .case-workbench .case-data { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 16px; }
+.case-identity-fields { padding-top:5px; }
+.case-identity-fields label, .case-workbench .case-data label { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:8px; min-width:0; }
+.case-workbench .case-data > div { grid-column:1/-1; }
+.case-workbench .case-data { border:0; padding:0 0 6px; box-shadow:none; }
+.case-workbench .case-card:not(.case-data) { padding:6px 9px; border:1px solid var(--border); border-radius:6px; box-shadow:none; }
+.case-workbench .case-request-override { display:block; }
+.case-request-override summary { display:flex; align-items:center; justify-content:space-between; }
+.case-request-override summary label { display:flex; align-items:center; gap:4px; font-weight:400; }
+.case-workbench summary { cursor:pointer; font-weight:600; padding:3px 0; color:var(--text); }
+.basis-options { position:relative; }
+.basis-options summary { list-style:none; }
+.basis-options[open] label { position:absolute; z-index:3; inset-inline-end:0; top:100%; white-space:nowrap; display:flex; align-items:center; gap:5px; padding:8px; background:var(--bg); border:1px solid var(--border); border-radius:5px; }
+.case-workbench .scripts { grid-template-columns:1fr; gap:5px; }
+.case-workbench .script-row summary span { font-size:11px; }
+.assertion-toolbar { margin-bottom:4px; }
+.assertion-toolbar .section-title { margin:0; flex:1; }
+.assertion-toolbar label { font-size:12px; }
+.extraction-card :deep(h4) { display:none; }
+@container (max-width: 600px) {
+  .case-workbench .case-layout { grid-template-columns:minmax(88px,22%) minmax(0,1fr); gap:4px; }
+  .case-identity-fields, .case-workbench .case-data { grid-template-columns:minmax(0,1fr); }
+  .case-workbench .case-editor { padding:7px; }
 }
 @container (max-width: 360px) {
-  .test-case-head { padding-block: 8px; }
-  .interface-summary h1 { font-size: 18px; }
+  .case-workbench .case-layout { display:flex; overflow:auto; }
+  .case-navigation { max-height:120px; flex:none; }
+  .case-workbench .case-editor { overflow:visible; }
 }
 </style>

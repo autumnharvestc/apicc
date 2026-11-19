@@ -157,8 +157,8 @@ describe("stress workbench report", () => {
     const adapter = createOnlineProjectAdapter(execution, f.api, () => true, () => true), { i18n } = createI18nInstance();
     const view = mount(OnlineProjectAssets, { props: { view: "test", online, adapter, localProjects: [] }, global: { plugins: [i18n] } });
     try {
-      const tab = view.findAll('nav.tabs button').find(button => button.text() === i18n.global.t('stress.title'));
-      expect(tab?.exists()).toBe(true); await tab!.trigger('click'); await flushPromises();
+      const tab = view.get('[data-testid="test-tab-stress"]');
+      await tab.trigger('click'); await flushPromises();
       expect(view.get('[data-testid="online-stress-panel"]').text()).toContain('Online saved plan');
       expect(view.find('[data-testid="online-stress-location"]').exists()).toBe(false);
       expect(view.get('[data-testid="online-stress-panel"]').text()).toContain(i18n.global.t("onlineExecution.localLifetime"));
