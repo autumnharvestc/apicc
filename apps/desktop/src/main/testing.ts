@@ -3,7 +3,7 @@ import { writeRunScope } from "./runs.js";
 import { join } from "node:path";
 import { CollectionRunner, WorkflowRunner, createEventBus, createHttpSession, testDataSelectionsForRequests, resolveExecutionEnvironment, selectEffectiveCases, type CredentialRequestSelection, type RunResult } from "@apicc/core";
 import { EvidenceInvocationSchema, type EvidenceInvocation } from "../shared/testing.js";
-import { DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema, TestingReadInputSchema, type TestingApi, type TestingAssets, type SuiteInvocation } from "../shared/testing.js";
+import { DatasetExchangeInputSchema, DatasetExportInputSchema, SuiteInvocationSchema, TestingReadInputSchema, suiteCaseChoices, type TestingApi, type TestingAssets, type SuiteInvocation } from "../shared/testing.js";
 import type { createSession } from "./session.js";
 import type { DebugCredentialHost } from "./credentialHost.js";
 import { createExecutionOutputBoundary, persistExecutionJson } from "./executionOutput.js";
@@ -24,20 +24,7 @@ export function createTestingController(session: ReturnType<typeof createSession
     const found = session.locateProject(input.project);
     if (!found || !session.revision) throw new Error("Testing project not found");
     const project = found.project;
-    const cases: TestingAssets["cases"] = [];
-    for (const collection of project.collections) {
-      const visit = (container: typeof collection | (typeof collection.folders)[number], folderIds: string[]) => {
-        for (const asset of container.apis) {
-          for (const testCase of asset.cases) {
-            const previous = cases.find((item) => item.locator.collectionId === collection.id && JSON.stringify(item.locator.folderIds) === JSON.stringify(folderIds) && item.locator.apiId === asset.contract.id && item.caseId === testCase.id);
-            if (previous) { previous.scopes.push(testCase.scope); continue; }
-            cases.push({ locator: { ...input.project, collectionId: collection.id, folderIds, apiId: asset.contract.id }, caseId: testCase.id, name: `${asset.contract.metadata.name} / ${testCase.name}`, scopes: [testCase.scope], tags: testCase.tags ?? [] });
-          }
-        }
-        for (const folder of container.folders) visit(folder, [...folderIds, folder.id]);
-      };
-      visit(collection, []);
-    }
+    const cases = suiteCaseChoices(project, input.project);
     return Promise.resolve(plain({ context: { ...input, revision: session.revision }, readOnly: session.readOnly, datasets: project.datasets ?? [], suites: project.suites ?? [], cases,
       environments: project.environments.map(({ id, name }) => ({ id, name })), collections: project.collections.map(({ id, name }) => ({ id, name })), workflows: project.workflows.map(({ id, name, status }) => ({ id, name, status })) }));
   }

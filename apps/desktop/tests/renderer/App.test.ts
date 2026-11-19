@@ -4187,7 +4187,7 @@ describe("App 已打开项目的工作位置", () => {
         else await testing.newSuite(assetName);
         await testing.save();
       }
-      const entries = () => wrapper.findAll('[data-testid="test-navigation-list"] button').filter(item => item.text() === assetName);
+      const entries = () => wrapper.findAll('[data-testid="test-navigation-list"] button').filter(item => item.attributes("title") === assetName);
       const nameField = `[data-testid="${kind}-panel"] .form-card input`;
       expect(entries()).toHaveLength(2);
       await entries()[0]!.trigger("click");

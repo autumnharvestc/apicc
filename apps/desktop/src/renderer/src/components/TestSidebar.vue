@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { FileTextOutlined } from "@ant-design/icons-vue";
 import { computed, ref } from "vue";
 import type { TestingPane } from "../../../shared/testing.js";
 import type { TestingStore } from "../stores/testing.js";
@@ -35,6 +36,9 @@ const search = ref("");
 const searchInput = ref<HTMLInputElement | null>(null);
 function clearSearch() { search.value = ""; searchInput.value?.focus(); }
 const visibleScenarios = computed(() => props.scenarios.filter(item => matches(item.name)));
+const assetRows = computed(() => props.pane === "datasets"
+  ? (props.testing?.view?.datasets ?? []).map(item => ({ id: item.id, name: item.name, summary: t("testAssets.rowCount", { rows: item.rows.length, columns: item.columns.length }) }))
+  : (props.testing?.view?.suites ?? []).map(item => ({ id: item.id, name: item.name, summary: "" })));
 const selectedId = computed(() => props.pane === "datasets" ? props.testing?.dataset?.id : props.testing?.suite?.id);
 const query = computed(() => search.value.trim().toLocaleLowerCase());
 const matches = (name: string) => name.toLocaleLowerCase().includes(query.value);
@@ -77,7 +81,7 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
       <button v-if="pane === 'datasets' || pane === 'suites'" class="new-asset" type="button" :disabled="!testingCurrent || testing?.readOnly"
         @click="editAsset(() => pane === 'datasets' ? testing?.newDataset(t('testing.newDataset')) : testing?.newSuite(t('testing.newSuite')))">＋ {{ t('testPresentation.newAsset') }}</button>
     </div>
-    <div class="fixed-actions"><div class="search-field"><input ref="searchInput" v-model="search" :placeholder="t(pane === 'api-cases' ? 'testPresentation.searchApi' : 'testing.search')" :aria-label="t('testing.search')" /><button type="button" class="search-clear" data-testid="test-search-clear" :style="{ visibility: search ? 'visible' : 'hidden' }" :aria-label="t('testPresentation.clearSearch')" :title="t('testPresentation.clearSearch')" @click="clearSearch">×</button></div></div>
+    <div class="fixed-actions"><div class="search-field"><input ref="searchInput" v-model="search" :placeholder="t(pane === 'api-cases' ? 'testPresentation.searchApi' : pane === 'suites' ? 'testAssets.searchSuites' : pane === 'datasets' ? 'testAssets.searchDatasets' : 'testing.search')" :aria-label="t('testing.search')" /><button type="button" class="search-clear" data-testid="test-search-clear" :style="{ visibility: search ? 'visible' : 'hidden' }" :aria-label="t('testPresentation.clearSearch')" :title="t('testPresentation.clearSearch')" @click="clearSearch">×</button></div></div>
 
     <div class="test-list" data-testid="test-navigation-list">
       <template v-if="pane === 'api-cases'">
@@ -111,8 +115,12 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
         <span v-if="visibleScenarios.length === 0" class="muted" data-testid="test-no-scenarios">{{ search ? t('testPresentation.noMatches') : t("test.noScenarios") }}</span>
       </template>
       <template v-else-if="testingCurrent && testing">
-        <button v-for="item in (pane === 'datasets' ? testing.view?.datasets : testing.view?.suites)?.filter(item => matches(item.name))" :key="item.id" :title="item.name" type="button" class="api-item" :class="{active: selectedId === item.id}" :aria-current="selectedId === item.id ? 'true' : undefined" :data-asset-id="item.id" @click="editAsset(() => testing!.select(pane === 'datasets' ? 'dataset' : 'suite',selectedId === item.id ? '' : item.id))">{{ item.name }}</button>
-        <span v-if="!(pane === 'datasets' ? testing.view?.datasets : testing.view?.suites)?.some(item => matches(item.name))" class="muted">{{ t(search ? 'testPresentation.noMatches' : 'testPresentation.emptyAssets') }}</span>
+        <button v-for="item in assetRows.filter(item => matches(item.name))" :key="item.id" type="button" :title="item.name" class="api-item asset-entry"
+          :class="{active: selectedId === item.id}" :aria-current="selectedId === item.id ? 'true' : undefined" :data-asset-id="item.id"
+          @click="editAsset(() => testing!.select(pane === 'datasets' ? 'dataset' : 'suite', selectedId === item.id ? '' : item.id))">
+          <FileTextOutlined v-if="item.summary" /><span><strong>{{ item.name }}</strong><small v-if="item.summary">{{ item.summary }}</small></span>
+        </button>
+        <span v-if="!assetRows.some(item => matches(item.name))" class="muted">{{ t(search ? 'testPresentation.noMatches' : 'testPresentation.emptyAssets') }}</span>
       </template>
     </div>
   </aside>
@@ -137,6 +145,11 @@ async function editAsset(action: () => unknown | Promise<unknown>) { try { await
 .test-list .api-detail { display: flex; gap: 5px; align-items: center; border-inline-start: 3px solid transparent; }
 .api-detail.active { border-inline-start-color: var(--accent); }
 .api-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.test-list .asset-entry { display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--border); padding:7px 12px; border-radius:0; }
+.asset-entry.active { border-radius:5px; }
+.asset-entry span, .asset-entry strong { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.asset-entry strong, .asset-entry small { display:block; }
+.asset-entry small { color:var(--text-muted); margin-top:2px; }
 .method { flex: 0 0 40px; border:1px solid color-mix(in srgb,currentColor 40%,transparent); border-radius:4px; background:color-mix(in srgb,currentColor 7%,transparent); text-align:center; font-size: 11px; font-weight: 600; color: var(--accent); }
 .method[data-method="GET"] { color: var(--accent); }
 .method[data-method="POST"] { color:var(--pass); }

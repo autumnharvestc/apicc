@@ -161,7 +161,8 @@ describe("stress workbench report", () => {
       await tab.trigger('click'); await flushPromises();
       expect(view.get('[data-testid="online-stress-panel"]').text()).toContain('Online saved plan');
       expect(view.find('[data-testid="online-stress-location"]').exists()).toBe(false);
-      expect(view.get('[data-testid="online-stress-panel"]').text()).toContain(i18n.global.t("onlineExecution.localLifetime"));
+      await view.get('[data-plan-id="saved"]').trigger('click');
+      expect(view.get('.location-row').text()).toContain(i18n.global.t("onlineExecution.local"));
     } finally { view.unmount(); adapter.stop(); execution.setVisible(false); }
   });
   it("edits rise/fall stages and arrival units, rejecting missing lifecycle references and unfinished input mappings", async () => {

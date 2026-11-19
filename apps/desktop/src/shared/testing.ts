@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DatasetAssetSchema, SuiteAssetSchema } from "@apicc/core/schema";
-import type { AssertOperatorDescriptor, DatasetAsset, SuiteAsset, SuitePreview, SuiteRunOverrides, RunResult } from "@apicc/core";
+import type { ContractProject, ContractCollection, ContractFolder, AssertOperatorDescriptor, DatasetAsset, SuiteAsset, SuitePreview, SuiteRunOverrides, RunResult } from "@apicc/core";
 import { DatasetLocatorSchema, ProjectLocatorSchema, SuiteLocatorSchema } from "./locations.js";
 import type { ApiLocator } from "./locations.js";
 
@@ -36,8 +36,29 @@ export interface TestingAssets {
   suites: SuiteAsset[];
   environments: Array<{ id: string; name: string }>;
   collections: Array<{ id: string; name: string }>;
-  cases: Array<{ locator: ApiLocator; caseId: string; name: string; scopes: string[]; tags: string[] }>;
+  cases: Array<{ locator: ApiLocator; caseId: string; name: string; apiName?: string; caseName?: string; modulePath?: string; scopes: string[]; tags: string[] }>;
   workflows: Array<{ id: string; name: string; status: string }>;
+}
+export function suiteCaseChoices(project: ContractProject, owner: TestingContext["project"]): TestingAssets["cases"] {
+  const cases: TestingAssets["cases"] = [];
+  for (const collection of project.collections) {
+    function visit(container: ContractCollection | ContractFolder, folderIds: string[], names: string[]) {
+      for (const asset of container.apis) {
+        const byId = new Map<string, TestingAssets["cases"][number]>();
+        for (const item of asset.cases) {
+          const previous = byId.get(item.id);
+          if (previous) { previous.scopes.push(item.scope); continue; }
+          const apiName = asset.contract.metadata.name;
+          const choice = { locator: { ...owner, collectionId: collection.id, folderIds, apiId: asset.contract.id }, caseId: item.id,
+            name: `${apiName} / ${item.name}`, apiName, caseName: item.name, modulePath: names.join(" / "), scopes: [item.scope], tags: item.tags ?? [] };
+          byId.set(item.id, choice); cases.push(choice);
+        }
+      }
+      for (const folder of container.folders) visit(folder, [...folderIds, folder.id], [...names, folder.name]);
+    }
+    visit(collection, [], [collection.name]);
+  }
+  return cases;
 }
 export interface AssertionOperatorDTO { op: string; descriptor?: AssertOperatorDescriptor }
 export interface SuiteOutput { archiveFile?: string; invocationId: string; context: TestingContext; result: RunResult }

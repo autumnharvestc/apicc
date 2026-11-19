@@ -60,7 +60,7 @@ describe("current project testing center", () => {
     expect(save.mock.calls.map(([input]) => input.asset.id)).toEqual([b]);
     await click(b);
     expect(sidebar.find('[data-asset-id][aria-current]').exists()).toBe(false);
-    expect(panel.get(`[data-testid="${kind}-save"]`).attributes("disabled")).toBeDefined();
+    expect(panel.find(`[data-testid="${kind}-save"]`).exists()).toBe(false);
     expect(store[kind]).toBeNull();
     await store.save(); await store.remove();
     if (kind === "suite") await expect(store.run()).rejects.toThrow();
@@ -97,6 +97,28 @@ describe("current project testing center", () => {
     expect(store.dataset!.rows).toEqual(JSON.parse(source));
     expect(panel.get('input[aria-label="Row 2 · toString"]').element).toHaveProperty('value','');
     expect(panel.get('input[aria-label="Row 2 · constructor"]').element).toHaveProperty('value','');
+  });
+  it("edits text and numbers without losing an invalid cell draft, empty string, null or missing keys", async () => {
+    const { store, root, projectLocator, mountDataset, i18n, api } = await testingCenter();
+    i18n.global.locale.value = "en";
+    await store.newDataset("Orders");
+    Object.assign(store.dataset!, { columns: ["id", "amount", "optional"], rows: [{ id: "001", amount: 12, optional: null }, { id: "", amount: 0 }] });
+    await store.save();
+    const panel = mountDataset();
+    const field = (column: string) => panel.get(`input[aria-label="Row 1 · ${column}"]`);
+    expect((field("id").element as HTMLInputElement).value).toBe("001");
+    await field("id").setValue("099"); await field("amount").setValue("oops");
+    expect(panel.get('[role="alert"]').text()).toContain("Row 1, amount");
+    await field("id").setValue("000"); expect(panel.get('[data-testid="dataset-save"]').attributes("disabled")).toBeDefined();
+    await store.activate("", null, false, true); await store.activate(root, projectLocator, false, true);
+    await flushPromises();
+    expect((field("amount").element as HTMLInputElement).value).toBe("oops");
+    await panel.get('select[aria-label="Type for row 1 · amount"]').setValue("string");
+    expect(store.dataset!.rows[0]!.amount).toBe("oops");
+    await panel.get('select[aria-label="Type for row 1 · amount"]').setValue("number");
+    await field("amount").setValue("0"); await store.save();
+    const receipt = await api.listTestingAssets({root, project:projectLocator});
+    expect(receipt.datasets.find(item => item.id === store.dataset!.id)!.rows).toEqual([{ id:"000", amount:0, optional:null }, { id:"", amount:0 }]);
   });
   it("P3c renders typed import cells without losing missing, null, false, zero or business JSON", async () => {
     const { store, mountDataset, i18n } = await testingCenter();
@@ -141,7 +163,8 @@ describe("current project testing center", () => {
     store.suite!.selection = {kind:'query'}; await store.save(); await store.previewSuite(); await flushPromises();
     const table = panel.get('[data-testid="suite-preview-table"]');
     expect(table.findAll('tbody tr')).toHaveLength(store.preview!.plan.entries.length);
-    expect(table.get('tbody tr').text()).toContain('Case'); expect(table.text()).toContain(item.caseId); expect(table.text()).toContain('base');
+    expect(table.get('tbody tr').text()).toContain('Case'); expect(table.text()).toContain(item.name); expect(table.text()).toContain('Base case');
+    expect(table.get('tbody [title]').attributes('title')).toContain(item.locator.apiId);
     expect(table.get('tbody tr').findAll('td')[1]!.text()).toBe(String(store.preview!.entries[0]!.plannedExecutions));
     i18n.global.locale.value = 'zh-CN'; await flushPromises(); expect(table.text()).toContain('用例');
   });
@@ -181,11 +204,12 @@ describe("current project testing center", () => {
       expect.soft(units).toContain(locale === "zh-CN" ? "非请求诊断 0" : "Non-request diagnostics 0");
       const summaries = panel.findAll('.result-scroll > div > details > summary');
       expect(summaries).toHaveLength(2);
-      expect.soft(summaries[0]!.text()).toContain(locale === "zh-CN" ? "· 通过 · 数据行=— · 条目=" : "· Passed · Data row=— · Entry=");
-      expect.soft(summaries[1]!.text()).toContain(locale === "zh-CN" ? "· 失败 · 数据行=— · 条目=" : "· Failed · Data row=— · Entry=");
+      expect.soft(summaries[0]!.text()).toContain(locale === "zh-CN" ? "· 通过 · 数据行=—" : "· Passed · Data row=—");
+      expect.soft(summaries[1]!.text()).toContain(locale === "zh-CN" ? "· 失败 · 数据行=—" : "· Failed · Data row=—");
       expect(summaries[0]!.text()).toContain("业务接口 User API / 成功用例 User passed case");
       expect(summaries[1]!.text()).toContain("业务接口 User API / 失败用例 User failed case");
-      expect(summaries[0]!.text()).toContain(result.cases[0]!.entryId!);
+      expect(summaries.map(row => row.attributes('title'))).toEqual(result.cases.map(row => row.entryId));
+      expect(summaries[0]!.text()).not.toContain(result.cases[0]!.entryId!);
       expect(panel.text()).toContain("custom-result-warning-v9：用户原文"); expect(panel.text()).toContain("业务正文 User original");
       expect(JSON.stringify(result)).toBe(before); panel.unmount();
     }
@@ -207,7 +231,8 @@ describe("current project testing center", () => {
       expect(summary).toContain(locale === "zh-CN" ? "跳过" : "Skipped");
       expect(summary).toContain("User skipped entry"); expect(summary).toContain("Untranslated user error");
       const entries = panel.get('[data-testid="suite-result-table"]').findAll('tbody tr');
-      expect(entries.map(row => row.get('th').text())).toEqual(['User aborted entry', 'User skipped entry']);
+      expect(entries.map(row => row.get('th').text())).toEqual(['User aborted API / User aborted case', 'User skipped entry']);
+      expect(entries.map(row => row.get('th').attributes('title'))).toEqual(['User aborted entry','User skipped entry']);
       expect(entries[0]!.findAll('td').map(cell => cell.text())).toEqual(['—', locale === 'zh-CN' ? '中止' : 'Aborted', 'Untranslated user error']);
       panel.unmount();
     }
@@ -239,7 +264,7 @@ describe("current project testing center", () => {
     expect((await api.runsList())[0]).toMatchObject({ total: 1, passed: 1, failed: 0, reportingUnits: { total: 1, entryDiagnostics: 0 } });
     await panel.get('select[multiple]').setValue([]); await store.save(); await store.previewSuite();
     expect(store.suite!.selection).toEqual({ kind: "query" });
-    const tagInput = panel.findAll('.editor-scroll input:not([type="checkbox"])').at(-1)!;
+    const tagInput = panel.get('[data-testid="suite-query-tags"]');
     await tagInput.setValue("smoke"); expect(store.suite!.selection).toEqual({ kind: "query", caseTags: ["smoke"] });
     await store.save(); await store.previewSuite();
     await api.containerSave({ kind: "collection", locator: collection.locator, operations: { variables: {}, preOperations: [], postOperations: [{ id: crypto.randomUUID(), type: "script", content: 'throw new Error("container diagnostic");' }] } });
@@ -355,6 +380,7 @@ describe("current project testing center", () => {
     expect(store.importPreview).toBeNull();
     api.importDataset = original;
     await store.activate(root, projectLocator, true);
+    await store.select("dataset", store.view!.datasets[0]!.id);
     const wrapper = mountDataset();
     expect((wrapper.get('[data-testid="dataset-save"]').element as HTMLButtonElement).disabled).toBe(true);
     await expect(store.newDataset("forbidden")).rejects.toThrow(/read.only|只读/i);

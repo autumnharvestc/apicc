@@ -19,7 +19,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
   const key = (root: string, project: ProjectLocator) => JSON.stringify([root, project.workspaceId, project.groupId, project.projectId]);
   type Selection = {
     dataset: DatasetAsset | null; suite: SuiteAsset | null; snapshot: string; creating: boolean;
-    pendingDatasetColumns: string | null; importPreview: Pick<DatasetAsset, "columns" | "rows"> | null;
+    invalidCells: Record<string, string>; pendingDatasetColumns: string | null; importPreview: Pick<DatasetAsset, "columns" | "rows"> | null;
     dirty: boolean; revision: string;
   };
   const parked = reactive(new Map<string, Selection>());
@@ -41,9 +41,10 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
     evidenceMode: "failures" as "none" | "failures" | "all",
     importPreview: null as Pick<DatasetAsset, "columns" | "rows"> | null,
     pendingDatasetColumns: null as string | null,
+    invalidCells: {} as Record<string, string>,
     get dirty(): boolean {
       const value = store.dataset ?? store.suite;
-      return !!value && (store.creating || JSON.stringify(value) !== store.snapshot || store.pendingDatasetColumns !== null);
+      return !!value && (store.creating || JSON.stringify(value) !== store.snapshot || store.pendingDatasetColumns !== null || Object.keys(store.invalidCells).length > 0);
     },
     get current(): boolean {
       const loaded = store.view?.context;
@@ -71,7 +72,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         if (store.suite) store.suite = JSON.parse(store.snapshot) as SuiteAsset;
       }
       store.creating = false; store.importPreview = null; generation++;
-      store.pendingDatasetColumns = null;
+      store.pendingDatasetColumns = null; store.invalidCells = {};
       store.diskConflict = null; store.saveFailure = null;
     },
     hasDraft(root: string, project: ProjectLocator) {
@@ -84,7 +85,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       return navigate(() => {
         generation++; activeKey = ""; store.view = null; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false; store.importPreview = null; store.preview = null; store.result = null; store.running = false; store.busy = false;
         store.diskConflict = null; store.saveFailure = null;
-        store.pendingDatasetColumns = null;
+        store.pendingDatasetColumns = null; store.invalidCells = {};
       });
     },
     async activate(root: string, project: ProjectLocator | null, readOnly = false, retainSelection = false) {
@@ -95,7 +96,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         if (retainSelection && activeKey !== target && store.view) {
           if (store.dataset || store.suite) parked.set(activeKey, {
             dataset: store.dataset, suite: store.suite, snapshot: store.snapshot, creating: store.creating, dirty: store.dirty,
-            pendingDatasetColumns: store.pendingDatasetColumns, importPreview: store.importPreview, revision: store.view.context.revision,
+            invalidCells: store.invalidCells, pendingDatasetColumns: store.pendingDatasetColumns, importPreview: store.importPreview, revision: store.view.context.revision,
           });
           else parked.delete(activeKey);
         }
@@ -104,7 +105,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         store.view = null; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false;
         store.preview = null; store.result = null; store.importPreview = null; store.error = ""; store.busy = true; store.running = false;
         store.diskConflict = null; store.saveFailure = null;
-        store.pendingDatasetColumns = null;
+        store.pendingDatasetColumns = null; store.invalidCells = {};
         if (!project || !root) { store.busy = false; return true; }
         try {
           const view = await currentDiskRead(() => api.listTestingAssets({ root, project: clone(project) }), () => diskEpoch,
@@ -124,11 +125,11 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
               store.dataset = current && saved.dataset ? clone(current as DatasetAsset) : null;
               store.suite = current && saved.suite ? clone(current as SuiteAsset) : null;
               store.snapshot = JSON.stringify(current ?? null); store.creating = false;
-              store.importPreview = null; store.pendingDatasetColumns = null; store.diskConflict = null;
+              store.importPreview = null; store.pendingDatasetColumns = null; store.invalidCells = {}; store.diskConflict = null;
             };
             if (saved.dirty && !readOnly && !view.readOnly) {
               store.dataset = saved.dataset; store.suite = saved.suite; store.snapshot = saved.snapshot;
-              store.creating = saved.creating; store.pendingDatasetColumns = saved.pendingDatasetColumns; store.importPreview = saved.importPreview;
+              store.creating = saved.creating; store.invalidCells = saved.invalidCells; store.pendingDatasetColumns = saved.pendingDatasetColumns; store.importPreview = saved.importPreview;
               if (saved.creating ? !!current : !sameDiskValue(current, JSON.parse(saved.snapshot)) || !!saved.suite && view.context.revision !== saved.revision)
                 store.diskConflict = { reason: "changed", name: (saved.dataset ?? saved.suite)!.name, restore: restoreSaved };
             } else restoreSaved();
@@ -147,7 +148,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       if (store.creating) return;
       if (store.dataset && !datasetIds.has(store.dataset.id)
         || store.suite && !suiteIds.has(store.suite.id)) {
-        generation++; store.dataset = null; store.suite = null; store.snapshot = ""; store.pendingDatasetColumns = null;
+        generation++; store.dataset = null; store.suite = null; store.snapshot = ""; store.pendingDatasetColumns = null; store.invalidCells = {};
         store.preview = null; store.result = null; store.importPreview = null; store.diskConflict = null; store.saveFailure = null;
         store.busy = false; store.error = "workbenchPosition.unavailable";
       }
@@ -163,7 +164,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         generation++; store.dataset = asset && kind === "dataset" ? clone(asset as DatasetAsset) : null; store.suite = asset && kind === "suite" ? clone(asset as SuiteAsset) : null;
         store.snapshot = asset ? JSON.stringify(asset) : ""; store.creating = false; store.preview = null; store.result = null; store.importPreview = null; store.error = ""; store.busy = false; store.running = false;
         store.diskConflict = null; store.saveFailure = null;
-        store.pendingDatasetColumns = null;
+        store.pendingDatasetColumns = null; store.invalidCells = {};
         return true;
       });
     },
@@ -182,7 +183,8 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       });
     },
     async save() {
-      writable(); const token = generation; const asset = clone(store.dataset ?? store.suite); if (!asset) return;
+      writable(); if (Object.keys(store.invalidCells).length || store.pendingDatasetColumns !== null) throw new Error("incomplete-dataset-cells");
+      const token = generation; const asset = clone(store.dataset ?? store.suite); if (!asset) return;
       if (store.diskConflict) throw new Error("disk-draft-blocked");
       const currentDisk = diskEpoch;
       const context = clone(store.view!.context); const savedSnapshot = JSON.stringify(asset); store.busy = true;
@@ -215,7 +217,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         const view = await api.deleteTestingAsset({ context, target });
         if (token !== generation || !store.current) return;
         store.view = view; store.dataset = null; store.suite = null; store.snapshot = ""; store.creating = false; store.preview = null; store.result = null; generation++;
-        store.pendingDatasetColumns = null;
+        store.pendingDatasetColumns = null; store.invalidCells = {};
       });
     },
     async previewImport(format: "csv" | "json", content: string) {
@@ -223,7 +225,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
       const preview = await api.importDataset({ context: clone(store.view!.context), format, content });
       if (token === generation && store.current && JSON.stringify(store.dataset) === before) store.importPreview = preview;
     },
-    applyImport() { writable(); if (store.dataset && store.importPreview) { Object.assign(store.dataset, clone(store.importPreview)); store.importPreview = null; store.pendingDatasetColumns = null; } },
+    applyImport() { writable(); if (store.dataset && store.importPreview) { Object.assign(store.dataset, clone(store.importPreview)); store.importPreview = null; store.pendingDatasetColumns = null; store.invalidCells = {}; } },
     async exportDataset(format: "csv" | "json") {
       if (!store.current || !store.view || !store.dataset || store.dirty) throw new Error("Save dataset before export");
       const token = generation; const result = await api.exportDataset({ context: clone(store.view.context), locator: { ...store.view.context.project, datasetId: store.dataset.id }, format });
@@ -275,7 +277,7 @@ export function createTestingStore(api: ApiccApi, options: { confirmDiscard: () 
         store.saveFailure = null;
         store.error = "";
         store.importPreview = null;
-        store.pendingDatasetColumns = null;
+        store.pendingDatasetColumns = null; store.invalidCells = {};
         store.preview = null;
       };
       if (store.dirty && (store.diskConflict || !view || draftChanged || dependenciesChanged)) {

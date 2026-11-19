@@ -1,4 +1,6 @@
-import type { DebugInvocation, JsonValue, StressPlan, SuiteAsset, Workflow } from "@apicc/core";
+import type { ApiAsset, ContractProject, DebugInvocation, JsonValue, StressPlan, SuiteAsset, Workflow } from "@apicc/core";
+import { createReadonlyProjectAssetContext } from "@apicc/core/assets/context";
+import { resolveSuitePlan } from "@apicc/core/testing/selection";
 import { StressPlanSchema } from "@apicc/core/schema";
 import type { ApiLocator } from "../../../shared/locations.js";
 import type { OnlineExecutionStore } from "../stores/onlineExecution.js";
@@ -23,6 +25,12 @@ export function runOnlineWorkflow(execution: OnlineExecutionStore, workflow: Wor
 
 export function runOnlineSuite(execution: OnlineExecutionStore, suite: SuiteAsset, allowDraft: boolean) {
   return execution.run({ kind: "suite", suiteId: suite.id, allowDraft });
+}
+
+export function previewOnlineSuite(project: ContractProject, assets: ApiAsset[], revision: string, suiteId: string, allowDraft: boolean, environmentId?: string) {
+  const context = createReadonlyProjectAssetContext({ projectId: project.id, project, assets,
+    models: project.models, components: project.components, suites: project.suites, datasets: project.datasets });
+  return resolveSuitePlan({ project, context, definitionRevision: revision }, suiteId, { allowDraft, environmentId });
 }
 
 export function runOnlineStress(execution: OnlineExecutionStore, plan: StressPlan, savedPlanId: string) {

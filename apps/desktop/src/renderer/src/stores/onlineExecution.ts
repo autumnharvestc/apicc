@@ -28,7 +28,7 @@ function submissionKey(target: TaskTarget, planId?: string): string {
   return JSON.stringify([invocation.mode, collectionId, folderIds, apiId,
     ...(invocation.mode === "case" ? [invocation.case.caseId, invocation.case.scope] : [])]);
 }
-export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; localReport?: OnlineReport; job?: OnlineJob; agentRef?: JobRef; error: string };
+export type RunRecord = { context: OnlineExecutionContext; runId: string; submittedAt: string; target: {kind: TaskTarget['kind']; stressPlanId?: string; debugRequestLocator?: ApiLocator}; targetName?: string; location: ExecutionLocation; locationName?: string; environmentId?: string; environmentName?: string; pending: boolean; result?: OnlineLocalResult; localReport?: OnlineReport; job?: OnlineJob; agentRef?: JobRef; error: string };
 type CachedContext = { context: OnlineExecutionContext; lastUsed: number; payloadBytes?: number; debugKeys: Set<string>;
   pending: Set<string>; uncertain: Map<string, RunRecord>; jobs: Map<string, { jobId: string; executionId: string; agentId: string }>; jobCursor: number };
 export interface OnlineExecutionCacheOptions { storage?: ExecutionCacheStorage | null; now?: () => number; preferences?: OnlineExecutionCachePreferences; confirmNewSubmission?: (runId: string) => boolean }
@@ -500,7 +500,7 @@ export function createOnlineExecutionStore(api: OnlineExecutionPort & { pluginsL
       const environmentId = target.kind === 'stress' ? target.plan.environmentId ?? store.environmentId : store.environmentId ?? suite?.environmentId;
       const locationName = location.kind === 'agent' ? store.agents?.agents.find(agent => agent.id === location.agentId)?.name : undefined;
       const environmentName = store.project?.environments.find(env => env.id === environmentId)?.name;
-      const run: RunRecord = shallowReactive({ context, runId, submittedAt: new Date().toISOString(), target: { kind: target.kind, ...(invocation?.mode === 'request' ? {debugRequestLocator: plain(invocation.locator)} : {}) }, targetName, location, locationName, environmentId, environmentName, pending: true, error: '' });
+      const run: RunRecord = shallowReactive({ context, runId, submittedAt: new Date().toISOString(), target: { kind: target.kind, ...(savedPlan ? { stressPlanId: savedPlan.id } : {}), ...(invocation?.mode === 'request' ? {debugRequestLocator: plain(invocation.locator)} : {}) }, targetName, location, locationName, environmentId, environmentName, pending: true, error: '' });
       cached.pending.add(runId); cached.payloadBytes = undefined;
       // Bound the desktop results to the same terminal history limit as the execution host.
       const history = [run, ...(histories.get(key(context)) ?? [])].slice(0, 100);

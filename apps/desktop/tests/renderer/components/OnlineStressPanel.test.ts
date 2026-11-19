@@ -46,13 +46,13 @@ describe('online stress plan entry', () => {
     f.store.project=project;f.store.saved=JSON.stringify(project);f.store.view={...f.store.view!,project};
     const agent=Object.fromEntries(['maxConcurrentStressJobs','maxStressProcesses','maxStressVus','maxStressRequestConcurrency','maxStressRps','maxStressMetricMemoryBytes'].map(key=>[key,defaultAgentConfig[key as keyof typeof defaultAgentConfig]]));
     f.store.agents=ProjectExecutionAgentsSchema.parse({defaultAgentId:'5',canManageScripts:false,policy:defaultPolicyConfig,policyVersion:'3',agents:[{id:'5',name:'Selected agent',acceptingJobs:true,availability:'runtime-missing',lastSeenAt:null,configuration:{configVersion:'4',appliedConfigVersion:'4',pendingFields:[],restartRequiredFields:[],status:'applied'},policy:{...defaultPolicyConfig,maxStressWorkers:4},policyVersion:'3',scriptsAllowed:false,stressConfiguration:{agent:{...agent,maxStressProcesses:3},sources:{'agent.maxStressRps':'default','agent.maxStressRequestConcurrency':'default','policy.maxStressRps':'default','policy.maxStressRequestConcurrency':'default'}},scriptGrant:{version:'0',scope:'script-version',scripts:[]}}]});
-    try{f.store.selectLocation({kind:'agent',agentId:'5'});await flushPromises();await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');f.store.stressWorkerCount=4;await flushPromises();
+    try{f.store.selectLocation({kind:'agent',agentId:'5'});await flushPromises();await f.view.get('[data-plan-id="saved"]').trigger('click');f.store.stressWorkerCount=4;await flushPromises();
       expect(f.view.get('[data-testid="online-stress-workers"]').attributes('max')).toBe('2');expect(f.store.stressWorkerCount).toBe(4);
     }finally{f.store.setVisible(false);}
   });
   it.each([['stress-local-budget-exceeded','本机压测预算不足','Local stress budget exceeded'],['stress-worker-policy-exceeded','压测工作进程数超出策略上限','Stress worker policy exceeded']])('final I5 localizes the known run rejection %s',async(code,zh,en)=>{
     const f=panelFixture({onlineExecution:async input=>{if(input.operation==='run')throw Error(code);return [];}});f.i18n.global.locale.value='zh-CN';
-    try{await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');await f.view.get('[data-testid="online-stress-run"]').trigger('click');await flushPromises();
+    try{await f.view.get('[data-plan-id="saved"]').trigger('click');await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');await f.view.get('[data-testid="online-stress-run"]').trigger('click');await flushPromises();
       expect.soft(f.view.get('[role="alert"]').text()).toContain(zh!);f.i18n.global.locale.value='en';await flushPromises();expect.soft(f.view.get('[role="alert"]').text()).toContain(en!);
     }finally{f.store.setVisible(false);}
   });
@@ -64,14 +64,14 @@ describe('online stress plan entry', () => {
     const withEnvironment=structuredClone(f.store.project!.stressPlans![0]!);withEnvironment.id='with-environment';withEnvironment.plan.environmentId=environmentId;
     f.store.project={...f.store.project!,stressPlans:[...f.store.project!.stressPlans!,withEnvironment]};f.store.saved=JSON.stringify(f.store.project);f.store.view={...f.store.view!,project:f.store.project};await flushPromises();
     try {
-      await f.view.get('[data-testid="online-stress-plan"]').setValue('with-environment');
+      await f.view.get('[data-plan-id="with-environment"]').trigger('click');
       expect(f.store.environmentId).toBeUndefined();
       f.store.environmentId = chooseBase ? undefined : environmentId;
-      await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+      await f.view.get('[data-plan-id="saved"]').trigger('click');
       if(chooseBase)await f.view.get('[data-testid="online-stress-environment"]').setValue('');
       expect((f.view.get('[data-testid="online-stress-environment"]').element as HTMLSelectElement).value).toBe('');
       const name = f.store.project!.environments.find(row => row.id === environmentId)?.name ?? environmentId;
-      expect(f.view.get('[data-testid="online-stress-effective-environment"]').text()).toContain(chooseBase ? f.i18n.global.t('onlineExecution.baseEnvironment') : name);
+      expect((f.view.get('[data-testid="online-stress-environment"]').element as HTMLSelectElement).selectedOptions[0]!.textContent).toContain(chooseBase ? f.i18n.global.t('onlineExecution.baseEnvironment') : name);
       await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
       await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
       await f.view.get('[data-testid="online-stress-run"]').trigger('click');await flushPromises();
@@ -149,6 +149,8 @@ describe('online stress plan entry', () => {
     const agent=Object.fromEntries(['maxConcurrentStressJobs','maxStressProcesses','maxStressVus','maxStressRequestConcurrency','maxStressRps','maxStressMetricMemoryBytes'].map(key=>[key,defaultAgentConfig[key as keyof typeof defaultAgentConfig]]));
     f.store.agents=ProjectExecutionAgentsSchema.parse({defaultAgentId:'5',canManageScripts:false,policy:defaultPolicyConfig,policyVersion:'3',agents:[{id:'5',name:'Selected agent',acceptingJobs:true,availability:'runtime-missing',lastSeenAt:null,configuration:{configVersion:'4',appliedConfigVersion:'3',pendingFields:['maxStressRps'],restartRequiredFields:[],status:'pending'},policy:defaultPolicyConfig,policyVersion:'3',scriptsAllowed:false,stressConfiguration:{agent:{...agent,maxStressRps:12.5},sources:{'agent.maxStressRps':'agent','agent.maxStressRequestConcurrency':'default','policy.maxStressRps':'workspace','policy.maxStressRequestConcurrency':'project'}},scriptGrant:{version:'0',scope:'script-version',scripts:[]}}]});
     f.store.selectLocation({kind:'agent',agentId:'5'});await flushPromises();
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
+    await f.view.get('[data-testid="online-stress-admission"] summary').trigger('click');
     expect.soft(f.view.text()).toContain('当前准入上界');expect.soft(f.view.text()).toContain('12.5 请求/秒');
     expect.soft(f.view.text()).toContain('节点配置');expect.soft(f.view.text()).toContain('工作区');expect.soft(f.view.text()).toContain('项目');
     expect.soft(f.view.text()).toContain('保存版本 4');expect.soft(f.view.text()).toContain('已应用版本 3');
@@ -192,7 +194,7 @@ describe('online stress plan entry', () => {
       return OnlineLocalResultSchema.parse(JSON.parse(JSON.stringify({ location: { kind: 'local' }, runId: input.runId, snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded-local-runtime', scriptTimeoutMs: 3000, output: { kind: 'stress', result: report } })));
     } });
     try {
-      await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+      await f.view.get('[data-plan-id="saved"]').trigger('click');
       await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
       await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
       expect(f.view.get('[data-testid="online-stress-run"]').attributes('disabled')).toBeUndefined();
@@ -216,7 +218,7 @@ describe('online stress plan entry', () => {
       return [];
     } });
     const source = f.store.project!.stressPlans![0]!;
-    f.store.project = {...f.store.project!,stressPlans:[source,{...source,id:'other',name:'Second schedule'}]};
+    f.store.project = {...f.store.project!,stressPlans:[source,{...source,id:'other',name:source.name}]};
     f.store.saved = JSON.stringify(f.store.project);
     const configuration={configVersion:'1',appliedConfigVersion:'1',pendingFields:[],restartRequiredFields:[],status:'applied'};
     const agent=Object.fromEntries(['maxConcurrentStressJobs','maxStressProcesses','maxStressVus','maxStressRequestConcurrency','maxStressRps','maxStressMetricMemoryBytes'].map(key=>[key,defaultAgentConfig[key as keyof typeof defaultAgentConfig]]));
@@ -227,14 +229,19 @@ describe('online stress plan entry', () => {
       scriptGrant:{version:'0',scope:'script-version',scripts:[]} }]});
     try {
       f.store.selectLocation({kind:'agent',agentId:'5'});
-      const selector=f.view.get('[data-testid="online-stress-plan"]'), stop=f.view.get('[data-testid="online-stress-stop"]');
-      await selector.setValue('saved'); await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
-      await f.view.get('[data-testid="online-stress-confirm"]').trigger('click'); await f.view.get('[data-testid="online-stress-run"]').trigger('click'); await flushPromises();
+      await f.view.get('[data-plan-id="saved"]').trigger('click'); await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
+      await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
+      expect(calls.filter(call => call.operation === 'run')).toHaveLength(0);
+      await f.view.get('[data-testid="online-stress-run"]').trigger('click'); await flushPromises();
       expect(f.store.submissions[0]?.agentRef).toEqual({agentId:'5',jobId:'701',executionId:'702'});
-      await selector.setValue('other'); expect(stop.attributes('disabled')).toBeDefined();
-      await stop.trigger('click'); expect(calls.filter(call=>call.operation==='cancel')).toEqual([]);
-      await selector.setValue('saved'); expect(stop.attributes('disabled')).toBeUndefined();
-      await stop.trigger('click'); await flushPromises();
+      expect(f.store.submissions[0]?.target.stressPlanId).toBe('saved');
+      f.view.unmount();
+      const reopened = mount(OnlineStressPanel, { props: {execution:f.store}, global:{plugins:[f.i18n]} });
+      await reopened.get('[data-plan-id="other"]').trigger('click');
+      expect(reopened.find('[data-testid="online-stress-stop"]').exists()).toBe(false);
+      expect(calls.filter(call=>call.operation==='cancel')).toEqual([]);
+      await reopened.get('[data-plan-id="saved"]').trigger('click');
+      await reopened.get('[data-testid="online-stress-stop"]').trigger('click'); await flushPromises();
       expect(calls.filter(call=>call.operation==='cancel')).toMatchObject([{runId:'701',location:{kind:'agent',agentId:'5'}}]);
     } finally { f.store.setVisible(false); }
   });
@@ -244,7 +251,7 @@ describe('online stress plan entry', () => {
     const pending = new Promise(resolve => { finish = resolve; });
     let agentJob: ReturnType<typeof OnlineJobSchema.parse>;
     const f = panelFixture({ onlineExecution: async input => { calls.push(input); if (input.operation === 'run') return pending; if (input.operation === 'cancel') return input.location.kind === 'agent' ? { ...agentJob, cancelState: 'requested' } : {}; throw new Error('unexpected-operation'); } });
-    await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
     const plan = f.store.project!.stressPlans![0]!.plan;
     agentJob = OnlineJobSchema.parse({ jobId: '99', executionId: '100', agentId: '5', state: 'running', cancelState: 'none', executionReleased: false, reportState: 'none', canCancel: true,
       task: { protocolVersion: 1, jobId: '99', executionId: '100', scope: f.store.context!.scope, submittedByUserId: '7', contractProjectId: f.store.project!.id, snapshotId: '66', manifestHash: 'a'.repeat(64), target: { kind: 'stress', plan }, policyVersion: '0', requiredCoreBuildId: 'b'.repeat(64), scriptPlanDigest: 'c'.repeat(64), executionProfile: 'no-script', runtimeCompatibilityId: 'recorded-agent-runtime', dispatchKind: 'dedicated-task', requiredCapabilities: ['protocol:http', 'task:stress', 'stress:local-workers-v1'] } });
@@ -268,7 +275,7 @@ describe('online stress plan entry', () => {
   // A bad user parameter must produce a readable refusal, not dump an internal Zod issue array.
   it('explains invalid worker and origin input directly without JSON diagnostics', async () => {
     const f = panelFixture({ onlineExecution: async () => [] }); f.i18n.global.locale.value = 'en';
-    await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
     await f.view.get('[data-testid="online-stress-workers"]').setValue(0);
     await f.view.get('[data-testid="online-stress-origins"]').setValue('not-an-origin');
     await f.view.get('[data-testid="online-stress-confirm"]').trigger('click'); await flushPromises();
@@ -278,11 +285,26 @@ describe('online stress plan entry', () => {
   // The specification allows either the outer environment or plan environment to be the sole source.
   it('allows a confirmed saved plan with only an outer project environment selected', async () => {
     const f = panelFixture({ onlineExecution: async () => [] });
-    await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
     f.store.environmentId = '00000000-0000-4000-8000-000000000019';
     await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
     await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
     expect(f.view.get('[data-testid="online-stress-run"]').attributes('disabled')).toBeUndefined();
+    f.store.setVisible(false);
+  });
+  it('blocks a saved plan whose HTTP case disappeared and allows selecting a replacement', async () => {
+    const f = panelFixture({ onlineExecution: async () => { throw new Error('unexpected submission'); } });
+    const collection = f.store.project!.collections[0]!, asset = collection.apis[0]!;
+    f.store.project!.stressPlans![0]!.plan.target = {kind:'case',collectionId:collection.id,apiId:asset.contract.id,caseId:'removed-case'};
+    f.store.saved = JSON.stringify(f.store.project);
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
+    await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
+    expect(f.view.get('[role="alert"]').text()).toBe(f.i18n.global.t('testAssets.targetMissing'));
+    for (const action of ['confirm','run','save']) expect(f.view.get(`[data-testid="online-stress-${action}"]`).attributes('disabled')).toBeDefined();
+    const select = f.view.get<HTMLSelectElement>('[data-testid="online-stress-target"]');
+    await select.setValue(select.element.options[0]!.value);
+    expect(f.view.get('[data-testid="online-stress-save"]').attributes('disabled')).toBeUndefined();
+    expect(f.view.get('[data-testid="online-stress-run"]').attributes('disabled')).toBeDefined();
     f.store.setVisible(false);
   });
   // An online project without any prior local plan still needs a real editable, unsaved draft.
@@ -305,7 +327,7 @@ describe('online stress plan entry', () => {
     let finish!: (value: unknown) => void;
     const pending = new Promise(resolve => { finish = resolve; });
     const f = panelFixture({ onlineExecution: async input => { calls.push(input); if (input.operation === 'run') return pending; if (input.operation === 'cancel') return {}; throw new Error('unexpected-operation'); } });
-    await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
     await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
     await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
     await f.view.get('[data-testid="online-stress-run"]').trigger('click'); await flushPromises();
@@ -321,7 +343,7 @@ describe('online stress plan entry', () => {
   it('keeps an edited plan blocked after an expected-version save conflict', async () => {
     let version = '';
     const f = panelFixture({ onlineExecution: async input => { if (input.operation !== 'saveProject') throw new Error('unexpected-operation'); version = input.expectedVersion; throw new Error('version_conflict'); } });
-    await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
     expect(f.view.find('[data-testid="online-stress-save"]').exists()).toBe(true);
     await f.view.findAll('label').find(label => label.text() === f.i18n.global.t('stress.workbench.think'))!.get('input').setValue(1);
     await f.view.get('[data-testid="online-stress-save"]').trigger('click'); await flushPromises();
@@ -334,7 +356,7 @@ describe('online stress plan entry', () => {
   // A confirmation belongs to the selected machine, environment and fixed plan, not to the form alone.
   it('requires a fresh target confirmation after changing location and preserves the plan environment', async () => {
     const f = panelFixture({ onlineExecution: async () => [] });
-    await f.view.get('[data-testid="online-stress-plan"]').setValue('saved');
+    await f.view.get('[data-plan-id="saved"]').trigger('click');
     expect(f.view.find('[data-testid="online-stress-origins"]').exists()).toBe(true);
     await f.view.get('[data-testid="online-stress-origins"]').setValue('http://127.0.0.1:8123');
     await f.view.get('[data-testid="online-stress-confirm"]').trigger('click');
@@ -357,10 +379,12 @@ describe('online stress plan entry', () => {
     const view = mount(OnlineStressPanel, { props: { execution: store }, global: { plugins: [i18n] } });
     expect(view.text()).toContain('Saved scenario');
     expect(view.find('[data-testid="online-stress-location"]').exists()).toBe(false);
+    expect(view.find('[data-testid="online-stress-environment"]').exists()).toBe(false);
+    await view.get('[data-plan-id="saved"]').trigger('click');
     expect(view.find('[data-testid="online-stress-environment"]').exists()).toBe(true);
-    expect(view.find('[data-testid="online-stress-run"]').text()).toBe(i18n.global.t('stress.start'));
-    expect(view.find('[data-testid="online-stress-stop"]').text()).toBe(i18n.global.t('stress.stop'));
-    expect(view.text()).toContain('loopback');
+    expect(view.find('[data-testid="online-stress-run"]').text()).toBe(i18n.global.t('testAssets.startStress'));
+    expect(view.find('[data-testid="online-stress-stop"]').exists()).toBe(false);
+    expect(view.get('.location-row').text()).toContain(i18n.global.t('onlineExecution.local'));
     expect(view.find('pre').exists()).toBe(false);
   });
 });

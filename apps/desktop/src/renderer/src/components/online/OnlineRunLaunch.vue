@@ -3,8 +3,6 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useWorkbenchPosition } from "../../stores/workbenchPosition.js";
 import { resolveExecutionEnvironment, selectEffectiveCases } from "@apicc/core/domain/execution-selection";
-import { resolveSuitePlan } from "@apicc/core/testing/selection";
-import { createReadonlyProjectAssetContext } from "@apicc/core/assets/context";
 import { StressPlanSchema } from "@apicc/core/schema";
 import type { ApiAsset, ContractCollection, ContractFolder, JsonValue } from "@apicc/core";
 import type { ApiLocator } from "../../../../shared/locations.js";
@@ -14,7 +12,7 @@ import { apiSessionKey } from "../../stores/localIdentity.js";
 import { onlineExecutionLocationIssue } from "../../onlineExecutionLocation.js";
 import { onlineSessionErrorKey } from "../../i18n/index.js";
 import { launchError, useLaunchMessages } from "../../execution/launchMessages.js";
-import { confirmOnlineStress, runOnlineCase, runOnlineStress, runOnlineSuite, runOnlineWorkflow, type LaunchKind } from "../../execution/launch.js";
+import { confirmOnlineStress, previewOnlineSuite, runOnlineCase, runOnlineStress, runOnlineSuite, runOnlineWorkflow, type LaunchKind } from "../../execution/launch.js";
 import RunLaunchForm from "../RunLaunchForm.vue";
 import RunWorkflowInputs from "../RunWorkflowInputs.vue";
 
@@ -75,13 +73,7 @@ const suitePreview = computed(() => {
   if (!suite.value || !project.value) return null;
   const value = project.value;
   try {
-    const context = createReadonlyProjectAssetContext({
-      projectId: value.id, project: value, assets: assets.value.map(item => item.asset),
-      models: value.models, components: value.components, suites: value.suites, datasets: value.datasets,
-    });
-    const resolved = resolveSuitePlan({ project: value, definitionRevision: version.value!, context }, suite.value.id, {
-      environmentId: props.execution.environmentId, allowDraft: allowDraft.value,
-    });
+    const resolved = previewOnlineSuite(value, assets.value.map(item => item.asset), version.value!, suite.value.id, allowDraft.value, props.execution.environmentId);
     return { count: resolved.entries.length, error: "" };
   } catch (error) { return { count: null, error: launchError(error, label) }; }
 });

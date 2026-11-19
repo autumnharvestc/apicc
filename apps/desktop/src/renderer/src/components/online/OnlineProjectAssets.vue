@@ -26,7 +26,7 @@ import OnlineRunRecordsHost from "./OnlineRunRecordsHost.vue";
 import OnlineStressPanel from "./OnlineStressPanel.vue";
 import { onlineExecutionLocationIssue } from "../../onlineExecutionLocation.js";
 import { onlineSessionErrorKey } from "../../i18n/index.js";
-import { runOnlineCase, runOnlineSuite, runOnlineWorkflow } from "../../execution/launch.js";
+import { previewOnlineSuite, runOnlineCase, runOnlineSuite, runOnlineWorkflow } from "../../execution/launch.js";
 import type { SwitchView } from "../../viewSwitch.js";
 import { isFullOnlineJob, OnlineReportSchema, type OnlineReport } from "../../../../shared/online/execution.js";
 import { locateOnlineApi } from "../../stores/online.js";
@@ -327,6 +327,11 @@ async function workflowRun(workflow: Workflow, inputs?: Readonly<Record<string, 
   if (props.adapter.workflowDesign.dirty) throw new Error(t("wf.unsaved"));
   await submitBusiness(() => runOnlineWorkflow(execution.value, workflow, inputs));
 }
+function suitePreview(allowDraft: boolean) {
+  const project = execution.value.project, suite = props.adapter.testing.suite, version = execution.value.view?.assets.version;
+  if (!suite || !project || !version) throw Error(t("workbenchPosition.unavailable"));
+  return previewOnlineSuite(project, props.adapter.apiEntries().map(item => item.asset), version, suite.id, allowDraft, execution.value.environmentId);
+}
 async function suiteRun(allowDraft: boolean) {
   if (businessRunIssue.value) throw new Error(businessRunIssue.value);
   if (!props.adapter.testing.suite || props.adapter.testing.dirty) throw new Error(t("wf.unsaved"));
@@ -415,7 +420,7 @@ async function publish() { const item = props.localProjects.find(item => item.pr
             :testing="adapter.testing" :ai="ai" :read-only="readOnly" :report-error="reportError"
             :interface-ready="!!selectedApi && selectedApi === JSON.stringify(adapter.editor.locator) && !pendingApi"
             :case-available="caseAvailable" :case-unavailable="caseUnavailable" :interface-loading="!!pendingApi" :external-run="runCase" :external-run-issue="businessRunIssue" :stress-disabled="readOnly || adapter.editor.dirty || execution.running"
-            :external-suite-run="suiteRun" :suggest-cases="ai ? () => ai!.fetchSuggestions() : undefined" @stress="stressCase" />
+            :external-suite-preview="suitePreview" :external-suite-run="suiteRun" :suite-environment-id="execution.environmentId" :suggest-cases="ai ? () => ai!.fetchSuggestions() : undefined" @stress="stressCase" />
           <OnlineStressPanel ref="stressPanel" v-if="stressVisited" v-show="testPage === 'stress'" class="asset-scroll" :execution="execution" :read-only="readOnly" :shortcut="stressShortcut" @record="id => action(() => showBusinessRecord(id))" />
         </TestWorkbench>
         <div v-if="['wf','test'].includes(moduleView) && businessSubmission" class="toolbar" role="status">

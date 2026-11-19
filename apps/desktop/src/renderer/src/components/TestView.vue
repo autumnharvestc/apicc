@@ -42,6 +42,8 @@ const props = defineProps<{
   externalRun?: (identity: import("../stores/cases.js").CaseIdentity) => Promise<void>;
   externalRunIssue?: string;
   stressDisabled?: boolean;
+  externalSuitePreview?: (allowDraft: boolean) => import("@apicc/core/testing/selection").ResolvedSuitePlan;
+  suiteEnvironmentId?: string;
   externalSuiteRun?: (allowDraft: boolean) => Promise<void>;
   suggestCases?: () => void;
   caseAvailable?: (identity: import("../stores/cases.js").CaseIdentity) => boolean;
@@ -86,7 +88,7 @@ function showResult() {
 <template>
   <section class="test-view" data-testid="test-view">
     <DatasetPanel v-if="pane === 'datasets' && testing?.current" :testing="testing" :refreshing-disk="refreshingDisk" />
-    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :external-run="externalSuiteRun" :external-run-issue="externalRunIssue" :testing="testing" :project-environment="projectEnvironment" :refreshing-disk="refreshingDisk" @open-run-record="emit('open-run-record', $event)" @locate-evidence="emit('locate-evidence', $event)" />
+    <SuitePanel v-else-if="pane === 'suites' && testing?.current" :ai="ai" :external-preview="externalSuitePreview" :environment-id="suiteEnvironmentId" :external-run="externalSuiteRun" :external-run-issue="externalRunIssue" :testing="testing" :project-environment="projectEnvironment" :refreshing-disk="refreshingDisk" @open-run-record="emit('open-run-record', $event)" @locate-evidence="emit('locate-evidence', $event)" />
     <!-- 单接口用例：用例面板 + 运行结果内嵌上屏 -->
     <template v-else-if="pane === 'api-cases'">
       <p v-if="interfaceReady === false && interfaceError" class="interface-error" role="alert">{{ t("testWorkbench.loadApiFailed", { error: interfaceError }) }}</p>

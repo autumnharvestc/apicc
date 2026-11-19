@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { FileOutlined, EllipsisOutlined, PlusOutlined } from "@ant-design/icons-vue";
+import ActionMenu from "./ActionMenu.vue";
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { JsonValue } from "@apicc/core";
@@ -9,6 +11,7 @@ const props = defineProps<{ testing: TestingStore; refreshingDisk?: boolean }>()
 const { t } = useI18n();
 const page = ref(0); const format = ref<"json" | "csv">("json"); const content = ref(""); const error = ref(""); const exported = ref<{ format: "json" | "csv"; text: string } | null>(null);
 const errorIsTyped = ref(false);
+const manageColumns = ref(false);
 const dataset = computed(() => props.testing.dataset);
 const columns = computed({
   get: () => props.testing.pendingDatasetColumns ?? dataset.value?.columns.join("\n") ?? "",
@@ -17,7 +20,7 @@ const columns = computed({
 const resourceKey = computed(() => JSON.stringify([props.testing.view?.context.root, props.testing.view?.context.project, dataset.value?.id]));
 const pages = computed(() => Math.max(1, Math.ceil((dataset.value?.rows.length ?? 0) / 100)));
 const rows = computed(() => dataset.value?.rows.slice(page.value * 100, page.value * 100 + 100) ?? []);
-watch(resourceKey, () => { page.value = 0; content.value = ""; error.value = ""; errorIsTyped.value = false; exported.value = null; }, { immediate: true });
+watch(resourceKey, () => { page.value = 0; manageColumns.value = false; content.value = ""; error.value = ""; errorIsTyped.value = false; exported.value = null; }, { immediate: true });
 watch(() => dataset.value?.rows.length, () => { page.value = Math.min(page.value, pages.value - 1); });
 watch(() => props.testing.saveFailure, (failure) => { if (!failure && errorIsTyped.value) { error.value = ""; errorIsTyped.value = false; } });
 async function attempt(operation: () => unknown | Promise<unknown>) {
@@ -30,17 +33,80 @@ function applyColumns() {
   if (props.testing.readOnly || !dataset.value) return;
   const names = columns.value.split(/\r?\n/).map(name => name.trim()).filter(Boolean);
   if (names.length > 256 || new Set(names).size !== names.length) { error.value = t("testing.columnInvalid"); return; }
-  if (dataset.value.rows.some(row => Object.keys(row).some(name => !names.includes(name)))) { error.value = t("testing.columnInUse"); return; }
+  const removed = dataset.value.columns.filter(column => !names.includes(column));
+  if (removed.some(column => dataset.value!.rows.some(row => Object.hasOwn(row, column)))) {
+    if (!window.confirm(t("testAssets.removeColumns", { names: removed.join(", ") }))) return;
+    dataset.value.rows = dataset.value.rows.map(row => Object.fromEntries(Object.entries(row).filter(([column]) => names.includes(column))));
+  }
+  props.testing.invalidCells = Object.fromEntries(Object.entries(props.testing.invalidCells).filter(([key]) => names.includes(JSON.parse(key)[1])));
   dataset.value.columns = names; props.testing.pendingDatasetColumns = null; error.value = ""; errorIsTyped.value = false;
 }
-function cell(index: number, column: string, value: string) {
+type ValueKind = "string" | "number" | "boolean" | "null" | "json" | "missing";
+const kinds: ValueKind[] = ["string", "number", "boolean", "null", "json", "missing"];
+function kindOf(row: Record<string, JsonValue>, column: string): ValueKind {
+  if (!Object.hasOwn(row, column)) return "missing";
+  const value = row[column];
+  return value === null ? "null" : typeof value === "object" ? "json" : typeof value as ValueKind;
+}
+const columnKinds = computed(() => {
+  const result = new Map<string, ValueKind | "mixed">();
+  for (const row of dataset.value?.rows ?? []) {
+    for (const column of Object.keys(row)) {
+      const kind = kindOf(row, column), known = result.get(column);
+      result.set(column, known && known !== kind ? "mixed" : kind);
+    }
+  }
+  return result;
+});
+function cellText(row: Record<string, JsonValue>, column: string) {
+  if (!Object.hasOwn(row, column)) return "";
+  return typeof row[column] === "string" ? row[column] : JSON.stringify(row[column]);
+}
+const cellKey = (index: number, column: string) => JSON.stringify([page.value * 100 + index, column]);
+function writeCell(index: number, column: string, value: JsonValue | undefined) {
   if (props.testing.readOnly || !dataset.value) return;
-  const row = dataset.value.rows[page.value * 100 + index]!;
-  try { if (!value.trim()) delete row[column]; else row[column] = JSON.parse(value) as JsonValue; error.value = ""; }
-  catch { error.value = t("testing.cellInvalid"); }
+  const at = page.value * 100 + index;
+  const row = { ...dataset.value.rows[at], [column]: value ?? null };
+  if (value === undefined) delete row[column];
+  dataset.value.rows[at] = row;
+  delete props.testing.invalidCells[cellKey(index,column)];
+  error.value = "";
+}
+function cell(index: number, column: string, text: string) {
+  if (props.testing.readOnly || !dataset.value) return;
+  const original = kindOf(dataset.value.rows[page.value * 100 + index]!, column);
+  const type = original === "missing" ? columnKinds.value.get(column) : original;
+  try {
+    let value: JsonValue;
+    if (type === "string" || !type || type === "mixed") value = text;
+    else {
+      value = JSON.parse(text) as JsonValue;
+      if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))
+        || type === "boolean" && typeof value !== "boolean" || type === "null" && value !== null
+        || type === "json" && (value === null || typeof value !== "object")) throw Error();
+    }
+    writeCell(index, column, value);
+  } catch { props.testing.invalidCells[cellKey(index,column)] = text; }
+}
+function changeType(index: number, column: string, type: ValueKind) {
+  const row = dataset.value?.rows[page.value * 100 + index];
+  if (!row || type === kindOf(row, column)) return;
+  const text = props.testing.invalidCells[cellKey(index,column)] ?? cellText(row, column) ?? "";
+  if (type === "number" || type === "boolean" || type === "json") {
+    writeCell(index, column, type === "number" ? 0 : type === "boolean" ? false : {});
+    if (text) cell(index, column, text);
+  } else writeCell(index, column, type === "string" ? text : type === "null" ? null : undefined);
 }
 function addRow() { if (!props.testing.readOnly && dataset.value && dataset.value.rows.length < 10000) { dataset.value.rows.push({}); page.value = pages.value - 1; } }
-function removeRow(index: number) { if (!props.testing.readOnly) dataset.value?.rows.splice(page.value * 100 + index, 1); }
+function removeRow(index: number) {
+  if (props.testing.readOnly || !dataset.value) return;
+  const at = page.value * 100 + index;
+  dataset.value.rows.splice(at, 1);
+  props.testing.invalidCells = Object.fromEntries(Object.entries(props.testing.invalidCells).flatMap(([key,value]) => {
+    const [row,column] = JSON.parse(key) as [number,string];
+    return row === at ? [] : [[JSON.stringify([row > at ? row - 1 : row,column]), value]];
+  }));
+}
 async function readFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]; if (!file || props.testing.readOnly) return;
   if (file.size > 10 * 1024 * 1024) throw new Error(t("testing.sourceLimit"));
@@ -63,26 +129,36 @@ function download() {
 }
 </script>
 <template>
-  <section class="dataset-panel" data-testid="dataset-panel">
-    <header class="toolbar">
-      <strong>{{ t('testing.datasets') }}</strong><span v-if="testing.dirty" class="dirty-badge">{{ t('testing.unsaved') }}</span>
-      <button class="primary" data-testid="dataset-save" :disabled="testing.readOnly || refreshingDisk || !dataset || testing.busy || !!testing.diskConflict || (!!error && !errorIsTyped)"
-        @click="attempt(() => testing.save())">{{ t('testing.save') }}</button>
-      <button :disabled="testing.readOnly || refreshingDisk || !dataset || testing.creating || testing.busy || !!testing.diskConflict" @click="attempt(() => testing.remove())">{{ t('testing.remove') }}</button>
+  <section class="dataset-panel asset-detail" data-testid="dataset-panel">
+    <header v-if="dataset" class="asset-heading">
+      <h2>{{ dataset.name }}</h2><span class="saved-state">{{ t(testing.dirty ? 'testing.unsaved' : 'testAssets.saved') }}</span>
+      <div class="asset-actions"><button class="primary" data-testid="dataset-save" :disabled="testing.readOnly || refreshingDisk || testing.busy || !!testing.diskConflict || testing.pendingDatasetColumns !== null || Object.keys(testing.invalidCells).length > 0 || (!!error && !errorIsTyped)"
+        @click="attempt(() => testing.save())">{{ t('testAssets.saveDataset') }}</button>
+        <ActionMenu test-id="dataset-more" :label="t('requestWorkbench.more')" :items="[
+          {key:'columns',label:t('testAssets.columns'),disabled:testing.readOnly}, {key:'clear',label:t('testAssets.clear')},
+          {key:'delete',label:t('testing.remove'),disabled:testing.readOnly || refreshingDisk || testing.creating || testing.busy || !!testing.diskConflict,danger:true}]"
+          @select="key => key === 'columns' ? manageColumns = !manageColumns : attempt(() => key === 'clear' ? testing.select('dataset', '') : testing.remove())"><EllipsisOutlined /></ActionMenu>
+      </div>
     </header>
     <p v-if="error || testing.error" class="error" role="alert">{{ testing.saveFailure ? t(`diskRefresh.error.${testing.saveFailure.reason}`) : error || (testing.error === "workbenchPosition.unavailable" ? t(testing.error) : testing.error) }}</p>
-    <p v-if="!dataset" class="empty-state">{{ t('testing.pickDataset') }}</p>
+    <div v-if="!dataset" class="empty-state"><FileOutlined /><h2>{{ t('testAssets.pickDataset') }}</h2><p>{{ t('testAssets.chooseDataset') }}</p></div>
     <div v-else class="editor-scroll">
-      <div class="form-card"><h3>{{ t('testingUi.basic') }}</h3><label>{{ t('testing.name') }}<input :value="dataset.name" :disabled="testing.readOnly" data-testid="dataset-name" @input="field('name', ($event.target as HTMLInputElement).value)" /></label>
+      <div class="form-card"><label>{{ t('testing.name') }}<input :value="dataset.name" :disabled="testing.readOnly" data-testid="dataset-name" @input="field('name', ($event.target as HTMLInputElement).value)" /></label>
       <label>{{ t('testing.description') }}<input :value="dataset.description" :disabled="testing.readOnly" @input="field('description', ($event.target as HTMLInputElement).value)" /></label>
-      </div><div class="form-card"><h3>{{ t('testingUi.dataTable') }}</h3><details><summary>{{ t('testing.columns') }}</summary><textarea :aria-label="t('testing.columns')" v-model="columns" :disabled="testing.readOnly" rows="3" /><button :disabled="testing.readOnly" @click="applyColumns">{{ t('testing.applyColumns') }}</button></details>
-      <p class="hint">{{ t('testing.typedCellHint') }}</p>
-      <div class="table-scroll"><table><thead><tr><th>#</th><th v-for="column in dataset.columns" :key="column">{{ column }}</th><th>{{ t('testingUi.actions') }}</th></tr></thead><tbody>
-        <tr v-for="(row,index) in rows" :key="page * 100 + index" data-testid="dataset-row"><th>{{ page * 100 + index + 1 }}</th><td v-for="column in dataset.columns" :key="column"><input :aria-label="t('testingUi.cell', {row:page * 100 + index + 1, column})" :value="Object.hasOwn(row, column) ? JSON.stringify(row[column]) : ''" :placeholder="t('testing.missing')" :disabled="testing.readOnly" @change="cell(index,column,($event.target as HTMLInputElement).value)" /></td><td><button class="icon-button" :aria-label="t('testingUi.deleteRow', {row:page * 100 + index + 1})" :title="t('testingUi.deleteRow', {row:page * 100 + index + 1})" :disabled="testing.readOnly" @click="removeRow(index)">×</button></td></tr>
+      </div><div class="form-card data-table">
+      <div class="section-heading"><h3>{{ t('testingUi.dataTable') }}</h3><button :disabled="testing.readOnly || dataset.rows.length >= 10000" @click="addRow"><PlusOutlined /> {{ t('testing.addRow') }}</button></div>
+      <div v-if="manageColumns || !dataset.columns.length" class="column-editor"><label>{{ t('testing.columns') }}<textarea :aria-label="t('testing.columns')" v-model="columns" :disabled="testing.readOnly" rows="2" /></label><button :disabled="testing.readOnly" @click="applyColumns">{{ t('testing.applyColumns') }}</button></div>
+      <div class="table-scroll"><table><thead><tr><th>{{ t('testAssets.row') }}</th><th v-for="column in dataset.columns" :key="column">{{ column }}<small>{{ t('testAssets.types.' + (columnKinds.get(column) ?? 'missing')) }}</small></th><th>{{ t('testingUi.actions') }}</th></tr></thead><tbody>
+        <tr v-for="(row,index) in rows" :key="page * 100 + index" data-testid="dataset-row"><th>{{ page * 100 + index + 1 }}</th><td v-for="column in dataset.columns" :key="column"><div class="typed-cell">
+        <input :aria-label="t('testingUi.cell', {row:page * 100 + index + 1, column})" :value="testing.invalidCells[cellKey(index,column)] ?? cellText(row,column)" :aria-invalid="Object.hasOwn(testing.invalidCells,cellKey(index,column)) || undefined" :placeholder="kindOf(row,column) === 'missing' ? t('testing.missing') : ''" :disabled="testing.readOnly" @change="cell(index,column,($event.target as HTMLInputElement).value)" />
+        <select :aria-label="t('testAssets.cellType', {row:page * 100 + index + 1, column})" :title="t('testAssets.types.' + kindOf(row,column))"
+          :value="kindOf(row,column)" :disabled="testing.readOnly" @change="changeType(index,column,($event.target as HTMLSelectElement).value as ValueKind)">
+          <option v-for="type in kinds" :key="type" :value="type">{{ t('testAssets.types.' + type) }}</option>
+        </select></div><p class="error" v-if="Object.hasOwn(testing.invalidCells,cellKey(index,column))" role="alert">{{ t('testAssets.invalidCell', {row: page * 100 + index + 1, column, type:t('testAssets.types.' + (kindOf(row,column) === 'missing' ? columnKinds.get(column) : kindOf(row,column)))}) }}</p></td><td><button class="icon-button" :aria-label="t('testingUi.deleteRow', {row:page * 100 + index + 1})" :title="t('testingUi.deleteRow', {row:page * 100 + index + 1})" :disabled="testing.readOnly" @click="removeRow(index)">×</button></td></tr>
       </tbody></table></div>
-      <div class="pagination"><button :aria-label="t('testingUi.previousPage')" :title="t('testingUi.previousPage')" :disabled="page === 0" @click="page--">‹</button><span>{{ page + 1 }} / {{ pages }} · {{ dataset.rows.length }} {{ t('testing.rows') }}</span><button :aria-label="t('testingUi.nextPage')" :title="t('testingUi.nextPage')" data-testid="dataset-page-next" :disabled="page + 1 >= pages" @click="page++">›</button><button :disabled="testing.readOnly || dataset.rows.length >= 10000" @click="addRow">{{ t('testing.addRow') }}</button></div>
+      <div v-if="pages > 1" class="pagination"><button :aria-label="t('testingUi.previousPage')" :title="t('testingUi.previousPage')" :disabled="page === 0" @click="page--">‹</button><span>{{ page + 1 }} / {{ pages }} · {{ dataset.rows.length }} {{ t('testing.rows') }}</span><button :aria-label="t('testingUi.nextPage')" :title="t('testingUi.nextPage')" data-testid="dataset-page-next" :disabled="page + 1 >= pages" @click="page++">›</button></div>
       <p v-if="!dataset.rows.length" class="hint">{{ t('testing.emptyDraft') }}</p>
-      </div><details open class="exchange form-card"><summary>{{ t('testing.importExport') }}</summary>
+      </div><details class="exchange form-card fold"><summary>{{ t('testing.importExport') }}</summary>
         <div class="exchange-controls"><label>{{ t('testingUi.format') }}<select v-model="format"><option>json</option><option>csv</option></select></label>
         <input :aria-label="t('testingUi.sourceFile')" type="file" accept=".csv,.json" :disabled="testing.readOnly" @change="event => attempt(() => readFile(event))" /></div>
         <textarea v-model="content" :disabled="testing.readOnly" rows="4" data-testid="dataset-import-content" :aria-label="t('testing.importContent')" />
@@ -100,4 +176,21 @@ function download() {
 .toolbar{display:flex;align-items:center;gap:10px;flex:none;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid var(--border)}.toolbar strong{flex:1;font-size:17px;min-width:90px}.dirty-badge{color:var(--text-muted);background:var(--subtle);border:1px solid var(--border);border-radius:20px;padding:3px 9px;font-size:12px}
 .editor-scroll{flex:1;min-height:100px;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:2px}.form-card{flex:none;min-width:0;padding:16px;background:var(--bg);border:1px solid var(--border);border-radius:10px;box-shadow:var(--panel-shadow)}h3{font-size:14px;margin:0 0 14px;color:var(--text)}.form-card>label{margin:10px 0}label{display:flex;gap:10px;align-items:center;font-size:13px;min-width:0}label input:not([type=checkbox]){flex:1;min-width:0}input,textarea,select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:var(--control-radius);padding:7px 9px;box-sizing:border-box;font:inherit;max-width:100%}textarea{width:100%;font-family:ui-monospace,monospace;resize:vertical}select[multiple]{min-width:180px}input[type=checkbox]{accent-color:var(--accent);flex:none}button{color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:var(--control-radius);padding:7px 12px;min-height:32px;cursor:pointer;font:inherit;white-space:nowrap}button:hover:not(:disabled){border-color:var(--accent);background:var(--active-weak)}button.primary{color:var(--accent);background:var(--active-weak);border-color:var(--accent);font-weight:600}button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.55;cursor:default}summary{cursor:pointer;font-weight:600;padding:8px 0;overflow-wrap:anywhere}details[open]>summary{margin-bottom:10px}.hint{color:var(--text-muted);font-size:12px;line-height:1.6;margin:8px 0}.error{color:var(--fail);overflow-wrap:anywhere;margin:0}.empty-state{color:var(--text-muted);text-align:center;padding:40px 12px}.table-scroll{overflow:auto;max-width:100%;max-height:45vh;flex:none;border:1px solid var(--border);border-radius:8px;margin:10px 0}table{border-collapse:separate;border-spacing:0;min-width:100%;font-size:12px}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}thead th{position:sticky;top:0;background:var(--subtle);z-index:1;white-space:nowrap;color:var(--text-muted);font-weight:600}tbody tr:last-child>*{border-bottom:0}tbody tr:hover{background:var(--hover)}tbody th{font-weight:500}td{overflow-wrap:anywhere}p{line-height:1.6}
 .dataset-panel{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:16px;box-sizing:border-box;gap:12px;background:var(--panel);color:var(--text)}.pagination,.exchange-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.pagination{font-size:12px;color:var(--text-muted)}.exchange-controls{margin:8px 0 12px}.exchange-controls input{min-width:0;flex:1}.exchange>button{margin:8px 8px 0 0}.icon-button{padding:4px 10px;font-size:18px}td input{min-width:160px;width:100%}.import-table code{display:block;min-width:110px;max-width:360px;max-height:160px;overflow:auto;white-space:pre;font:12px/1.6 ui-monospace,monospace}.exchange>p{font-size:12px}@media(max-width:650px){.dataset-panel{padding:10px}.form-card{padding:12px}.form-card>label{align-items:stretch;flex-direction:column}.exchange-controls{align-items:stretch;flex-direction:column}}
+</style>
+<style scoped src="../styles/testing-assets.css"></style>
+<style scoped>
+.dataset-panel { height:auto; min-height:100%; background:var(--bg); overflow:visible; }
+.editor-scroll { flex:none; min-height:0; overflow:visible; }
+.data-table { border-top:1px solid var(--border)!important; padding-top:9px!important; }
+th small { display:block; color:var(--text-muted); font-weight:400; }
+.typed-cell { display:flex; align-items:center; min-width:122px; position:relative; }
+.typed-cell input { width:100%; min-width:122px; }
+.typed-cell select { position:absolute; inset-inline-end:0; width:22px; opacity:0; padding-inline:0; }
+.typed-cell:hover select, .typed-cell:focus-within select { opacity:1; }
+.table-scroll table { width:100%; border-collapse:collapse; }
+.table-scroll th,.table-scroll td { border:1px solid var(--border); padding:3px 7px; }
+.typed-cell input { padding:3px 7px; height:25px; line-height:18px; }
+.data-table .icon-button { min-height:0; height:24px; padding:0 6px; }
+.table-scroll th { text-align:left; background:var(--subtle); }
+.column-editor { margin:6px 0; }
 </style>

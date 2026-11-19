@@ -41,9 +41,28 @@ import SideTree from "../../../src/renderer/src/components/SideTree.vue";
 import OnlineLoginDialog from "../../../src/renderer/src/components/OnlineLoginDialog.vue";
 import type { ApiccApi } from "../../../src/shared/types.js";
 import type { TreeNodeDTO } from "../../../src/shared/tree-dto.js";
+import { suiteCaseChoices } from "../../../src/shared/testing.js";
+import { previewOnlineSuite } from "../../../src/renderer/src/execution/launch.js";
 
 const SERVER = "http://127.0.0.1:8080";
 const EXECUTION_CONTEXT: OnlineExecutionContext = { serverId: 'https://control.test/api/v1', ownerId: '7', scope: { workspaceId: '11', groupId: '22', projectId: '33' } };
+it("keeps physical scopes in one logical suite choice and previews same-named APIs in explicit order", () => {
+  const project = ContractWorkspaceSchema.parse(workspaceFixture()).groups[0]!.projects[0]!;
+  const first = project.collections[0]!, api = first.apis[0]!, base = api.cases[0]!;
+  api.cases = [{...base, scope:"base"}, {...structuredClone(base), scope:"Stage"}];
+  const second = {...structuredClone(first), id:crypto.randomUUID(), name:"Other module", folders:[], apis:[structuredClone(api)]};
+  project.collections.push(second);
+  const choices = suiteCaseChoices(project, EXECUTION_CONTEXT.scope).filter(choice => choice.caseId === base.id && choice.locator.apiId === api.contract.id);
+  expect(choices).toHaveLength(2);
+  expect(choices.map(choice => choice.scopes)).toEqual([["base","Stage"],["base","Stage"]]);
+  const selection = [choices[1]!, choices[0]!].map(choice => ({
+    id:crypto.randomUUID(), kind:"case" as const, collectionId:choice.locator.collectionId, folderIds:choice.locator.folderIds, apiId:choice.locator.apiId, caseId:choice.caseId,
+  }));
+  const id = crypto.randomUUID();
+  project.suites = [{formatVersion:1,id,name:"Order regression",tags:[],failFast:true,reporters:["html"],selection:{kind:"explicit",entries:selection}}];
+  const plan = previewOnlineSuite(project, [api,second.apis[0]!], "1", id, false);
+  expect(plan.entries.map(entry => entry.cases[0]!.locator.collectionId)).toEqual([second.id,first.id]);
+});
 function failureResult(runId: string): OnlineLocalResult { return { location: { kind: 'local' }, runId, snapshotId: '66', manifestHash: 'a'.repeat(64), runtimeCompatibilityId: 'recorded-local-runtime', scriptTimeoutMs: 3000, output: { kind: 'failure', targetKind: 'workflow', error: 'Safe failure: missing declared material', result: { collectionId: '', collectionName: 'workflow', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 0, passed: 0, failed: 1, cases: [], warnings: ['Evidence is incomplete'] } } }; }
 function flowLayoutFixture() {
   const saved = new Map(['ResizeObserver', 'DOMMatrixReadOnly'].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));

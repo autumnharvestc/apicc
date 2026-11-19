@@ -1,3 +1,4 @@
+import { suiteCaseChoices } from "../../../shared/testing.js";
 import { watch } from "vue";
 import { ContractProjectSchema, DatasetAssetSchema, SuiteAssetSchema, WorkflowSchema } from "@apicc/core/schema";
 import type { ContractWorkspace, ContractProject, ContractCollection, ContractFolder, ApiAsset, Workflow } from "@apicc/core";
@@ -96,9 +97,7 @@ export function createOnlineProjectAdapter(execution: OnlineExecutionStore, api:
       environments: applied.environments.map(({ id, name }) => ({ id, name })),
       collections: applied.collections.map(({ id, name }) => ({ id, name })),
       workflows: applied.workflows.map(({ id, name, status }) => ({ id, name, status })),
-      cases: apiEntries().flatMap(({ locator, asset }) => asset.cases.map(item => ({
-        locator, caseId: item.id, name: item.name, scopes: [item.scope], tags: item.tags ?? [],
-      }))),
+      cases: suiteCaseChoices(applied, locator()),
     };
   }
   const operations: Partial<ApiccApi> = {
