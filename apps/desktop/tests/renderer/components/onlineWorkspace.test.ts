@@ -27,7 +27,7 @@ import OnlineExecutionPanel from "../../../src/renderer/src/components/online/On
 import OnlineStressPanel from "../../../src/renderer/src/components/online/OnlineStressPanel.vue";
 import OnlineProjectAssets from "../../../src/renderer/src/components/online/OnlineProjectAssets.vue";
 import { createOnlineProjectAdapter } from "../../../src/renderer/src/stores/onlineProjectAdapter.js";
-import { ContractWorkspaceSchema } from "@apicc/core/schema";
+import { ContractWorkspaceSchema, resolveRequestSettings } from "@apicc/core/schema";
 import { defaultPolicyConfig } from "@apicc/execution/contract";
 import { applyProjectSave } from "@apicc/core/collaboration/project-save";
 import { workspaceFixture } from "../../../../../packages/core/tests/helpers/contractFixtures.js";
@@ -96,27 +96,63 @@ describe('online execution readable projection', () => {
     const {i18n}=createI18nInstance();const wrapper=mount(OnlineStressPanel,{props:{execution},global:{plugins:[i18n]}});
     expect(wrapper.text()).not.toContain('"active-status"');wrapper.unmount();
   });
-  it('shows Core logical failure and entry diagnostics separately from successful or absent physical requests', () => {
+  it('shows Core logical failure and entry diagnostics separately from successful or absent physical requests', async () => {
     const debug: OnlineLocalResult = { ...failureResult('00000000-0000-4000-8000-000000000075'), output: { kind: 'debug', result: {
       runId: 'debug-post', source: { sourceKind: 'unavailable' }, sourceProjectRevision: 'revision', executionSnapshotRevision: 'snapshot', mode: 'case',
       startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', run: { collectionName: 'module', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 1, passed: 1, failed: 0 },
-      outcomes: [], exchanges: [], exchangeTotal: 1, omittedExchangeCount: 1, replay: { mode: 'case', sourceKind: 'asset', parameters: {}, fields: [], available: false }, console: [], warnings: [], failureKind: 'script', error: 'Post script rejected',
+      outcomes: [], exchanges: [{
+        source: { sourceKind: 'unavailable' }, rowIndex: 0, hopIndex: 0, order: 1, transportState: 'responded',
+        settings: resolveRequestSettings(), startedAt: '2026-10-26T16:00:00.000Z',
+        response: { status: 200, headers: [], cookies: [], body: { kind: 'metadata' } },
+      }], exchangeTotal: 1, omittedExchangeCount: 0,
+      replay: { mode: 'case', sourceKind: 'asset', parameters: {}, fields: [], available: false }, console: [], warnings: [], failureKind: 'script', error: 'Post script rejected',
     } } };
-    const suite: OnlineLocalResult['output'] = { kind: 'suite', result: { collectionId: 'suite', collectionName: 'logical suite', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z', total: 0, passed: 0, failed: 0, cases: [], reportingMode: 'mixed-suite-v2', workflowUnits: [{ entryId: 'entry', workflowId: 'flow', verdict: 'failed', error: 'Logical assertion rejected' }], requestFacts: { requestStarted: 0, requestCompleted: 0, httpExchanges: 0 }, suite: { suiteRunId: 'run', projectId: 'project', definitionRevision: 'revision', verdict: 'failed', total: 1, passed: 0, failed: 1, skipped: 0, entries: [{ entryId: 'entry', kind: 'workflow', workflowId: 'flow', status: 'failed', error: 'Logical assertion rejected' }] } } };
+    const suite: OnlineLocalResult['output'] = { kind: 'suite', result: {
+      collectionId: 'suite', collectionName: 'logical suite', startedAt: '2026-10-26T16:00:00.000Z', finishedAt: '2026-10-26T16:00:00.001Z',
+      total: 0, passed: 0, failed: 0, cases: [], reportingMode: 'mixed-suite-v2',
+      workflowUnits: [{ entryId: 'entry', workflowId: 'flow', verdict: 'failed', error: 'Logical assertion rejected' }],
+      requestFacts: { requestStarted: 0, requestCompleted: 0, httpExchanges: 0 },
+      suite: { suiteRunId: 'run', projectId: 'project', definitionRevision: 'revision', verdict: 'failed', total: 2, passed: 0, failed: 2, skipped: 0, entries: [
+        { entryId: 'entry', kind: 'workflow', workflowId: 'flow', status: 'failed', error: 'Logical assertion rejected' },
+        { entryId: 'missing-input', kind: 'workflow', workflowId: 'other-flow', status: 'failed', error: 'Workflow input unavailable' },
+      ] },
+    } };
     expect(InvocationOutputSchema.safeParse(debug.output).success).toBe(true);
     expect(InvocationOutputSchema.safeParse(suite).success).toBe(true);
     const execution = createOnlineExecutionStore({ onlineExecution: async () => [] });
     const { i18n } = createI18nInstance(); i18n.global.locale.value = 'en';
     execution.localResult = debug;
-    const first = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
-    expect.soft(first.get('[data-testid="online-execution-report"] > p').text()).toContain('Logical verdict: Failed');
+    const first = mount(OnlineExecutionPanel, { attachTo: document.body, props: { execution, reportOnly: true }, global: { plugins: [i18n] } });
+    const selected = first.get('[data-testid="online-selected-run"]');
+    const failure = selected.get('[role="alert"]');
+    expect(failure.isVisible()).toBe(true);
+    expect(failure.text()).toBe('Post script rejected');
+    const debugReport = first.get('[data-testid="online-execution-report"]');
+    const openDebug = debugReport.get('[data-testid="record-open-report"]');
+    expect(openDebug.isVisible()).toBe(true);
+    await openDebug.trigger('click');
+    const summary = debugReport.findAll('p').filter(p => p.isVisible()).map(p => p.text());
+    expect(summary).toContain('Logical verdict: Failed · Target request fact: Started');
+    const status = debugReport.get('[data-testid="response-status"]');
+    expect(status.isVisible()).toBe(true);
+    expect(status.text()).toBe('HTTP 200');
     first.unmount();
     execution.localResult = null; execution.report = { executionId: 'suite-run', verdict: 'failed', output: suite };
-    const second = mount(OnlineExecutionPanel, { props: { execution }, global: { plugins: [i18n] } });
-    expect.soft(second.text()).toContain('Logical executions: 1 total, 0 passed, 1 failed');
-    expect.soft(second.text()).toContain('Logical assertion rejected');
-    expect(second.text()).toContain('Observed requests: 0 started, 0 completed, 0 HTTP exchanges');
-    expect(second.find('textarea').exists()).toBe(false); second.unmount();
+    const second = mount(OnlineExecutionPanel, { attachTo: document.body, props: { execution, reportOnly: true }, global: { plugins: [i18n] } });
+    const suiteReport = second.get('[data-testid="online-execution-report"]');
+    const openSuite = suiteReport.get('[data-testid="record-open-report"]');
+    expect(openSuite.isVisible()).toBe(true);
+    await openSuite.trigger('click');
+    const totals = suiteReport.findAll('p').filter(p => p.isVisible()).map(p => p.text());
+    expect(totals).toContain('Logical executions: 2 total, 0 passed, 2 failed');
+    expect(totals).toContain('Observed requests: 0 started, 0 completed, 0 HTTP exchanges');
+    for (const [entry, message] of [['flow', 'Logical assertion rejected'], ['missing-input', 'Workflow input unavailable']]) {
+      const row = suiteReport.findAll('li').find(item => item.text().startsWith(`${entry} · Failed `));
+      const cause = row?.get('span');
+      expect(cause?.isVisible()).toBe(true);
+      expect(cause?.text()).toBe(message);
+    }
+    expect(suiteReport.find('textarea').exists()).toBe(false); second.unmount();
   });
   it('rejects malformed Core elements before a local result can reach its viewer and exposes a bounded error', async () => {
     const malformedSuite = { kind: 'suite', result: { ...failureResult('00000000-0000-4000-8000-000000000076').output.result, cases: [null] } };

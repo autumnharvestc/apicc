@@ -222,7 +222,7 @@ describe("draft recovery after explicit disk refresh", () => {
     expect(workflow.dirty).toBe(true);
   });
 
-  it("keeps draft dataset fields and unstaged columns while advancing the safe save context", async () => {
+  it("retains incomplete dataset edits across refresh and saves the corrected draft with the new revision", async () => {
     const dataset: DatasetAsset = { id: uuid(71), name: "customers", formatVersion: 1, columns: ["id"], rows: [{ id: 1 }] };
     const before = makeWorkspace();
     projectOne(before).datasets = [dataset];
@@ -231,7 +231,8 @@ describe("draft recovery after explicit disk refresh", () => {
     const view = (): TestingAssets => ({ context: { root, project, revision }, readOnly: false,
       datasets: copy(projectOne(disk).datasets ?? []), suites: [], environments: [], cases: [], collections: [], workflows: [] });
     const saveDataset = vi.fn(async (input: Parameters<ApiccApi["saveDataset"]>[0]) => {
-      if (input.context.revision !== "r2") throw localWorkspaceError("revision-conflict", "stale", root);
+      if (input.context.revision !== revision) throw localWorkspaceError("revision-conflict", "stale", root);
+      projectOne(disk).datasets = [copy(input.asset)];
       return view();
     });
     const testing = createTestingStore({ listTestingAssets: async () => view(), assertionOperators: async () => [], saveDataset } as unknown as ApiccApi, {
@@ -239,19 +240,33 @@ describe("draft recovery after explicit disk refresh", () => {
     });
     await testing.activate(root, project);
     await testing.select("dataset", dataset.id);
-    testing.pendingDatasetColumns = "id\nnewColumn";
     testing.dataset!.name = "local dataset";
-    await expect(testing.save()).rejects.toMatchObject({ failure: { reason: "revision-conflict" } });
     disk = copy(before);
     disk.groups[1]!.projects[0]!.name = "unrelated project";
     revision = "r2";
+    await expect(testing.save()).rejects.toMatchObject({ failure: { reason: "revision-conflict" } });
+    expect(testing.saveFailure?.reason).toBe("revision-conflict");
+
+    testing.pendingDatasetColumns = "id\nnewColumn";
+    await expect(testing.save()).rejects.toThrow("incomplete-dataset-cells");
+    const cell = JSON.stringify([0, "id"]);
+    testing.invalidCells[cell] = "two";
     await testing.reconcileDiskRefresh(receipt(before, disk), () => true);
     expect(testing.saveFailure).toBeNull();
     expect(testing.dataset?.name).toBe("local dataset");
     expect(testing.pendingDatasetColumns).toBe("id\nnewColumn");
+    expect(testing.invalidCells[cell]).toBe("two");
+
+    testing.dataset!.columns.push("newColumn");
+    testing.pendingDatasetColumns = null;
+    await expect(testing.save()).rejects.toThrow("incomplete-dataset-cells");
+    expect(saveDataset).toHaveBeenCalledTimes(1);
+    testing.dataset!.rows[0]!.id = 2;
+    delete testing.invalidCells[cell];
     await testing.save();
     expect(saveDataset.mock.calls.at(-1)?.[0].context.revision).toBe("r2");
-    expect(testing.pendingDatasetColumns).toBe("id\nnewColumn");
+    expect(projectOne(disk).datasets).toEqual([{ ...dataset, name: "local dataset", columns: ["id", "newColumn"], rows: [{ id: 2 }] }]);
+    expect(testing.dirty).toBe(false);
   });
 
   it("keeps a suite's changed dataset dependency blocked and retains the prior result", async () => {

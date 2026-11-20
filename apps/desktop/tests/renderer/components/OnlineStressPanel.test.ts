@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
-import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { ContractWorkspaceSchema, StressPlanSchema, StressReportV2Schema } from '@apicc/core/schema';
 import { workspaceFixture } from '../../../../../packages/core/tests/helpers/contractFixtures.js';
 import { createOnlineExecutionStore } from '../../../src/renderer/src/stores/onlineExecution.js';
@@ -138,12 +138,30 @@ describe('online stress plan entry', () => {
     else {expect.soft(view.text()).toContain('执行元数据未采集');expect.soft(view.find('[data-testid="stress-execution-summary"]').exists()).toBe(false);expect.soft(view.findAll('.summary > div').find(row=>row.text().includes('实际运行兼容档位'))!.text()).toContain('未采集');}
     expect(view.find('[data-testid="stress-report"]').exists()).toBe(false);f.store.setVisible(false);
   });
-  it.each([true,false])('T7 keeps local started=%s separate from zero formal requests in a stress failure',started=>{
+  it.each([true,false])('T7 keeps local started=%s separate from zero formal requests in a stress failure',async started=>{
     const f=panelFixture({onlineExecution:async()=>[]});f.i18n.global.locale.value='en';
     f.store.localResult=OnlineLocalResultSchema.parse({location:{kind:'local'},runId:'10000000-0000-4000-8000-000000000001',snapshotId:'66',manifestHash:'a'.repeat(64),runtimeCompatibilityId:'compatible',scriptTimeoutMs:3000,output:{kind:'stress-failure',started,error:'worker-failed',requests:{started:0,completed:0}}});
-    const view=mount(OnlineExecutionPanel,{props:{execution:f.store},global:{plugins:[f.i18n]}});
-    expect(view.get('[data-testid="online-execution-report"] > p').text()).toContain(started?'Target request fact: Started':'Target request fact: Confirmed not started');
-    expect.soft(view.text()).toContain('Some data was not retained');expect.soft(view.text()).toContain('0 started, 0 completed');f.store.setVisible(false);
+    const view = mount(OnlineExecutionPanel, { attachTo: document.body, props: { execution: f.store, reportOnly: true }, global: { plugins: [f.i18n] } });
+    try {
+      const expectedFact = started ? 'Started' : 'Confirmed not started';
+      const facts = view.get('[data-testid="selected-execution-facts"]');
+      const requestFact = facts.findAll('div').find(row => row.get('dt').text() === 'Request execution');
+      expect(requestFact?.get('dt').isVisible()).toBe(true);
+      expect(requestFact?.get('dd').isVisible()).toBe(true);
+      expect(requestFact?.get('dd').text()).toBe(expectedFact);
+      const report = view.get('[data-testid="online-execution-report"]');
+      const counts = report.get('[role="alert"]');
+      expect(counts.isVisible()).toBe(false);
+      const openReport = report.get('[data-testid="record-open-report"]');
+      expect(openReport.isVisible()).toBe(true);
+      await openReport.trigger('click');
+      expect(counts.isVisible()).toBe(true);
+      expect(counts.text()).toContain('Observed requests: 0 started, 0 completed, — HTTP exchanges');
+      const paragraphs = report.findAll('p').filter(p => p.isVisible()).map(p => p.text());
+      expect(paragraphs).toContain(`Logical verdict: Failed · Target request fact: ${expectedFact}`);
+      expect(paragraphs).toContainEqual(expect.stringContaining('Some data was not retained'));
+      expect(paragraphs).toContainEqual(expect.stringContaining('Lifecycle is separate; zero formal requests does not imply no lifecycle HTTP.'));
+    } finally { f.store.setVisible(false); }
   });
   it.each([['result-capacity-exceeded','结果超出归档预算，完整输出不可用。'],['result-persistence-failed','结果持久化失败，完整输出不可用。']])('T7 explains an unavailable stress fault report %s while retaining a known business pass',async(reasonCode,reasonText)=>{
     const f=panelFixture({onlineExecution:async input=>input.operation==='report'?{executionId:'100',verdict:'passed',executionFact:'started',reasonCode}:[]});f.i18n.global.locale.value='zh-CN';
@@ -159,12 +177,50 @@ describe('online stress plan entry', () => {
     const f=panelFixture({onlineExecution:async()=>[]});f.i18n.global.locale.value='en';
     const core=stressV2Report(),runtime={coreBuildId:'a'.repeat(64),scriptApiId:'b'.repeat(64),nodeVersion:'22.19.0',v8Version:'12.4',runtimeCompatibilityId:'compatible'};
     f.store.localResult=OnlineLocalResultSchema.parse(JSON.parse(JSON.stringify({location:{kind:'local'},runId:core.runId,snapshotId:'66',manifestHash:'a'.repeat(64),runtimeCompatibilityId:'compatible',scriptTimeoutMs:3000,localStress:{workerCount:1,processBudget:1,runtime},output:{kind:'stress',result:core}})));
-    const view=mount(OnlineExecutionPanel,{props:{execution:f.store},global:{plugins:[f.i18n]}});
-    const dateRow=view.findAll('[data-testid="online-execution-report"] > p').find(p=>p.text().startsWith('Started:'))!;
-    expect.soft(dateRow.text()).toContain('.000');expect.soft(dateRow.text()).toMatch(/GMT|UTC/);expect.soft(dateRow.text()).not.toContain('Not collected');
+    const view = mount(OnlineExecutionPanel, { attachTo: document.body, props: { execution: f.store, reportOnly: true }, global: { plugins: [f.i18n] } });
+    const report = view.get('[data-testid="online-execution-report"]');
+    const openReport = report.get('[data-testid="record-open-report"]');
+    expect(openReport.isVisible()).toBe(true);
+    await openReport.trigger('click');
+    const paragraphs = report.findAll('p').filter(p => p.isVisible()).map(p => p.text());
+    const clock = new Intl.DateTimeFormat('en', {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+      fractionalSecondDigits: 3, timeZoneName: 'longOffset',
+    });
+    expect(paragraphs).toContain(`Started: ${clock.format(core.startedAt)} · Finished: ${clock.format(core.finishedAt)}`);
     const saved=Object.getOwnPropertyDescriptor(URL,'createObjectURL'),revoke=Object.getOwnPropertyDescriptor(URL,'revokeObjectURL'),click=HTMLAnchorElement.prototype.click;
     let exported:Blob|undefined;Object.defineProperty(URL,'createObjectURL',{configurable:true,value:(value:Blob)=>{exported=value;return 'blob:stress';}});Object.defineProperty(URL,'revokeObjectURL',{configurable:true,value:()=>{}});HTMLAnchorElement.prototype.click=()=>{};
-    try {await view.get('[data-testid="online-stress-export"]').trigger('click');expect(exported).toBeInstanceOf(Blob);const html=await new Promise<string>(resolve=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.readAsText(exported!);});const doc=new DOMParser().parseFromString(html,'text/html');expect(doc.querySelector('[data-section="execution"]')?.textContent).toContain('执行进程预算');expect(doc.querySelector('details.raw-data')?.hasAttribute('open')).toBe(false);expect(doc.querySelector('details.raw-data pre')?.textContent).toContain(core.runId);} finally {if(saved)Object.defineProperty(URL,'createObjectURL',saved);else Reflect.deleteProperty(URL,'createObjectURL');if(revoke)Object.defineProperty(URL,'revokeObjectURL',revoke);else Reflect.deleteProperty(URL,'revokeObjectURL');HTMLAnchorElement.prototype.click=click;f.store.setVisible(false);}
+    try {
+      const download = report.get('[data-testid="online-stress-export"]');
+      expect(download.isVisible()).toBe(true);
+      await download.trigger('click');
+      expect(exported).toBeInstanceOf(Blob);
+      const html = await new Promise<string>(resolve => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.readAsText(exported!);
+      });
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelector('script')?.remove();
+      const page = doc.documentElement;
+      view.element.appendChild(page);
+      const rows = [...page.querySelectorAll<HTMLTableRowElement>('[data-section="execution"] tr')];
+      const budget = rows.find(row => row.cells[0]?.textContent === '执行进程预算');
+      expect(budget?.cells[1]?.textContent).toBe('1 执行进程');
+      for (const cell of budget!.cells) {
+        expect(new DOMWrapper(cell).isVisible()).toBe(true);
+        expect(new DOMWrapper(cell).get('span').isVisible()).toBe(true);
+      }
+      const raw = page.querySelector('details.raw-data');
+      expect(raw?.hasAttribute('open')).toBe(false);
+      expect(JSON.parse(raw!.querySelector('pre')!.textContent!)).toMatchObject({
+        report: { runId: core.runId }, presentation: { execution: { location: 'local', workerCount: 1, processBudget: 1, runtime } },
+      });
+    } finally {
+      if(saved)Object.defineProperty(URL,'createObjectURL',saved);else Reflect.deleteProperty(URL,'createObjectURL');
+      if(revoke)Object.defineProperty(URL,'revokeObjectURL',revoke);else Reflect.deleteProperty(URL,'revokeObjectURL');
+      HTMLAnchorElement.prototype.click=click;f.store.setVisible(false);
+    }
   });
   it('T7 shows current admission bounds and their real sources separately from recorded runs',async()=>{
     const f=panelFixture({onlineExecution:async()=>[]});f.i18n.global.locale.value='zh-CN';
