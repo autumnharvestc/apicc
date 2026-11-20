@@ -820,10 +820,31 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
     expect(wrapper.get('[data-testid="request-send-slot"]').attributes('aria-disabled')).toBe('false');
   });
   it('T9 shortcut selects one attributable private debug history descriptor without any renderer artifact', async () => {
-    const api = createMemoryApi(), project = { workspaceId: '00000000-0000-4000-8000-000000000001', groupId: '00000000-0000-4000-8000-000000000002', projectId: '00000000-0000-4000-8000-000000000003' }, editor = useEditorStore(api, () => ({ root: 'memory-root', readOnly: false })), debug = useDebugStore(api, editor), history = useDebugHistoryStore(api);
-    const record = DebugHistoryRecordSchema.options[1].parse(collaborationDebugFixture()); record.result.replay = { mode: 'free', sourceKind: 'free', project, draftId: '40000000-0000-4000-8000-000000000009', request: { protocol: 'http', method: 'GET', baseUrl: 'https://example.test', path: '/', pathParams: [], headers: [], query: [], cookies: [], body: { kind: 'none' }, auth: { kind: 'none' } }, parameters: {}, fields: [], available: true }; Object.assign(history, { selected: { record, diagnostics: [] } });
-    const wrapper = mount(DebugHistory, { props: { open: true, api, history, debug, editor, projectLocator: project }, global: { plugins: [initI18n().i18n] } }); await flushPromises(); expect(document.body.textContent).toContain(record.historyId);
-    await expectBody('collaboration-publish-debug').trigger('click'); expect(wrapper.emitted('collaboration')?.[0]?.[0]).toEqual({ kind: 'debug', historyId: record.historyId, owner: { sourceKind: 'free', project, draftId: '40000000-0000-4000-8000-000000000009' }, project });
+    const api = createMemoryApi();
+    const project = { workspaceId: '00000000-0000-4000-8000-000000000001', groupId: '00000000-0000-4000-8000-000000000002', projectId: '00000000-0000-4000-8000-000000000003' };
+    const owner = { sourceKind: 'free' as const, project, draftId: '40000000-0000-4000-8000-000000000009' };
+    const fixture = collaborationDebugFixture();
+    const record = DebugHistoryRecordSchema.options[1].parse({
+      ...fixture,
+      result: {
+        ...fixture.result, mode: 'free', source: { ...owner, draftRevision: 'draft-r1' },
+        replay: { mode: 'free', ...owner, request: { protocol: 'http', method: 'GET', baseUrl: 'https://example.test', path: '/', pathParams: [], headers: [], query: [], cookies: [], body: { kind: 'none' }, auth: { kind: 'none' } }, parameters: {}, fields: [], available: true },
+      },
+    });
+    const read = vi.spyOn(api, 'debugHistoryGet').mockResolvedValue({ record, diagnostics: [] });
+    const editor = useEditorStore(api, () => ({ root: 'memory-root', readOnly: false })), debug = useDebugStore(api, editor), history = useDebugHistoryStore(api);
+    const { runId, run, exchangeTotal } = record.result;
+    history.items.push({ historyId: record.historyId, createdAt: record.createdAt, runId, mode: 'free', sourceKind: 'free', projectId: project.projectId, draftId: owner.draftId,
+      apiName: '调试请求', result: 'failed', total: run.total, passed: run.passed, failed: run.failed, exchangeTotal, searchText: '调试请求' });
+    const wrapper = mount(DebugHistory, { props: { open: true, api, history, debug, editor, projectLocator: project }, global: { plugins: [initI18n().i18n] } });
+    const row = expectBody(`history-${record.historyId}`);
+    expect(row.text()).toContain('调试请求');
+    await row.trigger('click'); await flushPromises();
+    expect(read).toHaveBeenCalledExactlyOnceWith(record.historyId);
+    expect(row.attributes('aria-current')).toBe('true');
+    expect(wrapper.emitted('collaboration')).toBeUndefined();
+    await expectBody('collaboration-publish-debug').trigger('click');
+    expect(wrapper.emitted('collaboration')).toEqual([[{ kind: 'debug', historyId: record.historyId, owner, project }]]);
   });
   it('T9 local report shortcut asks for an online target without affecting offline execution or sending anything', async () => {
     const original = failingApi.onlineCollaboration, calls: unknown[] = []; failingApi.onlineCollaboration = async input => { calls.push(input); return { stage: 'idle' }; };
@@ -863,7 +884,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       const online = wrapper.getComponent(OnlineLoginDialog).props("online");
       online.addProfile("http://127.0.0.1:8080", "Viewer");
       await online.login("viewer", "password8"); await online.refreshWorkspaces(); await online.openWorkspace(online.workspaces[0]!);
-      const tabs = wrapper.getComponent(ProjectTabs).props("tabs");
+      const tabs = wrapper.getComponent(ProjectTabs).props("tabs") as ReturnType<typeof createTabsStore>;
       await tabs.openProjectTab({ kind: "online", workspaceId: "11", name: view.name }, { id: "33", name: asset.name });
       await vi.waitFor(() => expect(wrapper.findComponent(OnlineProjectAssets).exists()).toBe(true));
       revoked = true;
@@ -983,7 +1004,7 @@ describe("App 布局（M8 模块化：rail + 树面板 + 内容区）", () => {
       } else {
         if (action === 'return') {
           await vi.waitFor(() => expect(online.execution.resultSelection).toMatchObject({kind:'agent', job:{ jobId:'701', executionId:'702', view:'active-status' }}));
-          expect(wrapper.get('[data-testid="run-pane-records"]').attributes('aria-current')).toBe('true');
+          expect(wrapper.get('[data-testid="run-pane-records"]').attributes('aria-current')).toBe('page');
           await wrapper.get('[data-testid="return-notification"]').trigger('click');
         }
         await vi.waitFor(() => expect(wrapper.get('.notifications article[aria-current="true"]').text()).toContain('Original notification'));
@@ -3252,6 +3273,7 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
   });
 
   it("R7 从分组搜索全工作区，同名结果按分组打开完整项目定位", async () => {
+    const originalRoot = await failingApi.wsPickDirectory();
     const originalTreeGet = failingApi.treeGet.bind(failingApi);
     const tree = await originalTreeGet();
     if (tree.kind !== "root") throw new Error("Fixture has no workspace tree");
@@ -3339,6 +3361,7 @@ describe("App 在线模式装配（M3-B 任务 2）", () => {
     } finally {
       failingApi.wsOpen = originalWsOpen;
       failingApi.treeGet = originalTreeGet;
+      await originalWsOpen(originalRoot);
     }
   });
 
@@ -3506,6 +3529,7 @@ describe("App 启动按签恢复（计划 C 任务 5：签表驱动）", () => {
     }
   });
   it("持久化本地签 → 挂载重开目录并激活该签（视图离开主页）；正式 moduleMemory locator 按项目恢复", async () => {
+    const originalRoot = await failingApi.wsPickDirectory();
     const treeDto = await failingApi.treeGet();
     const project = projectByLabel(treeDto, "示例项目");
     const collection = project.children!.find((c) => c.kind === "collection")!;
@@ -3545,6 +3569,7 @@ describe("App 启动按签恢复（计划 C 任务 5：签表驱动）", () => {
       failingApi.wsOpen = originalWsOpen;
       localStorage.removeItem("apicc.projectTabs");
       localStorage.removeItem("apicc.moduleMemory");
+      await originalWsOpen(originalRoot);
     }
   });
 

@@ -75,3 +75,15 @@ R05 点预览后可直接读出服务端返回的 11 月 20 日、21 日 02:00�
 | 4 | `1494fb1b` | [双端发起任务](design/f8-frontend/project-workbench-parity/followup-evidence/batch-4/README.md) |
 | 5 | `b7556507` | [任务记录、定时任务与通知](design/f8-frontend/project-workbench-parity/followup-evidence/batch-5/README.md) |
 | 6 | 与本验收记录一并提交 | [最终定稿和实机并排图册](design/f8-frontend/project-workbench-parity/followup-evidence/batch-6/comparison.html) |
+
+## CI117 构建失败与定向补验
+
+CI117 对应 `f12dad02`。Linux 包构建和 Windows 打包均在桌面标准构建的第一步 `tsc -p tsconfig.json --noEmit` 中报告相同的两处 TS7006。项目页签和测试侧栏的测试回调在普通 TypeScript 检查下缺少参数类型。两处分别使用实际页签 store 类型和错误边界的 `unknown`。此前的实机验收和 Vue 类型检查记录不能证明这一步通过。该次远端品牌门禁通过，Java 测试 2204 项通过，部署冒烟因依赖未满足而跳过。
+
+| 后续定向核查 | 修正与复验 |
+| --- | --- |
+| 调试历史分享 | 通过可读请求名和选中态定位记录，核对精确的读取 ID。使用通过 v2 Schema 校验的自由请求记录，点击分享后只发出一次包含记录归属的事件。 |
+| 通知往返 | 任务记录页的活动导航语义为 `aria-current="page"`。用仓库内的通知夹具复验正常返回、中途离开、撤权、任务删除和切换到第三个项目。 |
+| 本地项目切换 | 两个前序测试修改了共享内存工作区根，导致后续数据集和套件保存被上下文校验拒绝。前序测试在退出时恢复进入前的根目录。切签回归单独运行和接在污染源之后运行均通过。 |
+
+Windows 的标准桌面构建、Electron 目录包实际启动冒烟、7 个相关测试文件共 256 项通过。Linux 在 Node 22.19.0 下通过普通 TypeScript 检查和 4 个测试文件共 126 项，包含完整的 `App.test.ts`。本地品牌扫描通过。本次仅执行定向验证，本地全量和部署冒烟未运行。

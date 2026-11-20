@@ -39,7 +39,7 @@ describe("current project testing center", () => {
     const remove = vi.spyOn(api, "deleteTestingAsset"), run = vi.spyOn(api, "runSuite");
     const workspace = useWorkspaceStore(api); await workspace.open(root);
     const sidebar = mount(TestSidebar, { props: { pane: kind === "dataset" ? "datasets" : "suites", workspace,
-      activeProjectLocator: projectLocator, activeApiLocator: null, scenarios: [], testing: store, reportError: error => { throw error; } }, global: { plugins: [i18n] } });
+      activeProjectLocator: projectLocator, activeApiLocator: null, scenarios: [], testing: store, reportError: (error: unknown) => { throw error; } }, global: { plugins: [i18n] } });
     const panel = kind === "dataset" ? mountDataset() : mountSuite();
     const entry = (id: string) => sidebar.get(`[data-asset-id="${id}"]`);
     const click = async (id: string) => { await entry(id).trigger("click"); await flushPromises(); };
